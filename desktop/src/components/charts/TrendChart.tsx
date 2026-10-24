@@ -9,7 +9,7 @@ export function TrendChart({ data }: { data: Point[] }) {
   const [hover, setHover] = useState<number | null>(null);
 
   const { x, y, ticks, incomePath, areaPath, expensePath } = useMemo(() => {
-    const max = Math.max(1, ...data.flatMap((d) => [d.income, d.expenses]));
+    const max = Math.max(1000, ...data.flatMap((d) => [d.income, d.expenses]));
     const step = niceStep(max / 4);
     const top = Math.ceil(max / step) * step;
     const x = (i: number) => L + (i * (W - L - R)) / Math.max(1, data.length - 1);
