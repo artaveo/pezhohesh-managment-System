@@ -2,7 +2,7 @@ import { fa } from "../../lib/solar";
 
 export const LABELS: Record<string, string> = {
   monthly: "عضویت ماهانه", daily: "عضویت روزانه", internet: "انترنت ماهانه",
-  hotspot: "کارت هاتسپات", books: "امانت کتاب", misc: "متفرقه",
+  hotspot: "کارت هاتسپات", books: "امانت کتاب", misc: "عواید متفرقه", services: "طلبات (عواید خدمات)",
 };
 
 // One measure across categories: single-hue horizontal bars, value labels in text ink.

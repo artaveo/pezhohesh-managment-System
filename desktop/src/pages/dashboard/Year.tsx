@@ -39,7 +39,10 @@ export function YearView() {
       const b = await loadRanges(ranges, false, signal);
       ranges.forEach((r, i) => years.push({ start: starts[i], sum: b.sum(r) }));
     }
-    return { byMonth, cur: total(a.res.periods.filter((p) => p.from >= iso(ys))), last: a.sum(lastYtd), years, first, allTime: a.res.all_time_income };
+    return {
+      byMonth, cur: total(a.res.periods.filter((p) => p.from >= iso(ys))), last: a.sum(lastYtd), years, first,
+      allTime: a.res.all_time_income, expenseOrder: a.res.expense_order,
+    };
   }, [iso(now)]);
 
   if (failed) return <Failed retry={retry} />;
@@ -76,7 +79,7 @@ export function YearView() {
         <History years={data.years} cur={cur} last={last} y={y} />
       </section>
 
-      <Statement y={y} months={months.slice(0, 12)} byMonth={byMonth} cur={cur} />
+      <Statement y={y} months={months.slice(0, 12)} byMonth={byMonth} cur={cur} expenseOrder={data.expenseOrder} />
     </>
   );
 }
@@ -111,10 +114,16 @@ function History({ years, cur, last, y }: { years: { start: Date; sum: Sum }[]; 
   );
 }
 
-/** Rows are categories, columns the 12 months, and the last column the year total, as in the Excel statement. */
-function Statement({ y, months, byMonth, cur }: { y: string; months: Date[]; byMonth: Sum[]; cur: Sum }) {
+/**
+ * Rows are categories, columns the 12 months, and the last column the year total, as in
+ * the Excel statement (محاسبات): income, expenses, balance, each partner's withdrawals, cash left.
+ */
+function Statement({ y, months, byMonth, cur, expenseOrder }: { y: string; months: Date[]; byMonth: Sum[]; cur: Sum; expenseOrder: string[] }) {
   const incomeCats = Object.keys(cur.income_by_category).sort((a, b) => rank(a) - rank(b));
-  const expenseCats = Object.keys(cur.expenses_by_category).sort((a, b) => cur.expenses_by_category[b] - cur.expenses_by_category[a]);
+  const order = (c: string) => (expenseOrder.includes(c) ? expenseOrder.indexOf(c) : 999);
+  const expenseCats = Object.keys(cur.expenses_by_category).sort((a, b) => order(a) - order(b) || cur.expenses_by_category[b] - cur.expenses_by_category[a]);
+  const people = Object.keys(cur.withdrawals_by_person).sort();
+  const taken = (s: Sum) => Object.values(s.withdrawals_by_person).reduce((t, v) => t + v, 0);
   const cell = (i: number, v: (s: Sum) => number) => (i < byMonth.length ? fa(v(byMonth[i])) : "—");
   const row = (label: string, v: (s: Sum) => number, cls = "") => (
     <tr key={label} className={cls}>
@@ -140,12 +149,14 @@ function Statement({ y, months, byMonth, cur }: { y: string; months: Date[]; byM
           <tbody>
             {section("درآمد")}
             {incomeCats.map((c) => row(LABELS[c] ?? c, (s) => s.income_by_category[c] ?? 0))}
-            {row("جمع درآمد", (s) => s.income, "sum")}
+            {row("مجموع درآمد", (s) => s.income, "sum")}
             {section("مصارف")}
             {expenseCats.map((c) => row(c, (s) => s.expenses_by_category[c] ?? 0))}
-            {row("جمع مصارف", (s) => s.expenses, "sum")}
-            {row("سود خالص", (s) => s.income - s.expenses, "net")}
-            {row("ثبت‌نام جدید (نفر)", (s) => s.new_members)}
+            {row("مجموع مصارفات", (s) => s.expenses, "sum")}
+            {row("بیلانس (سود خالص)", (s) => s.income - s.expenses, "net")}
+            {people.length > 0 && section("برداشت‌ها")}
+            {people.map((p) => row(`برداشت ${p}`, (s) => s.withdrawals_by_person[p] ?? 0))}
+            {people.length > 0 && row("موجودی (بیلانس منهای برداشت‌ها)", (s) => s.income - s.expenses - taken(s), "sum")}
           </tbody>
         </table>
       </div>

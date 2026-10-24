@@ -1,6 +1,6 @@
 [package]
 name = "pezhohesh-api"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Core API for the Pezhohesh management system (study hall + educational services)"
 
@@ -18,3 +18,5 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "cloc
 argon2 = "0.5"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
+calamine = "0.37"
+office-crypto = "0.4"

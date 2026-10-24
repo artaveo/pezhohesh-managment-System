@@ -3,6 +3,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Settings } from "./pages/Settings";
 import { Users } from "./pages/Users";
 import { LoansList, MembersList } from "./pages/DueLists";
+import { ImportExcel } from "./pages/ImportExcel";
 import { FirstSetup, ForcePasswordChange, Login, Offline } from "./pages/Login";
 import { Icon } from "./components/Icon";
 import { useAuth } from "./auth/AuthProvider";
@@ -24,6 +25,7 @@ const NAV = [
   { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL },
   { id: "pec", icon: "briefcase", label: "خدمات تحصیلی", roles: ["partner", "pec_staff"] as Role[] },
   { id: "users", icon: "shield", label: "کاربران", roles: ["partner"] as Role[] },
+  { id: "import", icon: "upload", label: "ورود از اکسل", roles: ["partner"] as Role[] },
   { id: "settings", icon: "settings", label: "تنظیمات من", roles: ALL },
 ] as const;
 
@@ -91,6 +93,7 @@ function Shell() {
               : page === "users" ? <Users />
               : page === "members" ? <MembersList />
               : page === "books" ? <LoansList />
+              : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />
               : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
           </>
         )}

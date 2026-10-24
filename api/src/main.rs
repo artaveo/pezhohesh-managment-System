@@ -15,7 +15,9 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 mod auth;
 mod dashboard;
 mod lists;
+mod import_excel;
 mod reports;
+mod solar;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -49,7 +51,9 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(10)
         .connect(&database_url)
         .await?;
-    sqlx::migrate!("../db/migrations").run(&db).await?;
+    let migrator = sqlx::migrate!("../db/migrations");
+    repair_crlf_checksums(&db, &migrator).await?;
+    migrator.run(&db).await?;
 
     let app = router(AppState { db });
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -59,6 +63,34 @@ async fn main() -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    Ok(())
+}
+
+/// Databases first set up from a Windows checkout recorded the checksums of the migration
+/// files with CRLF line endings, and sqlx then refuses to start ("migration 1 was previously
+/// applied but has been modified"). The SQL is identical, so record the shipped checksum.
+async fn repair_crlf_checksums(db: &PgPool, migrator: &sqlx::migrate::Migrator) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha384};
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL").fetch_one(db).await?;
+    if !exists {
+        return Ok(());
+    }
+    let applied: Vec<(i64, Vec<u8>)> = sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations").fetch_all(db).await?;
+    for m in migrator.iter() {
+        let Some((_, recorded)) = applied.iter().find(|(v, _)| *v == m.version) else { continue };
+        if recorded.as_slice() == &*m.checksum {
+            continue;
+        }
+        let crlf = Sha384::digest(m.sql.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
+        if recorded.as_slice() == crlf.as_slice() {
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = $2 WHERE version = $1")
+                .bind(m.version)
+                .bind(&*m.checksum)
+                .execute(db)
+                .await?;
+            tracing::warn!(version = m.version, "migration checksum had been recorded with CRLF line endings; updated");
+        }
+    }
     Ok(())
 }
 
@@ -76,6 +108,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/users/:id", put(auth::update_user))
         .route("/api/v1/me/theme-mode", put(auth::set_theme_mode))
         .route("/api/v1/dashboard", get(dashboard::get))
+        .route(
+            "/api/v1/import/excel",
+            post(import_excel::import).layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024)),
+        )
         .route("/api/v1/reports/periods", get(reports::periods))
         .route("/api/v1/members", get(lists::members))
         .route("/api/v1/loans", get(lists::loans))

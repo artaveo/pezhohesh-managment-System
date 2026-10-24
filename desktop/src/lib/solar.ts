@@ -64,4 +64,8 @@ export const monthName = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca
 export const yearNumber = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { year: "numeric" }).format(d);
 
 const num = new Intl.NumberFormat("en-US");
-export const fa = (n: number) => num.format(Math.round(n));
+// Negative numbers are isolated left-to-right so the minus stays in front inside Persian text.
+export const fa = (n: number) => {
+  const s = num.format(Math.round(n));
+  return s.startsWith("-") ? `\u2066${s}\u2069` : s;
+};

@@ -54,8 +54,19 @@ export type PeriodRow = {
   income: number; expenses: number; new_members: number;
   income_by_category?: Record<string, number>;
   expenses_by_category?: Record<string, number>;
+  withdrawals_by_person?: Record<string, number>;
 };
-export type Periods = { periods: PeriodRow[]; first_day: string | null; all_time_income: number };
+export type Periods = { periods: PeriodRow[]; first_day: string | null; all_time_income: number; expense_order: string[] };
+
+export type ImportLine = {
+  key: string; label: string; kind: "income" | "expense" | "withdrawal"; from_statement: boolean;
+  imported: number[]; excel: (number | null)[];
+};
+export type ImportReport = {
+  year: number; committed: boolean; batch_id: string | null;
+  members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
+  replaces: string | null; lines: ImportLine[]; warnings: string[];
+};
 
 export type Page<T> = { total: number; rows: T[] };
 
@@ -148,6 +159,21 @@ export const api = {
     request<Dashboard>(`/dashboard?${new URLSearchParams(params)}`, { signal }),
   periods: (bounds: string[], categories: boolean, signal?: AbortSignal) =>
     request<Periods>(`/reports/periods?${new URLSearchParams({ bounds: bounds.join(","), categories: String(categories) })}`, { signal }),
+  importExcel: async (file: File, o: { year: number; password: string; commit: boolean }) => {
+    // The book goes up as-is; the API opens it (with its password) and reads it.
+    const res = await fetch(`${API_BASE}/api/v1/import/excel?${new URLSearchParams({ year: String(o.year), commit: String(o.commit), file_name: file.name })}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(o.password ? { "x-excel-password": encodeURIComponent(o.password) } : {}),
+      },
+      body: await file.arrayBuffer(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, typeof data.error === "string" ? data.error : "error", data);
+    return data as ImportReport;
+  },
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 };
@@ -169,6 +195,12 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "excel_password_needed": return "این فایل اکسل رمز دارد. رمز فایل را بنویسید.";
+    case "wrong_excel_password": return "رمز فایل اکسل درست نیست.";
+    case "not_excel": return "این فایل اکسل (.xlsx) نیست یا خراب است.";
+    case "sheet_missing_monthly": return "شیت «عضویت ماهانه» در این فایل پیدا نشد.";
+    case "sheet_missing_statement": return "شیت «محاسبات» در این فایل پیدا نشد.";
+    case "bad_year": return "سال را درست بنویسید، مثلاً 1405.";
     default: return "کار انجام نشد. دوباره امتحان کنید.";
   }
 }

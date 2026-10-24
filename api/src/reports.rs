@@ -32,6 +32,9 @@ pub struct Period {
     income_by_category: Option<BTreeMap<String, f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expenses_by_category: Option<BTreeMap<String, f64>>,
+    /// Cash taken by each partner (staff name), as in the statement's برداشت rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    withdrawals_by_person: Option<BTreeMap<String, f64>>,
 }
 
 #[derive(Serialize)]
@@ -40,6 +43,8 @@ pub struct Periods {
     /// First day with any hall income, so the app knows which years to ask for.
     first_day: Option<chrono::NaiveDate>,
     all_time_income: f64,
+    /// Expense categories in the statement's order (rent first, as in the Excel book).
+    expense_order: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -93,6 +98,7 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     .await?;
 
     let (mut inc_cat, mut exp_cat) = (vec![BTreeMap::new(); lo.len()], vec![BTreeMap::new(); lo.len()]);
+    let mut taken = vec![BTreeMap::new(); lo.len()];
     if p.categories {
         let rows: Vec<CatRow> = sqlx::query_as(
             r#"
@@ -127,7 +133,28 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         for r in rows {
             exp_cat[r.i as usize].insert(r.category, r.amount);
         }
+        let rows: Vec<CatRow> = sqlx::query_as(
+            r#"
+            SELECT (b.n - 1)::int AS i, s.full_name AS category, sum(w.amount)::float8 AS amount
+            FROM unnest($1::date[], $2::date[]) WITH ORDINALITY AS b(lo, hi, n)
+            JOIN withdrawals w ON w.taken_on >= b.lo AND w.taken_on < b.hi
+            JOIN staff s ON s.id = w.staff_id
+            WHERE w.deleted_at IS NULL AND w.department = 'hall' AND w.currency = 'AFN'
+            GROUP BY b.n, s.full_name
+            "#,
+        )
+        .bind(&lo)
+        .bind(&hi)
+        .fetch_all(&mut *tx)
+        .await?;
+        for r in rows {
+            taken[r.i as usize].insert(r.category, r.amount);
+        }
     }
+    let expense_order: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM expense_categories WHERE department = 'hall' ORDER BY sort_order, name")
+            .fetch_all(&mut *tx)
+            .await?;
 
     let (first_day, all_time_income): (Option<chrono::NaiveDate>, f64) = sqlx::query_as(
         "SELECT min(issued_on), COALESCE(sum(amount), 0)::float8 FROM receipts \
@@ -149,8 +176,9 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
                 new_members: t.new_members,
                 income_by_category: p.categories.then(|| std::mem::take(&mut inc_cat[i])),
                 expenses_by_category: p.categories.then(|| std::mem::take(&mut exp_cat[i])),
+                withdrawals_by_person: p.categories.then(|| std::mem::take(&mut taken[i])),
             }
         })
         .collect();
-    Ok(Json(Periods { periods, first_day, all_time_income }))
+    Ok(Json(Periods { periods, first_day, all_time_income, expense_order }))
 }

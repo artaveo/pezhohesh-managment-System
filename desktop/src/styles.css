@@ -322,3 +322,16 @@ button, input { font: inherit; color: inherit; }
 .side-user strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-user .icon-btn { width: 28px; height: 28px; }
 .check.remember { margin-inline-start: 0; font-size: .9rem; }
+
+/* Excel import */
+.panel.wide { max-width: none; }
+.import-form input[type="file"] { padding: 7px 10px; border: 1px dashed var(--line); border-radius: 11px; background: var(--glass-strong); font: inherit; color: var(--fg); }
+.import-counts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.import-counts li { padding: 8px 14px; border-radius: 12px; background: color-mix(in srgb, var(--glass-strong) 70%, transparent); }
+.import-counts strong { font-size: 1.2rem; font-variant-numeric: tabular-nums; margin-inline-end: 4px; }
+.table.reconcile .num { font-variant-numeric: tabular-nums; color: var(--fg); }
+.table.reconcile tbody th { color: var(--fg); font-weight: 500; font-size: .88rem; }
+.table.reconcile tr.section th { color: var(--muted); font-weight: 700; padding-top: 14px; }
+.table.reconcile .status.wait { white-space: normal; }
+.warnings summary { cursor: pointer; font-weight: 600; }
+.warnings ul { margin: 6px 0 0; padding-inline-start: 20px; display: flex; flex-direction: column; gap: 4px; font-size: .88rem; }
