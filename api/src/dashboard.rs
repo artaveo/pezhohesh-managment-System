@@ -1,10 +1,11 @@
 //! Home-screen numbers. One call returns everything the dashboard shows for a period,
 //! together with the previous period so the app can show growth or decline.
 
-use axum::{extract::{Query, State}, http::StatusCode, Json};
+use axum::{extract::{Query, State}, Json};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgConnection};
 
+use crate::auth::{begin_as, ApiError, CurrentUser};
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -66,22 +67,27 @@ pub struct Expiring {
     end_date: chrono::NaiveDate,
 }
 
-pub async fn get(State(s): State<AppState>, Query(p): Query<Params>) -> Result<Json<Dashboard>, StatusCode> {
+/// Study-hall home screen: partners and the manager. Education staff get their own later.
+pub async fn get(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Params>) -> Result<Json<Dashboard>, ApiError> {
+    if !user.sees_hall() {
+        return Err(ApiError::FORBIDDEN);
+    }
     let today = chrono::Local::now().date_naive();
     let from = p.from.unwrap_or(today);
     let to = p.to.unwrap_or(from + chrono::Days::new(1));
     let prev_from = p.prev_from.unwrap_or(from - (to - from));
     if !(prev_from < from && from < to) {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(ApiError::bad("bad_window"));
     }
     // Compare like with like: month-to-date against the same number of days of last month.
     let to = to.min(today + chrono::Days::new(1)).max(from + chrono::Days::new(1));
     let prev_to = (prev_from + (to - from)).min(from);
     let window = Window { from, to, prev_from, prev_to };
-    load(&s.db, p.period.unwrap_or_else(|| "day".into()), window).await.map(Json).map_err(|e| {
-        tracing::error!("dashboard: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
+    // Runs as the signed-in person's database role, so row-level security applies too.
+    let mut tx = begin_as(&s.db, &user).await?;
+    let data = load(&mut tx, p.period.unwrap_or_else(|| "day".into()), window).await?;
+    tx.commit().await?;
+    Ok(Json(data))
 }
 
 #[derive(Clone, Copy)]
@@ -92,7 +98,7 @@ struct Window {
     prev_to: chrono::NaiveDate,
 }
 
-async fn load(db: &PgPool, period: String, w: Window) -> sqlx::Result<Dashboard> {
+async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<Dashboard> {
     // [cur_start, cur_end) and [prev_start, cur_start); AFN only, USD is PEC's and shown there.
     let kpis: Kpis = sqlx::query_as(
         r#"
@@ -129,7 +135,7 @@ async fn load(db: &PgPool, period: String, w: Window) -> sqlx::Result<Dashboard>
     .bind(w.to)
     .bind(w.prev_from)
     .bind(w.prev_to)
-    .fetch_one(db)
+    .fetch_one(&mut *db)
     .await?;
 
     let trend: Vec<TrendPoint> = sqlx::query_as(
@@ -143,7 +149,7 @@ async fn load(db: &PgPool, period: String, w: Window) -> sqlx::Result<Dashboard>
         ORDER BY d
         "#,
     )
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
 
     let income_by_category: Vec<CategoryAmount> = sqlx::query_as(
@@ -158,7 +164,7 @@ async fn load(db: &PgPool, period: String, w: Window) -> sqlx::Result<Dashboard>
     )
     .bind(w.from)
     .bind(w.to)
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
 
     let expiring: Vec<Expiring> = sqlx::query_as(
@@ -172,13 +178,13 @@ async fn load(db: &PgPool, period: String, w: Window) -> sqlx::Result<Dashboard>
         LIMIT 8
         "#,
     )
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
 
     let overdue_books: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM book_loans WHERE deleted_at IS NULL AND returned_on IS NULL AND due_on < current_date",
     )
-    .fetch_one(db)
+    .fetch_one(&mut *db)
     .await?;
 
     Ok(Dashboard { period, kpis, trend, income_by_category, expiring, overdue_books })

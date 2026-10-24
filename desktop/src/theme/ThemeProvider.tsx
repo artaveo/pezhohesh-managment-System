@@ -1,23 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { accentTokens, OFFICIAL_GREEN } from "./color";
 
-// The personal color is kept per user. Until login is wired to the API it is stored
-// on this device; later it is saved in app_users.theme_color so it follows the user.
-const STORAGE_KEY = "pezhohesh.accent";
+// The personal color is kept per user in app_users.theme_color (see AuthProvider);
+// before anyone signs in the app shows the official green.
 
 type ThemeCtx = { accent: string; isOfficial: boolean; setAccent: (hex: string) => void; reset: () => void };
 const Ctx = createContext<ThemeCtx | null>(null);
 
-function readStored(): string {
-  try {
-    return localStorage.getItem(STORAGE_KEY) || OFFICIAL_GREEN;
-  } catch {
-    return OFFICIAL_GREEN;
-  }
-}
-
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [accent, setAccentState] = useState(readStored);
+  const [accent, setAccentState] = useState(OFFICIAL_GREEN);
   const [dark, setDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
 
   useEffect(() => {
@@ -30,12 +21,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const root = document.documentElement;
     for (const [k, v] of Object.entries(accentTokens(accent, dark))) root.style.setProperty(k, v);
-    try {
-      if (accent === OFFICIAL_GREEN) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, accent);
-    } catch {
-      /* storage unavailable: the color still applies for this session */
-    }
   }, [accent, dark]);
 
   const value = useMemo<ThemeCtx>(

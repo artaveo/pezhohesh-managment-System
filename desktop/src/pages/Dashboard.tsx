@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { fetchDashboard, type Dashboard as Data } from "../lib/api";
+import { api, ApiError, type Dashboard as Data } from "../lib/api";
+import { useAuth } from "../auth/AuthProvider";
 import { sampleDashboard } from "../lib/sample";
 import { fa, formatLong, formatShort, iso, monthName, windowFor, yearNumber, type Period } from "../lib/solar";
 import { Icon } from "../components/Icon";
@@ -21,10 +22,10 @@ export function Dashboard() {
 
   useEffect(() => {
     const ctl = new AbortController();
-    fetchDashboard(windowFor(period), ctl.signal)
+    api.dashboard(windowFor(period), ctl.signal)
       .then((d) => { setData(d); setSample(false); })
       .catch((e) => {
-        if (ctl.signal.aborted) return;
+        if (ctl.signal.aborted || e instanceof ApiError) return;
         console.warn("dashboard API unreachable, showing sample data", e);
         setData(sampleDashboard(period));
         setSample(true);
@@ -32,6 +33,7 @@ export function Dashboard() {
     return () => ctl.abort();
   }, [period]);
 
+  const { user } = useAuth();
   const now = new Date();
   const title = period === "day" ? "گزارش امروز" : period === "month" ? `گزارش ماه ${monthName(now)}` : `گزارش سال ${yearNumber(now)}`;
   const k = data?.kpis;
@@ -42,7 +44,7 @@ export function Dashboard() {
     <div className="dash">
       <header className="dash-head">
         <div>
-          <p className="eyebrow">{greeting(now)} · {formatLong(now)}</p>
+          <p className="eyebrow">{greeting(now)}{user ? `، ${user.full_name.split(" ")[0]}` : ""} · {formatLong(now)}</p>
           <h1>{title}</h1>
         </div>
         <div className="dash-tools">

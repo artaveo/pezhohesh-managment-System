@@ -6,12 +6,13 @@
 
 use std::net::SocketAddr;
 
-use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
+use axum::{extract::State, http::StatusCode, routing::{get, post, put}, Json, Router};
 use serde::Serialize;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+mod auth;
 mod dashboard;
 
 #[derive(Clone)]
@@ -63,6 +64,14 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/settings/brand-color", get(brand_color))
+        .route("/api/v1/setup", get(auth::setup_status).post(auth::setup))
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/me", get(auth::me))
+        .route("/api/v1/me/password", put(auth::change_password))
+        .route("/api/v1/me/theme", put(auth::set_theme))
+        .route("/api/v1/users", get(auth::list_users).post(auth::create_user))
+        .route("/api/v1/users/:id", put(auth::update_user))
         .route("/api/v1/dashboard", get(dashboard::get))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
