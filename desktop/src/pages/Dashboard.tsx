@@ -19,19 +19,26 @@ export function Dashboard() {
   const [period, setPeriod] = useState<Period>("day");
   const [data, setData] = useState<Data | null>(null);
   const [sample, setSample] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const ctl = new AbortController();
     api.dashboard(windowFor(period), ctl.signal)
-      .then((d) => { setData(d); setSample(false); })
+      .then((d) => { setData(d); setSample(false); setFailed(false); })
       .catch((e) => {
-        if (ctl.signal.aborted || e instanceof ApiError) return;
-        console.warn("dashboard API unreachable, showing sample data", e);
-        setData(sampleDashboard(period));
-        setSample(true);
+        if (ctl.signal.aborted) return;
+        // Sample numbers only while developing the screen; real users never see invented figures.
+        if (import.meta.env.DEV && !(e instanceof ApiError)) {
+          setData(sampleDashboard(period));
+          setSample(true);
+          return;
+        }
+        console.error("dashboard", e);
+        setFailed(true);
       });
     return () => ctl.abort();
-  }, [period]);
+  }, [period, attempt]);
 
   const { user } = useAuth();
   const now = new Date();
@@ -59,7 +66,12 @@ export function Dashboard() {
         </div>
       </header>
 
-      {!k ? <div className="glass loading">در حال بارگذاری…</div> : (
+      {failed ? (
+        <div className="glass loading">
+          <p className="muted">گزارش بارگذاری نشد؛ هستهٔ سیستم جواب نداد.</p>
+          <button className="btn" onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}>دوباره امتحان کن</button>
+        </div>
+      ) : !k ? <div className="glass loading">در حال بارگذاری…</div> : (
         <>
           <section className="kpis">
             <Kpi hero icon="wallet" label="درآمد" value={k.income} prev={k.income_prev} unit="؋" vs={VS[period]} />

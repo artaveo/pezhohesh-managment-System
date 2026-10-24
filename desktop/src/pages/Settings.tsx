@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errorText } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
+import { PasswordInput } from "../components/PasswordInput";
 import { ColorWheel } from "../components/ColorWheel";
 import { useTheme } from "../theme/ThemeProvider";
 import { hexToRgb, OFFICIAL_GREEN } from "../theme/color";
@@ -96,9 +97,9 @@ function MyPassword() {
     <form className="panel" onSubmit={submit}>
       <h2>رمز من</h2>
       <div className="form-grid">
-        <label className="field wide"><span>رمز فعلی</span><input type="password" dir="ltr" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" /></label>
-        <label className="field wide"><span>رمز جدید (دست‌کم ۸ حرف)</span><input type="password" dir="ltr" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" /></label>
-        <label className="field wide"><span>تکرار رمز جدید</span><input type="password" dir="ltr" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" /></label>
+        <label className="field wide"><span>رمز فعلی</span><PasswordInput value={current} onChange={setCurrent} autoComplete="current-password" /></label>
+        <label className="field wide"><span>رمز جدید (دست‌کم ۸ حرف)</span><PasswordInput value={next} onChange={setNext} autoComplete="new-password" /></label>
+        <label className="field wide"><span>تکرار رمز جدید</span><PasswordInput value={repeat} onChange={setRepeat} autoComplete="new-password" /></label>
       </div>
       {msg && <p className={msg.ok ? "form-ok" : "form-error"} role="status">{msg.text}</p>}
       <div className="actions"><button className="btn" disabled={!current || !next}>عوض کردن رمز</button></div>

@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { api, errorText } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
+import { PasswordInput } from "../components/PasswordInput";
 
 function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
@@ -27,14 +28,18 @@ function Field(props: { label: string; type?: string; value: string; onChange: (
   return (
     <label className="field wide">
       <span>{props.label}</span>
-      <input
-        type={props.type ?? "text"}
-        dir={props.ltr ? "ltr" : undefined}
-        value={props.value}
-        autoFocus={props.autoFocus}
-        autoComplete={props.autoComplete}
-        onChange={(e) => props.onChange(e.target.value)}
-      />
+      {props.type === "password" ? (
+        <PasswordInput value={props.value} onChange={props.onChange} autoFocus={props.autoFocus} autoComplete={props.autoComplete} />
+      ) : (
+        <input
+          type={props.type ?? "text"}
+          dir={props.ltr ? "ltr" : undefined}
+          value={props.value}
+          autoFocus={props.autoFocus}
+          autoComplete={props.autoComplete}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      )}
     </label>
   );
 }

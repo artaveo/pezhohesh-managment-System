@@ -240,3 +240,11 @@ button, input { font: inherit; color: inherit; }
 .role-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .actions { display: flex; gap: 8px; }
 .mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .04em; }
+
+/* Password box with a show/hide eye (the eye sits at the start of the LTR text, i.e. the right in RTL) */
+.pw { position: relative; display: block; }
+.pw input { width: 100%; padding-right: 42px !important; }
+.pw input::-ms-reveal, .pw input::-ms-clear { display: none; }
+.pw-eye { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; }
+.pw-eye:hover { color: var(--fg); background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.field.wide .pw input { border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px; }
