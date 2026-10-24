@@ -5,3 +5,4 @@ target/
 *.log
 *.tsbuildinfo
 desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
