@@ -10,9 +10,21 @@ use tauri::{Manager, RunEvent};
 struct Api(Mutex<Option<Child>>);
 
 fn start_api() -> Option<Child> {
+    // An API that is already running (an earlier window, or one started by hand) is reused.
+    if std::net::TcpStream::connect(("127.0.0.1", 8750)).is_ok() {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     let name = if cfg!(windows) { "pezhohesh-api.exe" } else { "pezhohesh-api" };
-    let path = exe.parent()?.join(name);
+    let mut path = exe.parent()?.join(name);
+    if cfg!(debug_assertions) {
+        // `tauri dev` overwrites the sidecar on every rebuild, which fails while it runs.
+        // Run a copy instead so rebuilds can replace the original.
+        let copy = std::env::temp_dir().join(format!("dev-{name}"));
+        if std::fs::copy(&path, &copy).is_ok() {
+            path = copy;
+        }
+    }
     let mut cmd = Command::new(&path);
     #[cfg(windows)]
     {
