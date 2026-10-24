@@ -17,9 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: arm64   # office laptop
+          - arch: arm64   # Zakir's Snapdragon laptop
             target: aarch64-pc-windows-msvc
-          - arch: x64     # most other PCs
+          - arch: x64     # office laptop and most other PCs
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
