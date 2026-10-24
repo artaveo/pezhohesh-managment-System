@@ -1,0 +1,116 @@
+# Builds the Windows installers on GitHub's servers, so no laptop needs the
+# Microsoft C++ build tools. Each installer already contains the core API.
+#
+# - Every push / PR: download the installers from the run's "Artifacts" section.
+# - A version tag (v0.1.0, v0.2.0, ...), or "Run workflow" with a release
+#   version: the installers are published on the repository's Releases page,
+#   one Setup file per kind of laptop. The tag is created if it is missing.
+name: Windows build
+
+on:
+  push:
+    branches: [main, "step-*"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a release with this tag (for example v0.1.0); leave empty to only build"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release }}
+
+jobs:
+  build:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64   # Zakir's Snapdragon laptop
+            target: aarch64-pc-windows-msvc
+          - arch: x64     # office laptop and most other PCs
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        run: node scripts/check-version.mjs ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            api -> target
+            desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Build API and place it inside the installer
+        run: node scripts/prepare-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build desktop installer
+        working-directory: desktop
+        run: npx tauri build --target ${{ matrix.target }} --bundles nsis
+
+      - name: Name the installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $exe = Get-ChildItem desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName "out/Pezhohesh-Setup-${{ matrix.arch }}.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pezhohesh-Setup-${{ matrix.arch }}
+          path: out/Pezhohesh-Setup-${{ matrix.arch }}.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.release, 'v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum Pezhohesh-Setup-*.exe > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: پژوهش ${{ env.RELEASE_TAG }}
+          body_path: docs/releases/${{ env.RELEASE_TAG }}.md
+          prerelease: ${{ startsWith(env.RELEASE_TAG, 'v0.') }}
+          files: |
+            out/Pezhohesh-Setup-x64.exe
+            out/Pezhohesh-Setup-arm64.exe
+            out/SHA256SUMS.txt
