@@ -4,3 +4,4 @@ target/
 .env
 *.log
 *.tsbuildinfo
+desktop/src-tauri/binaries/

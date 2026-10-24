@@ -8,12 +8,15 @@ use std::net::SocketAddr;
 
 use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
 use serde::Serialize;
+use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+mod dashboard;
+
 #[derive(Clone)]
-struct AppState {
-    db: PgPool,
+pub struct AppState {
+    pub db: PgPool,
 }
 
 #[derive(Serialize)]
@@ -29,12 +32,16 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres@localhost:5432/pezhohesh".into());
+    let database_url = database_url();
     let bind: SocketAddr = std::env::var("API_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8750".into())
         .parse()?;
 
+    // First run on a fresh PostgreSQL: create the database itself, then the tables.
+    if !sqlx::Postgres::database_exists(&database_url).await? {
+        sqlx::Postgres::create_database(&database_url).await?;
+        tracing::info!("created database");
+    }
     let db = PgPoolOptions::new()
         .max_connections(10)
         .connect(&database_url)
@@ -56,6 +63,7 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/settings/brand-color", get(brand_color))
+        .route("/api/v1/dashboard", get(dashboard::get))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -78,4 +86,18 @@ async fn brand_color(State(s): State<AppState>) -> Result<Json<serde_json::Value
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(value.unwrap_or_else(|| "#76b82a".into())))
+}
+
+/// DATABASE_URL from the environment, else the first line of
+/// `%APPDATA%\\Pezhohesh\\database-url.txt` (written by the app's setup screen later).
+fn database_url() -> String {
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        return url;
+    }
+    std::env::var("APPDATA")
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join("Pezhohesh").join("database-url.txt")).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "postgres://postgres@localhost:5432/pezhohesh".into())
 }

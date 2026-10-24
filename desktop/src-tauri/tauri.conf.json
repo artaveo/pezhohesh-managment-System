@@ -33,6 +33,16 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "externalBin": [
+      "binaries/pezhohesh-api"
+    ],
+    "publisher": "Pezhohesh",
+    "shortDescription": "سیستم مدیریت کتابخانه و قرائت‌خانهٔ پژوهش",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

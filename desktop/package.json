@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "sidecar": "node ../scripts/prepare-sidecar.mjs",
+    "pretauri": "node ../scripts/prepare-sidecar.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
