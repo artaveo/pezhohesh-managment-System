@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/components/ColorWheel.tsx","./src/pages/Dashboard.tsx","./src/pages/Settings.tsx","./src/theme/ThemeProvider.tsx","./src/theme/color.ts"],"version":"5.6.3"}
