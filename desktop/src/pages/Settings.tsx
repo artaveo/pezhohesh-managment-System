@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errorText, type ThemeMode } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { PasswordInput } from "../components/PasswordInput";
+import { forgetLogin, savedLogin, updateSavedPassword } from "../lib/savedLogin";
 import { ColorWheel } from "../components/ColorWheel";
 import { useTheme } from "../theme/ThemeProvider";
 import { hexToRgb, OFFICIAL_GREEN } from "../theme/color";
@@ -103,6 +104,9 @@ function MyColor() {
 }
 
 function MyPassword() {
+  const { user } = useAuth();
+  const [hasSaved, setHasSaved] = useState(false);
+  useEffect(() => { savedLogin().then((s) => setHasSaved(!!s && s.username === user?.username)); }, [user?.username]);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [repeat, setRepeat] = useState("");
@@ -113,6 +117,7 @@ function MyPassword() {
     if (next !== repeat) return setMsg({ ok: false, text: "دو رمز جدید یکی نیستند." });
     try {
       await api.changePassword(current, next);
+      if (user) await updateSavedPassword(user.username, next);
       setCurrent(""); setNext(""); setRepeat("");
       setMsg({ ok: true, text: "رمز شما عوض شد." });
     } catch (err) {
@@ -129,7 +134,14 @@ function MyPassword() {
         <label className="field wide"><span>تکرار رمز جدید</span><PasswordInput value={repeat} onChange={setRepeat} autoComplete="new-password" /></label>
       </div>
       {msg && <p className={msg.ok ? "form-ok" : "form-error"} role="status">{msg.text}</p>}
-      <div className="actions"><button className="btn" disabled={!current || !next}>عوض کردن رمز</button></div>
+      <div className="actions">
+        <button className="btn" disabled={!current || !next}>عوض کردن رمز</button>
+        {hasSaved && (
+          <button type="button" className="btn ghost" onClick={() => void forgetLogin().then(() => { setHasSaved(false); setMsg({ ok: true, text: "رمز ذخیره‌شده از این کمپیوتر پاک شد." }); })}>
+            پاک کردن رمز ذخیره‌شده از این کمپیوتر
+          </button>
+        )}
+      </div>
     </form>
   );
 }

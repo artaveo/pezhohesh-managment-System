@@ -48,6 +48,15 @@ export type Dashboard = {
   books_overdue: number;
 };
 
+/** Income and expenses for consecutive date ranges [from, to). */
+export type PeriodRow = {
+  from: string; to: string;
+  income: number; expenses: number; new_members: number;
+  income_by_category?: Record<string, number>;
+  expenses_by_category?: Record<string, number>;
+};
+export type Periods = { periods: PeriodRow[]; first_day: string | null; all_time_income: number };
+
 export type Page<T> = { total: number; rows: T[] };
 
 export type MemberRow = {
@@ -137,6 +146,8 @@ export const api = {
     request<void>(`/users/${id}`, { method: "PUT", body: b }),
   dashboard: (params: Record<string, string>, signal?: AbortSignal) =>
     request<Dashboard>(`/dashboard?${new URLSearchParams(params)}`, { signal }),
+  periods: (bounds: string[], categories: boolean, signal?: AbortSignal) =>
+    request<Periods>(`/reports/periods?${new URLSearchParams({ bounds: bounds.join(","), categories: String(categories) })}`, { signal }),
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 };

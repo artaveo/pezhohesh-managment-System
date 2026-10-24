@@ -1,15 +1,15 @@
 import { fa } from "../../lib/solar";
 
-const LABELS: Record<string, string> = {
+export const LABELS: Record<string, string> = {
   monthly: "عضویت ماهانه", daily: "عضویت روزانه", internet: "انترنت ماهانه",
   hotspot: "کارت هاتسپات", books: "امانت کتاب", misc: "متفرقه",
 };
 
 // One measure across categories: single-hue horizontal bars, value labels in text ink.
-export function CategoryBars({ data }: { data: { category: string; amount: number }[] }) {
+export function CategoryBars({ data, empty = "هنوز درآمدی در این دوره ثبت نشده." }: { data: { category: string; amount: number }[]; empty?: string }) {
   const max = Math.max(1, ...data.map((d) => d.amount));
   const total = data.reduce((s, d) => s + d.amount, 0);
-  if (!data.length) return <p className="muted">هنوز درآمدی در این دوره ثبت نشده.</p>;
+  if (!data.length) return <p className="muted">{empty}</p>;
   return (
     <ul className="bars">
       {data.map((d) => (

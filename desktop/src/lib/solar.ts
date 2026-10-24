@@ -7,7 +7,7 @@ function solar(d: Date): { y: number; m: number; d: number } {
   return { y: Number(p.year), m: Number(p.month), d: Number(p.day) };
 }
 
-const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+export const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 export const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
@@ -21,6 +21,24 @@ function startOf(d: Date, unit: "month" | "year"): Date {
   }
   return x;
 }
+
+/** Solar month and year boundaries, each the first Gregorian day of that month or year. */
+export const monthStart = (d = new Date()) => startOf(d, "month");
+export const nextMonth = (ms: Date) => startOf(addDays(ms, 32), "month");
+export const prevMonth = (ms: Date) => startOf(addDays(ms, -1), "month");
+// A Solar month is 29 to 31 days and a year 365 or 366, so 360 days back is always inside the same month a year earlier.
+export const sameMonthLastYear = (ms: Date) => startOf(addDays(ms, -360), "month");
+export const yearStart = (d = new Date()) => startOf(d, "year");
+export const nextYear = (ys: Date) => startOf(addDays(ys, 370), "year");
+export const prevYear = (ys: Date) => startOf(addDays(ys, -1), "year");
+/** The 12 month starts of the year beginning at `ys`, plus the next year's start. */
+export function monthsOfYear(ys: Date): Date[] {
+  const out = [ys];
+  for (let i = 0; i < 12; i++) out.push(nextMonth(out[i]));
+  return out;
+}
+export const parseIso = (s: string) => new Date(s + "T00:00:00");
+export const daysBetween = (a: Date, b: Date) => Math.round((b.getTime() - a.getTime()) / 864e5);
 
 export type Period = "day" | "month" | "year";
 

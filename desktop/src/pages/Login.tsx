@@ -1,7 +1,8 @@
-import { useState, type FormEvent, type ReactNode } from "react";
-import { api, errorText } from "../lib/api";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { api, ApiError, errorText } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { PasswordInput } from "../components/PasswordInput";
+import { canSaveLogin, forgetLogin, saveLogin, savedLogin, updateSavedPassword, type SavedLogin } from "../lib/savedLogin";
 
 function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
@@ -48,8 +49,21 @@ export function Login() {
   const { signIn } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
+  const [saved, setSaved] = useState<SavedLogin | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // A password saved on this computer fills the form; the person still presses "ورود".
+  useEffect(() => {
+    savedLogin().then((s) => {
+      if (!s) return;
+      setSaved(s);
+      setUsername(s.username);
+      setPassword(s.password);
+      setRemember(true);
+    });
+  }, []);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -57,10 +71,16 @@ export function Login() {
     setError("");
     try {
       const s = await api.login(username, password);
+      await (remember ? saveLogin(username, password) : forgetLogin());
       signIn(s.token, s.user);
     } catch (err) {
       setError(errorText(err));
       setPassword("");
+      // A saved password that no longer works (changed on another computer) is dropped.
+      if (err instanceof ApiError && err.code === "invalid_login" && saved?.username === username && saved.password === password) {
+        await forgetLogin();
+        setSaved(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -71,6 +91,13 @@ export function Login() {
       <form className="auth-form" onSubmit={submit}>
         <Field label="نام کاربری" value={username} onChange={setUsername} autoFocus ltr autoComplete="username" />
         <Field label="رمز" type="password" value={password} onChange={setPassword} ltr autoComplete="current-password" />
+        {canSaveLogin() && (
+          <label className="check remember">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            رمز را در این کمپیوتر به خاطر بسپار
+          </label>
+        )}
+        {remember && <p className="muted small">هر کسی که این کمپیوتر را باز کند می‌تواند با حساب شما وارد شود. روی کمپیوتر مشترک تیک نزنید.</p>}
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="btn big" disabled={busy || !username || !password}>{busy ? "در حال ورود…" : "ورود"}</button>
       </form>
@@ -133,6 +160,7 @@ export function ForcePasswordChange() {
     setError("");
     try {
       await api.changePassword(current, next);
+      if (user) await updateSavedPassword(user.username, next);
       updateUser({ must_change_password: false });
     } catch (err) {
       setError(errorText(err));

@@ -269,14 +269,25 @@ button, input { font: inherit; color: inherit; }
 .field.wide .pw input { border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px; }
 
 /* Dashboard v2: income strip, three-up rows, days-left badges */
-.income-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-.income-tile { display: flex; flex-direction: column; gap: 4px; text-align: start; font: inherit; color: inherit; cursor: pointer; transition: box-shadow .15s, transform .15s; }
-.income-tile.total { cursor: default; }
-.income-tile .kpi-value { font-size: 1.55rem; }
-.income-tile .kpi-foot { min-height: 22px; }
-button.income-tile:hover { transform: translateY(-1px); }
-.income-tile.on { background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 30%, var(--glass)), var(--glass) 70%); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), var(--glass-shadow); }
-.income-tile.total { background: color-mix(in srgb, var(--glass-strong) 80%, transparent); }
+.kpis.four { grid-template-columns: 1.3fr 1fr 1fr 1fr; }
+.grid-2.even { grid-template-columns: 1fr 1fr; }
+.period-note { margin-top: -6px; max-width: none; font-size: .9rem; }
+.table-wrap.flush { padding: 0; }
+.table.compare th, .table.compare td { padding: 8px 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.table.compare tbody th { color: var(--fg); font-size: .88rem; }
+.figure { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.figure .delta { font-size: .72rem; }
+.statement { display: flex; flex-direction: column; gap: 10px; }
+.statement h2 { margin: 0; font-size: 1.05rem; }
+.table.sheet { font-size: .82rem; font-variant-numeric: tabular-nums; }
+.table.sheet th, .table.sheet td { padding: 7px 9px; white-space: nowrap; text-align: end; }
+.table.sheet th:first-child { text-align: start; position: sticky; inset-inline-start: 0; background: var(--glass-strong); }
+.table.sheet tbody th { color: var(--fg); font-weight: 500; font-size: .82rem; }
+.table.sheet .remarks { font-weight: 800; background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.table.sheet thead .remarks { color: var(--accent-strong); }
+.table.sheet tr.section th { color: var(--muted); font-weight: 700; padding-top: 12px; background: none; position: static; }
+.table.sheet tr.sum td, .table.sheet tr.sum th { font-weight: 700; border-top: 1px solid var(--line); }
+.table.sheet tr.net td, .table.sheet tr.net th { font-weight: 800; background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .kpis.three { grid-template-columns: repeat(3, 1fr); }
 .grid-3 { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 14px; }
 .grid-3 > .glass { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -304,8 +315,10 @@ button.income-tile:hover { transform: translateY(-1px); }
 
 @media (max-width: 1250px) {
   .grid-3 { grid-template-columns: 1fr 1fr; }
-  .income-strip { grid-template-columns: repeat(2, 1fr); }
+  .kpis.four { grid-template-columns: 1fr 1fr; }
+  .grid-2.even { grid-template-columns: 1fr; }
 }
 .side-user > div { min-width: 0; }
 .side-user strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-user .icon-btn { width: 28px; height: 28px; }
+.check.remember { margin-inline-start: 0; font-size: .9rem; }

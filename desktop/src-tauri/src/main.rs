@@ -1,6 +1,8 @@
 // Hide the extra console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod saved_login;
+
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
@@ -76,6 +78,7 @@ fn kill_with_app(child: &Child) {
 
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![saved_login::saved_login, saved_login::save_login, saved_login::forget_login])
         .setup(|app| {
             app.manage(Api(Mutex::new(start_api())));
             Ok(())
