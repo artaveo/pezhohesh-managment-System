@@ -1,0 +1,62 @@
+# Builds the Windows installers on GitHub's servers, so the office laptop
+# does not need the Microsoft C++ build tools.
+# Download the result from the run's "Artifacts" section.
+name: Windows build
+
+on:
+  push:
+    branches: [main, "step-*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64   # office laptop
+            target: aarch64-pc-windows-msvc
+          - arch: x64     # most other PCs
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            api -> target
+            desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Build API
+        working-directory: api
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build desktop installer
+        working-directory: desktop
+        run: npx tauri build --target ${{ matrix.target }} --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pezhohesh-windows-${{ matrix.arch }}
+          path: |
+            api/target/${{ matrix.target }}/release/pezhohesh-api.exe
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+          if-no-files-found: error
