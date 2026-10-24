@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Dashboard } from "./pages/Dashboard";
 import { Settings } from "./pages/Settings";
 import { Users } from "./pages/Users";
+import { LoansList, MembersList } from "./pages/DueLists";
 import { FirstSetup, ForcePasswordChange, Login, Offline } from "./pages/Login";
 import { Icon } from "./components/Icon";
 import { useAuth } from "./auth/AuthProvider";
-import { ROLE_LABEL, type Role } from "./lib/api";
+import { useTheme } from "./theme/ThemeProvider";
+import { api, ROLE_LABEL, type Role } from "./lib/api";
 
 const ALL: Role[] = ["partner", "manager", "pec_staff"];
 const HALL: Role[] = ["partner", "manager"];
@@ -38,6 +40,7 @@ export default function App() {
 
 function Shell() {
   const { user, signOut } = useAuth();
+  const { dark, setMode } = useTheme();
   const nav = NAV.filter((n) => (n.roles as readonly Role[]).includes(user!.role));
   const [page, setPage] = useState<PageId>("dashboard");
   useEffect(() => {
@@ -69,18 +72,26 @@ function Shell() {
             <strong>{user!.full_name}</strong>
             <span>{ROLE_LABEL[user!.role]}</span>
           </div>
-          <button className="icon-btn" title="خروج" aria-label="خروج" onClick={() => void signOut()}>
+          <button className="icon-btn" title={dark ? "حالت روشن" : "حالت تاریک"} aria-label={dark ? "حالت روشن" : "حالت تاریک"}
+            onClick={() => { const m = dark ? "light" : "dark"; setMode(m); void api.setThemeMode(m).catch(() => {}); }}>
+            <Icon name={dark ? "sun" : "moon"} size={18} />
+          </button>
+          <button className="icon-btn danger" title="خروج" aria-label="خروج" onClick={() => void signOut()}>
             <Icon name="logout" size={18} />
           </button>
         </div>
       </aside>
       <main className="content">
         {page === "dashboard" ? (
-          user!.role === "pec_staff" ? <PecHome /> : <Dashboard />
+          user!.role === "pec_staff" ? <PecHome /> : <Dashboard go={setPage} />
         ) : (
           <>
             <h1>{current.label}</h1>
-            {page === "settings" ? <Settings /> : page === "users" ? <Users /> : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
+            {page === "settings" ? <Settings />
+              : page === "users" ? <Users />
+              : page === "members" ? <MembersList />
+              : page === "books" ? <LoansList />
+              : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
           </>
         )}
       </main>

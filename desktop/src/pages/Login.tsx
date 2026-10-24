@@ -108,7 +108,7 @@ export function FirstSetup() {
       <form className="auth-form" onSubmit={submit}>
         <Field label="نام کامل" value={fullName} onChange={setFullName} autoFocus />
         <Field label="نام کاربری (انگلیسی)" value={username} onChange={setUsername} ltr autoComplete="username" />
-        <Field label="رمز (دست‌کم ۸ حرف)" type="password" value={password} onChange={setPassword} ltr autoComplete="new-password" />
+        <Field label="رمز (دست‌کم 8 حرف)" type="password" value={password} onChange={setPassword} ltr autoComplete="new-password" />
         <Field label="تکرار رمز" type="password" value={repeat} onChange={setRepeat} ltr autoComplete="new-password" />
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="btn big" disabled={busy || !fullName || !username || !password}>ساخت حساب و ورود</button>
@@ -145,7 +145,7 @@ export function ForcePasswordChange() {
     <AuthCard title={`سلام ${user?.full_name ?? ""}`} subtitle="برای حفاظت از حساب، رمز موقت را با رمز خودتان عوض کنید.">
       <form className="auth-form" onSubmit={submit}>
         <Field label="رمز موقت" type="password" value={current} onChange={setCurrent} autoFocus ltr autoComplete="current-password" />
-        <Field label="رمز جدید (دست‌کم ۸ حرف)" type="password" value={next} onChange={setNext} ltr autoComplete="new-password" />
+        <Field label="رمز جدید (دست‌کم 8 حرف)" type="password" value={next} onChange={setNext} ltr autoComplete="new-password" />
         <Field label="تکرار رمز جدید" type="password" value={repeat} onChange={setRepeat} ltr autoComplete="new-password" />
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="btn big" disabled={busy || !current || !next}>ذخیره و ادامه</button>

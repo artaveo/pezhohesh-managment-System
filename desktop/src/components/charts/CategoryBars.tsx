@@ -16,7 +16,7 @@ export function CategoryBars({ data }: { data: { category: string; amount: numbe
         <li key={d.category} title={`${LABELS[d.category] ?? d.category}: ${fa(d.amount)} ؋`}>
           <span className="bar-label">{LABELS[d.category] ?? d.category}</span>
           <span className="bar-track"><span className="bar-fill" style={{ width: `${(d.amount / max) * 100}%` }} /></span>
-          <span className="bar-value">{fa(d.amount)} <small>{fa((d.amount / total) * 100)}٪</small></span>
+          <span className="bar-value">{fa(d.amount)} <small>{fa((d.amount / total) * 100)}%</small></span>
         </li>
       ))}
     </ul>

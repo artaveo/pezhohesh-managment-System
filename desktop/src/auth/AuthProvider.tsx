@@ -18,13 +18,14 @@ const Ctx = createContext<AuthCtx | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
   const [user, setUser] = useState<User | null>(null);
-  const { setAccent } = useTheme();
+  const { setAccent, setMode } = useTheme();
 
   const applyUser = useCallback((u: User | null) => {
     setUser(u);
-    // The personal color follows the person, on whichever laptop they sign in.
+    // The personal color and light/dark choice follow the person, on whichever laptop they sign in.
     setAccent(u?.theme_color ?? OFFICIAL_GREEN);
-  }, [setAccent]);
+    if (u) setMode(u.theme_mode);
+  }, [setAccent, setMode]);
 
   const check = useCallback(async () => {
     setStatus("loading");

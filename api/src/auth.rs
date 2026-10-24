@@ -65,11 +65,12 @@ pub struct CurrentUser {
     pub role: String,
     pub can_see_pec_finance: bool,
     pub theme_color: Option<String>,
+    pub theme_mode: String,
     pub must_change_password: bool,
 }
 
 const USER_COLUMNS: &str = "u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, \
-     u.can_see_pec_finance, u.theme_color, u.must_change_password";
+     u.can_see_pec_finance, u.theme_color, u.theme_mode, u.must_change_password";
 
 impl CurrentUser {
     pub fn is_partner(&self) -> bool {
@@ -394,6 +395,27 @@ pub async fn set_theme(State(s): State<AppState>, user: CurrentUser, Json(b): Js
     sqlx::query("UPDATE app_users SET theme_color = $2 WHERE id = $1")
         .bind(user.id)
         .bind(color)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct ThemeModeBody {
+    /// system | light | dark
+    mode: String,
+}
+
+pub async fn set_theme_mode(State(s): State<AppState>, user: CurrentUser, Json(b): Json<ThemeModeBody>) -> Result<StatusCode, ApiError> {
+    if !matches!(b.mode.as_str(), "system" | "light" | "dark") {
+        return Err(ApiError::bad("bad_mode"));
+    }
+    let mut tx = s.db.begin().await?;
+    sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(user.id.to_string()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE app_users SET theme_mode = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(&b.mode)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;

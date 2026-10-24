@@ -18,6 +18,9 @@ pub struct Params {
     pub from: Option<chrono::NaiveDate>,
     pub to: Option<chrono::NaiveDate>,
     pub prev_from: Option<chrono::NaiveDate>,
+    /// First day of the current Solar month and year, for the fixed income summary.
+    pub month_from: Option<chrono::NaiveDate>,
+    pub year_from: Option<chrono::NaiveDate>,
 }
 
 #[derive(Serialize)]
@@ -28,9 +31,47 @@ pub struct Dashboard {
     trend: Vec<TrendPoint>,
     /// Income in the period by category (monthly, daily, internet, hotspot, books...).
     income_by_category: Vec<CategoryAmount>,
-    /// Memberships ending in the next 7 days.
-    expiring: Vec<Expiring>,
-    overdue_books: i64,
+    /// Hall income today, this Solar month, this Solar year and since the first record.
+    income_summary: IncomeSummary,
+    /// The most urgent memberships: ending within 5 days or ended in the last 30 days.
+    members_attention: Vec<MemberDue>,
+    members_due_soon: i64,
+    members_expired: i64,
+    /// The most urgent open loans: due within 2 days or overdue.
+    books_attention: Vec<LoanDue>,
+    books_due_soon: i64,
+    books_overdue: i64,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct IncomeSummary {
+    today: f64,
+    month: f64,
+    year: f64,
+    all_time: f64,
+}
+
+/// Dashboard and the members page use the same window: 5 days ahead, 30 days back.
+pub const MEMBER_DUE_DAYS: i32 = 5;
+pub const MEMBER_EXPIRED_DAYS: i32 = 30;
+/// Books: 2 days ahead, and every overdue loan (a book has to come back).
+pub const BOOK_DUE_DAYS: i32 = 2;
+
+#[derive(Serialize, FromRow)]
+pub struct MemberDue {
+    member_no: i32,
+    name: String,
+    end_date: chrono::NaiveDate,
+    days_left: i32,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct LoanDue {
+    book_title: String,
+    member_no: i32,
+    member_name: String,
+    due_on: chrono::NaiveDate,
+    days_left: i32,
 }
 
 #[derive(Serialize, FromRow)]
@@ -60,13 +101,6 @@ pub struct CategoryAmount {
     amount: f64,
 }
 
-#[derive(Serialize, FromRow)]
-pub struct Expiring {
-    member_no: i32,
-    name: String,
-    end_date: chrono::NaiveDate,
-}
-
 /// Study-hall home screen: partners and the manager. Education staff get their own later.
 pub async fn get(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Params>) -> Result<Json<Dashboard>, ApiError> {
     if !user.sees_hall() {
@@ -82,7 +116,14 @@ pub async fn get(State(s): State<AppState>, user: CurrentUser, Query(p): Query<P
     // Compare like with like: month-to-date against the same number of days of last month.
     let to = to.min(today + chrono::Days::new(1)).max(from + chrono::Days::new(1));
     let prev_to = (prev_from + (to - from)).min(from);
-    let window = Window { from, to, prev_from, prev_to };
+    let window = Window {
+        from,
+        to,
+        prev_from,
+        prev_to,
+        month_from: p.month_from.unwrap_or(today),
+        year_from: p.year_from.unwrap_or(today),
+    };
     // Runs as the signed-in person's database role, so row-level security applies too.
     let mut tx = begin_as(&s.db, &user).await?;
     let data = load(&mut tx, p.period.unwrap_or_else(|| "day".into()), window).await?;
@@ -96,6 +137,8 @@ struct Window {
     to: chrono::NaiveDate,
     prev_from: chrono::NaiveDate,
     prev_to: chrono::NaiveDate,
+    month_from: chrono::NaiveDate,
+    year_from: chrono::NaiveDate,
 }
 
 async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<Dashboard> {
@@ -167,25 +210,66 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
     .fetch_all(&mut *db)
     .await?;
 
-    let expiring: Vec<Expiring> = sqlx::query_as(
+    let income_summary: IncomeSummary = sqlx::query_as(
         r#"
-        SELECT m.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name, x.end_date
-        FROM (SELECT member_id, max(end_date) AS end_date FROM memberships
-              WHERE deleted_at IS NULL AND member_id IS NOT NULL GROUP BY member_id) x
-        JOIN members m ON m.id = x.member_id AND m.deleted_at IS NULL
-        WHERE x.end_date BETWEEN current_date AND current_date + 7
-        ORDER BY x.end_date, m.member_no
-        LIMIT 8
+        SELECT
+            COALESCE(sum(amount) FILTER (WHERE issued_on = current_date), 0)::float8 AS today,
+            COALESCE(sum(amount) FILTER (WHERE issued_on >= $1 AND issued_on <= current_date), 0)::float8 AS month,
+            COALESCE(sum(amount) FILTER (WHERE issued_on >= $2 AND issued_on <= current_date), 0)::float8 AS year,
+            COALESCE(sum(amount), 0)::float8 AS all_time
+        FROM receipts
+        WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
         "#,
     )
-    .fetch_all(&mut *db)
-    .await?;
-
-    let overdue_books: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM book_loans WHERE deleted_at IS NULL AND returned_on IS NULL AND due_on < current_date",
-    )
+    .bind(w.month_from)
+    .bind(w.year_from)
     .fetch_one(&mut *db)
     .await?;
 
-    Ok(Dashboard { period, kpis, trend, income_by_category, expiring, overdue_books })
+    let members_attention: Vec<MemberDue> = sqlx::query_as(
+        "SELECT member_no, name, end_date, days_left FROM v_member_status \
+         WHERE days_left BETWEEN -$1 AND $2 ORDER BY days_left, member_no LIMIT 8",
+    )
+    .bind(MEMBER_EXPIRED_DAYS)
+    .bind(MEMBER_DUE_DAYS)
+    .fetch_all(&mut *db)
+    .await?;
+
+    let (members_due_soon, members_expired): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE days_left BETWEEN 0 AND $2), \
+                count(*) FILTER (WHERE days_left BETWEEN -$1 AND -1) FROM v_member_status",
+    )
+    .bind(MEMBER_EXPIRED_DAYS)
+    .bind(MEMBER_DUE_DAYS)
+    .fetch_one(&mut *db)
+    .await?;
+
+    let books_attention: Vec<LoanDue> = sqlx::query_as(
+        "SELECT book_title, member_no, member_name, due_on, days_left FROM v_open_loans \
+         WHERE days_left <= $1 ORDER BY days_left, due_on LIMIT 3",
+    )
+    .bind(BOOK_DUE_DAYS)
+    .fetch_all(&mut *db)
+    .await?;
+
+    let (books_due_soon, books_overdue): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE days_left BETWEEN 0 AND $1), count(*) FILTER (WHERE days_left < 0) FROM v_open_loans",
+    )
+    .bind(BOOK_DUE_DAYS)
+    .fetch_one(&mut *db)
+    .await?;
+
+    Ok(Dashboard {
+        period,
+        kpis,
+        trend,
+        income_by_category,
+        income_summary,
+        members_attention,
+        members_due_soon,
+        members_expired,
+        books_attention,
+        books_due_soon,
+        books_overdue,
+    })
 }

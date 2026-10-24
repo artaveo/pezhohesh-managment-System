@@ -27,12 +27,19 @@ export function sampleDashboard(period: string): Dashboard {
       { category: "hotspot", amount: 830 * scale },
       { category: "books", amount: 300 * scale },
     ],
-    expiring: [
-      { member_no: 51034, name: "جواد رحیمی", end_date: iso(today) },
-      { member_no: 51069, name: "نرگس جعفری", end_date: iso(today) },
-      { member_no: 51102, name: "علی کریمی", end_date: iso(new Date(today.getTime() + 2 * 864e5)) },
-      { member_no: 51117, name: "فاطمه احمدی", end_date: iso(new Date(today.getTime() + 5 * 864e5)) },
+    income_summary: { today: 13730, month: 21570, year: 621730, all_time: 1840250 },
+    members_attention: [
+      { member_no: 51034, name: "جواد رحیمی", end_date: iso(new Date(today.getTime() - 3 * 864e5)), days_left: -3 },
+      { member_no: 51069, name: "نرگس جعفری", end_date: iso(today), days_left: 0 },
+      { member_no: 51102, name: "علی کریمی", end_date: iso(new Date(today.getTime() + 2 * 864e5)), days_left: 2 },
+      { member_no: 51117, name: "فاطمه احمدی", end_date: iso(new Date(today.getTime() + 5 * 864e5)), days_left: 5 },
     ],
-    overdue_books: 4,
+    members_due_soon: 3,
+    members_expired: 1,
+    books_attention: [
+      { book_title: "کتاب نمونه", member_no: 51026, member_name: "علی رحیمی", due_on: iso(new Date(today.getTime() - 6 * 864e5)), days_left: -6 },
+    ],
+    books_due_soon: 0,
+    books_overdue: 1,
   };
 }

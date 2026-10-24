@@ -14,6 +14,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 mod auth;
 mod dashboard;
+mod lists;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -72,7 +73,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/me/theme", put(auth::set_theme))
         .route("/api/v1/users", get(auth::list_users).post(auth::create_user))
         .route("/api/v1/users/:id", put(auth::update_user))
+        .route("/api/v1/me/theme-mode", put(auth::set_theme_mode))
         .route("/api/v1/dashboard", get(dashboard::get))
+        .route("/api/v1/members", get(lists::members))
+        .route("/api/v1/loans", get(lists::loans))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

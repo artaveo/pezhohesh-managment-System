@@ -35,15 +35,15 @@ export function windowFor(period: Period, today = new Date()) {
   return { from: iso(from), to: iso(next), prev_from: iso(prev) };
 }
 
-const longDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-const shortDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian", { day: "numeric", month: "long" });
+const longDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const shortDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { day: "numeric", month: "long" });
 export const formatLong = (d: Date) => {
   const p = Object.fromEntries(longDate.formatToParts(d).map((x) => [x.type, x.value]));
   return `${p.weekday}، ${p.day} ${p.month} ${p.year}`;
 };
 export const formatShort = (d: Date | string) => shortDate.format(typeof d === "string" ? new Date(d + "T00:00:00") : d);
-export const monthName = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian", { month: "long" }).format(d);
-export const yearNumber = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian", { year: "numeric" }).format(d);
+export const monthName = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { month: "long" }).format(d);
+export const yearNumber = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { year: "numeric" }).format(d);
 
-const num = new Intl.NumberFormat("fa-AF");
+const num = new Intl.NumberFormat("en-US");
 export const fa = (n: number) => num.format(Math.round(n));

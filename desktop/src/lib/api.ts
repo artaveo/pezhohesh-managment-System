@@ -11,8 +11,11 @@ export type User = {
   role: Role;
   can_see_pec_finance: boolean;
   theme_color: string | null;
+  theme_mode: ThemeMode;
   must_change_password: boolean;
 };
+
+export type ThemeMode = "system" | "light" | "dark";
 
 export type UserRow = {
   id: string;
@@ -36,9 +39,42 @@ export type Dashboard = {
   };
   trend: { day: string; income: number; expenses: number }[];
   income_by_category: { category: string; amount: number }[];
-  expiring: { member_no: number; name: string; end_date: string }[];
-  overdue_books: number;
+  income_summary: { today: number; month: number; year: number; all_time: number };
+  members_attention: { member_no: number; name: string; end_date: string; days_left: number }[];
+  members_due_soon: number;
+  members_expired: number;
+  books_attention: { book_title: string; member_no: number; member_name: string; due_on: string; days_left: number }[];
+  books_due_soon: number;
+  books_overdue: number;
 };
+
+export type Page<T> = { total: number; rows: T[] };
+
+export type MemberRow = {
+  member_id: string;
+  member_no: number;
+  name: string;
+  father_name: string | null;
+  phone: string | null;
+  plan_name: string | null;
+  end_date: string | null;
+  days_left: number | null;
+};
+
+export type LoanRow = {
+  loan_id: string;
+  book_title: string;
+  member_no: number;
+  member_name: string;
+  phone: string | null;
+  loaned_on: string;
+  due_on: string;
+  days_left: number;
+};
+
+export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number };
+const listParams = (p: ListQuery) =>
+  new URLSearchParams({ scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
 
 /** An error answer from the API: `code` is its machine-readable reason (invalid_login, locked...). */
 export class ApiError extends Error {
@@ -93,6 +129,7 @@ export const api = {
   me: () => request<User>("/me"),
   changePassword: (current: string, next: string) => request<void>("/me/password", { method: "PUT", body: { current, new: next } }),
   setTheme: (color: string | null) => request<void>("/me/theme", { method: "PUT", body: { color } }),
+  setThemeMode: (mode: ThemeMode) => request<void>("/me/theme-mode", { method: "PUT", body: { mode } }),
   users: () => request<UserRow[]>("/users"),
   createUser: (b: { full_name: string; username: string; password: string; role: Role; can_see_pec_finance: boolean }) =>
     request<{ id: string }>("/users", { method: "POST", body: b }),
@@ -100,6 +137,8 @@ export const api = {
     request<void>(`/users/${id}`, { method: "PUT", body: b }),
   dashboard: (params: Record<string, string>, signal?: AbortSignal) =>
     request<Dashboard>(`/dashboard?${new URLSearchParams(params)}`, { signal }),
+  members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
+  loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 };
 
 /** Persian message for an API error code. */
@@ -109,10 +148,10 @@ export function errorText(e: unknown): string {
     case "invalid_login": return "نام کاربری یا رمز درست نیست.";
     case "locked": {
       const min = Math.max(1, Math.ceil(Number(e.body.retry_after_seconds ?? 300) / 60));
-      return `به خاطر چند تلاش اشتباه، این حساب برای ${new Intl.NumberFormat("fa-AF").format(min)} دقیقه قفل شد.`;
+      return `به خاطر چند تلاش اشتباه، این حساب برای ${new Intl.NumberFormat("en-US").format(min)} دقیقه قفل شد.`;
     }
-    case "password_too_short": return "رمز باید دست‌کم ۸ حرف باشد.";
-    case "bad_username": return "نام کاربری ۳ تا ۳۲ حرف انگلیسی، عدد، نقطه یا خط تیره باشد.";
+    case "password_too_short": return "رمز باید دست‌کم 8 حرف باشد.";
+    case "bad_username": return "نام کاربری 3 تا 32 حرف انگلیسی، عدد، نقطه یا خط تیره باشد.";
     case "username_taken": return "این نام کاربری قبلاً گرفته شده.";
     case "name_required": return "نام کامل را بنویسید.";
     case "wrong_password": return "رمز فعلی درست نیست.";

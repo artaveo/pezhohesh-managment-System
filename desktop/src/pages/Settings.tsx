@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, errorText } from "../lib/api";
+import { api, errorText, type ThemeMode } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { PasswordInput } from "../components/PasswordInput";
 import { ColorWheel } from "../components/ColorWheel";
@@ -9,9 +9,36 @@ import { hexToRgb, OFFICIAL_GREEN } from "../theme/color";
 export function Settings() {
   return (
     <>
+      <MyMode />
       <MyColor />
       <MyPassword />
     </>
+  );
+}
+
+const MODES: { id: ThemeMode; label: string; hint: string }[] = [
+  { id: "light", label: "روشن", hint: "همیشه روشن" },
+  { id: "dark", label: "تاریک", hint: "همیشه تاریک؛ برای شب و چشم راحت‌تر" },
+  { id: "system", label: "مثل ویندوز", hint: "هر وقت ویندوز تاریک شد، برنامه هم تاریک می‌شود" },
+];
+
+function MyMode() {
+  const { mode, setMode } = useTheme();
+  const { updateUser } = useAuth();
+  return (
+    <section className="panel">
+      <h2>حالت نمایش</h2>
+      <div className="roles modes" role="radiogroup" aria-label="حالت نمایش">
+        {MODES.map((m) => (
+          <label key={m.id} className={`role-option${mode === m.id ? " on" : ""}`}>
+            <input type="radio" name="mode" checked={mode === m.id}
+              onChange={() => { setMode(m.id); updateUser({ theme_mode: m.id }); void api.setThemeMode(m.id).catch(() => {}); }} />
+            <strong>{m.label}</strong>
+            <span className="muted small">{m.hint}</span>
+          </label>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -98,7 +125,7 @@ function MyPassword() {
       <h2>رمز من</h2>
       <div className="form-grid">
         <label className="field wide"><span>رمز فعلی</span><PasswordInput value={current} onChange={setCurrent} autoComplete="current-password" /></label>
-        <label className="field wide"><span>رمز جدید (دست‌کم ۸ حرف)</span><PasswordInput value={next} onChange={setNext} autoComplete="new-password" /></label>
+        <label className="field wide"><span>رمز جدید (دست‌کم 8 حرف)</span><PasswordInput value={next} onChange={setNext} autoComplete="new-password" /></label>
         <label className="field wide"><span>تکرار رمز جدید</span><PasswordInput value={repeat} onChange={setRepeat} autoComplete="new-password" /></label>
       </div>
       {msg && <p className={msg.ok ? "form-ok" : "form-error"} role="status">{msg.text}</p>}

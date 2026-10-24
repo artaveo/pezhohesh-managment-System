@@ -26,7 +26,7 @@ export function TrendChart({ data }: { data: Point[] }) {
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="درآمد و مصارف ۳۰ روز اخیر"
+      <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="درآمد و مصارف 30 روز اخیر"
         onPointerLeave={() => setHover(null)}
         onPointerMove={(e) => {
           const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
