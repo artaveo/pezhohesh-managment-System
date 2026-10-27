@@ -318,6 +318,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/scan", post(k50::scan))
         .route("/api/v1/k50/sync", post(k50::sync_now))
         .route("/api/v1/k50/time", post(k50::set_time))
+        .route("/api/v1/k50/compare", post(k50::compare))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

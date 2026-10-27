@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type Category, type Expense, type Lines, type Person, type Withdrawal } from "../lib/api";
+import { api, errorText, type Category, type Expense, type Lines, type Person, type Section, type Withdrawal } from "../lib/api";
 import { fa, formatDay, iso } from "../lib/solar";
 import { SolarDate } from "../components/SolarDate";
 import { AmountInput } from "../components/AmountInput";
@@ -7,26 +7,141 @@ import { DeleteDialog } from "../components/DeleteDialog";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icon";
 import { PeriodPicker, usePeriod, type Range } from "../components/PeriodPicker";
+import { useAuth } from "../auth/AuthProvider";
+import { PARTNERS } from "../lib/shares";
+import { Shares } from "./Shares";
+import { StaffAccounts } from "./Salaries";
 
-type Tab = "expenses" | "withdrawals";
 type Period = Range & { label: string };
 
-/** Money going out: daily expenses by statement line, and cash the partners take. */
-export function Money({ openSalaries }: { openSalaries?: () => void }) {
-  const [tab, setTab] = useState<Tab>("expenses");
-  const period = usePeriod("month");
+/** Where the page is: expenses, or withdrawals by staff (one person) or by the partners. */
+type View =
+  | { tab: "expenses" }
+  | { tab: "staff" }
+  | { tab: "partners"; part: "new" | "shares" | { person: string } };
+
+const VIEW_KEY = "pz.moneyView";
+
+function remembered(): View {
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "null") as View | null;
+    if (v && (v.tab === "expenses" || v.tab === "staff" || v.tab === "partners")) return v;
+  } catch { /* nothing kept */ }
+  return { tab: "expenses" };
+}
+
+/** A row of buttons that picks one of a few views. */
+function Tabs<T extends string>({ label, value, items, onChange, sub }: {
+  label: string; value: T; items: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; sub?: boolean;
+}) {
+  return (
+    <div className={`segmented${sub ? " sub" : ""}`} role="tablist" aria-label={label}>
+      {items.map((i) => (
+        <button key={i.id} role="tab" aria-selected={value === i.id} className={value === i.id ? "on" : ""} onClick={() => onChange(i.id)}>
+          {i.label}{i.hint && <small className="muted"> {i.hint}</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Money going out. «مصارف»: daily expenses by statement line. «برداشت‌ها»: what staff are
+ * paid against their salary, and what the partners take, with their shares of the profit.
+ */
+export function Money() {
+  const { user } = useAuth();
+  const partner = user?.role === "partner";
+  const has = (s: Section) => partner || (user?.sections ?? []).includes(s);
+  const may = { expenses: has("expenses"), staff: has("salaries"), partners: partner || has("shares") };
+  const [view, setViewState] = useState<View>(remembered);
+  const setView = (v: View) => {
+    setViewState(v);
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* not kept */ }
+  };
+  // Never open on a part this person may not see.
+  const shown: View =
+    view.tab === "expenses" && may.expenses ? view
+      : view.tab === "staff" && may.staff ? view
+      : view.tab === "partners" && may.partners ? (partner || view.part === "shares" ? view : { tab: "partners", part: "shares" })
+      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" };
+  const top = shown.tab === "expenses" ? "expenses" : "withdrawals";
+  const who = shown.tab === "partners" ? "partners" : "staff";
+
   return (
     <div className="page">
-      <div className="list-tools">
-        <div className="segmented" role="tablist" aria-label="نوع">
-          <button role="tab" aria-selected={tab === "expenses"} className={tab === "expenses" ? "on" : ""} onClick={() => setTab("expenses")}>مصارف</button>
-          <button role="tab" aria-selected={tab === "withdrawals"} className={tab === "withdrawals" ? "on" : ""} onClick={() => setTab("withdrawals")}>برداشت شرکا</button>
-        </div>
-        <PeriodPicker value={period.value} onChange={period.setValue} />
-        {openSalaries && <button className="btn ghost" onClick={openSalaries}><Icon name="banknote" /> پرداخت به کارمند</button>}
+      <div className="money-nav">
+        <Tabs label="بخش" value={top}
+          items={[...(may.expenses ? [{ id: "expenses" as const, label: "مصارف" }] : []), ...(may.staff || may.partners ? [{ id: "withdrawals" as const, label: "برداشت‌ها" }] : [])]}
+          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" })} />
+        {top === "withdrawals" && (
+          <Tabs sub label="برداشت‌های چه کسانی" value={who}
+            items={[...(may.staff ? [{ id: "staff" as const, label: "کارمندان" }] : []), ...(may.partners ? [{ id: "partners" as const, label: "شرکا" }] : [])]}
+            onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" })} />
+        )}
       </div>
-      {tab === "expenses" ? <Expenses period={period.range} /> : <Withdrawals period={period.range} />}
+      {shown.tab === "expenses" && <ExpensesView />}
+      {shown.tab === "staff" && <StaffAccounts />}
+      {shown.tab === "partners" && <PartnersView part={shown.part} partner={partner} onPart={(part) => setView({ tab: "partners", part })} />}
     </div>
+  );
+}
+
+function ExpensesView() {
+  const period = usePeriod("month");
+  return (
+    <>
+      <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>
+      <Expenses period={period.range} />
+    </>
+  );
+}
+
+/** The partners: a new withdrawal, their shares of the profit, and each one's withdrawals. */
+function PartnersView({ part, partner, onPart }: {
+  part: "new" | "shares" | { person: string }; partner: boolean; onPart: (p: "new" | "shares" | { person: string }) => void;
+}) {
+  const [people, setPeople] = useState<Person[] | null>(null);
+  useEffect(() => { if (partner) api.staff().then(setPeople).catch(() => setPeople([])); }, [partner]);
+  // The partners as the statement names them; their withdrawals are under these staff names.
+  const partners = PARTNERS.map((p) => ({ ...p, id: people?.find((x) => x.full_name === p.name)?.id ?? null }))
+    .sort((a, b) => (a.paysManager === b.paysManager ? 0 : a.paysManager ? -1 : 1));
+  const key = typeof part === "string" ? part : `of:${part.person}`;
+  const items = [
+    ...(partner ? [{ id: "new", label: "برداشت جدید" }] : []),
+    { id: "shares", label: "سهم شرکا" },
+    ...(partner ? partners.map((p) => ({ id: `of:${p.name}`, label: `ریز برداشت ${p.short}` })) : []),
+  ];
+  const person = typeof part === "string" ? null : partners.find((p) => p.name === part.person) ?? null;
+  const takers = people?.filter((x) => partners.some((p) => p.id === x.id)) ?? [];
+  const choices = takers.length ? takers : people ?? [];
+  return (
+    <>
+      <Tabs sub label="شرکا" value={key} items={items}
+        onChange={(k) => onPart(k === "new" || k === "shares" ? k : { person: k.slice(3) })} />
+      {part === "shares" && <Shares />}
+      {part === "new" && people && <NewWithdrawal people={choices} />}
+      {person && people && (person.id
+        ? <PersonWithdrawals key={person.id} staffId={person.id} name={person.name} people={choices} />
+        : <p className="glass muted empty">در فهرست اشخاص کسی به نام «{person.name}» نیست. در «کاربران ← اشخاص» نام‌ها را یکی کنید.</p>)}
+    </>
+  );
+}
+
+/** «برداشت جدید»: the form, and this month's withdrawals under it. */
+function NewWithdrawal({ people }: { people: Person[] }) {
+  const period = usePeriod("month");
+  return <Withdrawals period={period.range} people={people} form />;
+}
+
+/** One partner's withdrawals over any period. */
+function PersonWithdrawals({ staffId, name, people }: { staffId: string; name: string; people: Person[] }) {
+  const period = usePeriod("month");
+  return (
+    <>
+      <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>
+      <Withdrawals period={period.range} people={people} staffId={staffId} title={`برداشت‌های ${name}`} />
+    </>
   );
 }
 
@@ -168,9 +283,12 @@ function Expenses({ period }: { period: Period }) {
   );
 }
 
-function Withdrawals({ period }: { period: Period }) {
+/**
+ * Withdrawals in a period (only `staffId`'s, when given). With `form` the entry form is
+ * always there; otherwise it opens when a line is being corrected.
+ */
+function Withdrawals({ period, people, staffId, form, title }: { period: Period; people: Person[]; staffId?: string; form?: boolean; title?: string }) {
   const toast = useToast();
-  const [people, setPeople] = useState<Person[]>([]);
   const [lines, setLines] = useState<Lines<Withdrawal> | null>(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
@@ -183,12 +301,16 @@ function Withdrawals({ period }: { period: Period }) {
   const [busy, setBusy] = useState(false);
   const reload = () => setTick((t) => t + 1);
 
-  useEffect(() => { api.staff().then((p) => { setPeople(p); setWho((x) => x || p[0]?.id || ""); }).catch((e) => setError(errorText(e))); }, []);
+  useEffect(() => { setWho((x) => x || staffId || people[0]?.id || ""); }, [people, staffId]);
   useEffect(() => {
     const ctl = new AbortController();
-    api.withdrawals({ from: period.from, to: period.to }, ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
+    api.withdrawals({ from: period.from, to: period.to, staff_id: staffId }, ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
     return () => ctl.abort();
-  }, [period.from, period.to, tick]);
+  }, [period.from, period.to, staffId, tick]);
+  // The person of a line being corrected may not be in the list (a partner's old name).
+  const choices = editing && !people.some((p) => p.id === editing.staff_id)
+    ? [...people, { id: editing.staff_id, full_name: editing.person } as Person]
+    : people;
 
   function clear() {
     setEditing(null);
@@ -227,14 +349,14 @@ function Withdrawals({ period }: { period: Period }) {
 
   return (
     <>
-      <section className="panel wide">
+      {(form || editing) && <section className="panel wide">
         <h2>{editing ? "اصلاح برداشت" : "ثبت برداشت"}</h2>
-        <p className="muted">پولی که یکی از شرکا از صندوق می‌برد. پول کارمندان برداشت نیست: آن را در «معاش کارمندان» با «پرداخت» ثبت کنید تا زیر سطر معاش خودشان در مصارف برود.</p>
+        <p className="muted">پولی که یکی از شرکا از صندوق می‌برد. پول کارمندان برداشت شریک نیست: آن را در «کارمندان» با «پرداخت» ثبت کنید تا زیر سطر معاش خودشان در مصارف برود.</p>
         <div className="form-grid">
           <label className="field wide">
             <span>شریک</span>
             <select value={who} onChange={(e) => setWho(e.target.value)}>
-              {people.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+              {choices.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
             </select>
           </label>
           <SolarDate label="تاریخ" value={day} onChange={setDay} />
@@ -246,18 +368,27 @@ function Withdrawals({ period }: { period: Period }) {
           <button className="btn" disabled={busy} onClick={() => void save()}>{editing ? "ذخیرهٔ اصلاح" : "ثبت"}</button>
           {editing && <button className="btn ghost" onClick={clear}>انصراف</button>}
         </div>
-      </section>
+      </section>}
+      {title && lines && (
+        <section className="kpis">
+          <div className="glass kpi">
+            <span className="kpi-label">{title}، {period.label}</span>
+            <span className="kpi-value">{fa(lines.sum)} <small>؋</small></span>
+            <span className="muted small">{fa(lines.total)} برداشت</span>
+          </div>
+        </section>
+      )}
       {lines && lines.rows.length < lines.total && (
         <p className="muted small">{fa(lines.rows.length)} مورد تازه‌تر از {fa(lines.total)} مورد نشان داده شده؛ برای دیدن بقیه بازهٔ کوتاه‌تری انتخاب کنید.</p>
       )}
       <div className="glass table-wrap">
         <table className="table">
-          <thead><tr><th>تاریخ</th><th>شریک</th><th>بابت</th><th className="num">مبلغ</th><th>ثبت کننده</th><th><span className="sr-only">کارها</span></th></tr></thead>
+          <thead><tr><th>تاریخ</th>{!staffId && <th>شریک</th>}<th>بابت</th><th className="num">مبلغ</th><th>ثبت کننده</th><th><span className="sr-only">کارها</span></th></tr></thead>
           <tbody>
             {lines?.rows.map((w) => (
               <tr key={w.id} className={editing?.id === w.id ? "selected" : ""}>
                 <td>{formatDay(w.taken_on)}</td>
-                <td>{w.person}</td>
+                {!staffId && <td>{w.person}</td>}
                 <td className="muted">{w.note ?? "—"}</td>
                 <td className="num">{fa(w.amount)}</td>
                 <td className="muted">{w.from_excel ? "اکسل" : w.paid_by ?? "—"}</td>
@@ -267,7 +398,7 @@ function Withdrawals({ period }: { period: Period }) {
           </tbody>
           {lines && lines.total > 0 && (
             <tfoot>
-              <tr><th colSpan={3}>جمع {period.label} ({fa(lines.total)} مورد)</th><td className="num">{fa(lines.sum)}</td><td colSpan={2} /></tr>
+              <tr><th colSpan={staffId ? 2 : 3}>جمع {period.label} ({fa(lines.total)} مورد)</th><td className="num">{fa(lines.sum)}</td><td colSpan={2} /></tr>
             </tfoot>
           )}
         </table>

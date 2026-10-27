@@ -391,14 +391,24 @@ pub struct Withdrawal {
     removable: bool,
 }
 
-pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r): Query<Range>) -> Result<Json<Lines<Withdrawal>>, ApiError> {
+#[derive(Deserialize)]
+pub struct WithdrawalQuery {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    /// Only this person's withdrawals.
+    staff_id: Option<Uuid>,
+}
+
+pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r): Query<WithdrawalQuery>) -> Result<Json<Lines<Withdrawal>>, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let filter = "w.deleted_at IS NULL AND w.department = 'hall' AND w.currency = 'AFN' \
-        AND ($1::date IS NULL OR w.taken_on >= $1) AND ($2::date IS NULL OR w.taken_on <= $2)";
+        AND ($1::date IS NULL OR w.taken_on >= $1) AND ($2::date IS NULL OR w.taken_on <= $2) \
+        AND ($3::uuid IS NULL OR w.staff_id = $3)";
     let (total, sum): (i64, f64) = sqlx::query_as(&format!("SELECT count(*), COALESCE(sum(w.amount), 0)::float8 FROM withdrawals w WHERE {filter}"))
         .bind(r.from)
         .bind(r.to)
+        .bind(r.staff_id)
         .fetch_one(&mut *tx)
         .await?;
     let mut rows: Vec<Withdrawal> = sqlx::query_as(&format!(
@@ -410,6 +420,7 @@ pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r):
     ))
     .bind(r.from)
     .bind(r.to)
+    .bind(r.staff_id)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;

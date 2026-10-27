@@ -654,3 +654,12 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .k50-visits li { padding: 2px 10px; border: 1px solid var(--line); border-radius: 99px; font-size: .85rem; }
 .finger-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 10px 0; }
 .finger-grid button.picked { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Expenses and withdrawals: the main choice, then who */
+.money-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.segmented.sub { box-shadow: none; backdrop-filter: none; background: transparent; border-color: var(--line); }
+.segmented.sub button { padding: 4px 14px; font-size: .92rem; }
+.segmented.sub button.on { background: var(--accent-soft); color: var(--accent-strong); box-shadow: none; }
+.segmented button.inactive { opacity: .6; }
+.segmented button small { font-weight: 400; }
+.page > .segmented, .money-nav > .segmented { align-self: flex-start; flex-wrap: wrap; }

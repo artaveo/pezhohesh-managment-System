@@ -36,7 +36,11 @@ export type Arrived = {
   by_phone_id: string | null; by_phone_name: string | null; by_phone_no: number | null;
 };
 export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
-export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number };
+export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number };
+export type K50Comparison = {
+  device_users: number; in_app: number; not_in_app: number; admins: number; zero_padded: number; padded_width: number | null;
+  rows: { no: string; device_name: string; app_name: string | null; admin: boolean }[];
+};
 export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
 export type K50Status = {
   config: K50Config; last: K50Round | null; pending: number; sent: number; punches_today: number;
@@ -403,7 +407,7 @@ export const api = {
   setSalaryMonth: (id: string, m: { year: number; month: number; amount: number }) => request<void>(`/salaries/${id}/month`, { method: "PUT", body: m }),
   createSalary: (s: SalaryInput) => request<string>("/salaries", { method: "POST", body: s }),
   updateSalary: (id: string, s: SalaryInput) => request<void>(`/salaries/${id}`, { method: "PUT", body: s }),
-  withdrawals: (r: Range, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
+  withdrawals: (r: Range & { staff_id?: string }, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
   createWithdrawal: (w: WithdrawalInput) => request<string>("/withdrawals", { method: "POST", body: w }),
   updateWithdrawal: (id: string, w: WithdrawalInput) => request<void>(`/withdrawals/${id}`, { method: "PUT", body: w }),
   deleteWithdrawal: (id: string, reason?: string) => request<void>(`/withdrawals/${id}${why(reason)}`, { method: "DELETE" }),
@@ -448,6 +452,8 @@ export const api = {
   testK50: (c: K50Config) => request<K50Info>("/k50/test", { method: "POST", body: c }),
   scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
   syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
+  /** Ok: the comparison; Err: why the device could not be read. */
+  compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
   memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
   checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),

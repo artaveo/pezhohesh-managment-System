@@ -18,17 +18,20 @@ function Balance({ v }: { v: number }) {
 /** A signed balance in a table cell: owed reads as plain, paid ahead in the warning colour. */
 const Signed = ({ v }: { v: number }) => <span className={v < -0.5 ? "ahead" : ""}><bdi dir="ltr">{fa(v)}</bdi></span>;
 
+const PERSON_KEY = "pz.staffOpen";
+
 /**
- * Staff salaries (the admin manager, Shams...): one row per person; a row opens that
- * person's account, month by month and payment by payment, over any period. The fixed
- * salary is only compared with what was paid; the payments are the real expenses.
+ * Staff salaries (the admin manager, Shams...), on the withdrawals page: one button per
+ * person, and under it that person's account, month by month and payment by payment, over
+ * any period. The fixed salary is only compared with what was paid; the payments are the
+ * real expenses.
  */
-export function Salaries() {
+export function StaffAccounts() {
   const { user } = useAuth();
   const partner = user?.role === "partner";
   const period = usePeriod("year");
   const [page, setPage] = useState<SalaryPage | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpenState] = useState<string | null>(() => { try { return localStorage.getItem(PERSON_KEY); } catch { return null; } });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [adding, setAdding] = useState(false);
@@ -41,62 +44,48 @@ export function Salaries() {
     return () => ctl.abort();
   }, [from, to, tick]);
 
+  const setOpen = (id: string) => {
+    setOpenState(id);
+    setNotice("");
+    setAdding(false);
+    try { localStorage.setItem(PERSON_KEY, id); } catch { /* not kept */ }
+  };
   const done = (msg: string) => { setNotice(msg); setAdding(false); setTick((t) => t + 1); };
-  const person = page?.people.find((p) => p.id === open);
-
-  if (person && page) {
-    return (
-      <div className="page">
-        <PersonPage p={person} page={page} partner={partner} period={period} notice={notice}
-          onBack={() => { setOpen(null); setNotice(""); }} onDone={done} />
-      </div>
-    );
-  }
+  // Active people first; someone who left stays reachable at the end.
+  const people = [...(page?.people ?? [])].sort((a, b) => Number(b.active) - Number(a.active));
+  const person = people.find((p) => p.id === open) ?? people[0];
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <p className="muted">معاش ثابت فقط برای مقایسه است. پولی که کارمند می‌گیرد در «مصارف» زیر سطر خودش ثبت می‌شود و هزینهٔ واقعی همان است.</p>
-        {partner && !adding && <button className="btn" onClick={() => { setAdding(true); setNotice(""); }}>+ کارمند تازه</button>}
+    <>
+      <div className="list-tools">
+        {people.length > 0 && (
+          <div className="segmented sub" role="tablist" aria-label="کارمند">
+            {people.map((p) => (
+              <button key={p.id} role="tab" aria-selected={p.id === person?.id} className={`${p.id === person?.id ? "on" : ""}${p.active ? "" : " inactive"}`} onClick={() => setOpen(p.id)}>
+                {p.title ?? p.full_name}
+                {p.title && <small className="muted"> · {p.full_name}</small>}
+              </button>
+            ))}
+          </div>
+        )}
+        {partner && !adding && <button className="btn ghost small" onClick={() => { setAdding(true); setNotice(""); }}>+ کارمند تازه</button>}
       </div>
       {adding && page && <SalaryForm person={null} categories={page.categories} onDone={done} onCancel={() => setAdding(false)} />}
-      {notice && <p className="glass notice" role="status">{notice}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      {page && !page.people.length && (
+      {page && !people.length && (
         <p className="glass muted empty">
           هنوز کارمندی با معاش ثبت نشده. {partner ? "با «+ کارمند تازه» مدیر اداری، مدیر ارتباطات و شمس را با معاش ماهانه‌شان اضافه کنید." : "یکی از شرکا باید کارمندان را اضافه کند."}
         </p>
       )}
-      {page && page.people.length > 0 && (
-        <div className="glass table-wrap">
-          <table className="table">
-            <thead>
-              <tr><th>نام</th><th>کار</th><th className="num">معاش ماهانه</th><th>سطر مصارف</th><th>آخرین پرداخت</th><th>تا امروز</th></tr>
-            </thead>
-            <tbody>
-              {page.people.map((p) => (
-                <tr key={p.id} className={`row-link${p.active ? "" : " inactive"}`} onClick={() => { setOpen(p.id); setNotice(""); }}>
-                  <th scope="row"><button className="link" onClick={(e) => { e.stopPropagation(); setOpen(p.id); setNotice(""); }}>{p.full_name}</button></th>
-                  <td>{p.title ?? "—"}{!p.active && <span className="muted small"> · غیرفعال</span>}</td>
-                  <td className="num">{p.monthly_salary > 0 ? fa(p.monthly_salary) : "—"}</td>
-                  <td>{p.category ?? "—"}</td>
-                  <td>{p.last_paid ? formatDay(p.last_paid) : "—"}</td>
-                  <td><Balance v={p.balance} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+      {person && page && <PersonPage p={person} page={page} partner={partner} period={period} notice={notice} onDone={done} />}
+    </>
   );
 }
 
 type Period = ReturnType<typeof usePeriod>;
 
-function PersonPage({ p, page, partner, period, notice, onBack, onDone }: {
-  p: SalaryPerson; page: SalaryPage; partner: boolean; period: Period; notice: string;
-  onBack: () => void; onDone: (msg: string) => void;
+function PersonPage({ p, page, partner, period, notice, onDone }: {
+  p: SalaryPerson; page: SalaryPage; partner: boolean; period: Period; notice: string; onDone: (msg: string) => void;
 }) {
   const [mode, setMode] = useState<"edit" | "pay" | null>(null);
   const start = p.salary_from ? toSolar(p.salary_from) : null;
@@ -109,7 +98,7 @@ function PersonPage({ p, page, partner, period, notice, onBack, onDone }: {
   return (
     <>
       <div className="page-head">
-        <button className="btn ghost" onClick={onBack}><Icon name="back" size={16} /> برگشت به فهرست کارمندان</button>
+        <span />
         <div className="actions">
           {p.category_id && <button className="btn" onClick={() => setMode(mode === "pay" ? null : "pay")}>+ پرداخت به {p.full_name}</button>}
           {partner && <button className="btn ghost" onClick={() => setMode(mode === "edit" ? null : "edit")}>ویرایش معاش</button>}

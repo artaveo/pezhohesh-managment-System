@@ -40,11 +40,14 @@ pub struct Config {
     machine: u32,
     /// The device's communication password (0: none).
     comm_key: u32,
+    /// Digits of a user ID on the device, with zeros in front (0: the number as it is).
+    /// ZKAccess may have stored 51003 as "051003".
+    digits: u8,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0 }
+        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0, digits: 0 }
     }
 }
 
@@ -251,13 +254,18 @@ fn short_name(name: &str) -> String {
     out.trim_end().to_string()
 }
 
-fn set_user_ops(w: &Wanted) -> Vec<Value> {
+/// A member number as the device's user ID.
+fn device_no(cfg: &Config, no: i32) -> String {
+    format!("{no:0width$}", width = cfg.digits as usize)
+}
+
+fn set_user_ops(cfg: &Config, w: &Wanted) -> Vec<Value> {
     let mut ops = Vec::new();
     if let Some(old) = w.old_no {
-        ops.push(json!({ "op": "set_user", "no": old.to_string(), "enabled": false }));
+        ops.push(json!({ "op": "set_user", "no": device_no(cfg, old), "enabled": false }));
     }
     ops.push(json!({
-        "op": "set_user", "no": w.member_no.to_string(), "name": short_name(&w.name), "enabled": w.enabled,
+        "op": "set_user", "no": device_no(cfg, w.member_no), "name": short_name(&w.name), "enabled": w.enabled,
         "start": w.start_date.map(|d| d.to_string()), "end": w.end_date.map(|d| d.to_string()),
     }));
     ops
@@ -302,7 +310,7 @@ async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), 
     let mut ops = Vec::new();
     let mut own = Vec::new();
     for w in list {
-        ops.extend(set_user_ops(w));
+        ops.extend(set_user_ops(cfg, w));
         own.push(ops.len() - 1);
     }
     let answers = talk(cfg, ops, Duration::from_secs(30 + list.len() as u64 * 2)).await?;
@@ -508,7 +516,7 @@ fn day_start(day: NaiveDate) -> DateTime<Utc> {
 
 fn check_config(c: &Config) -> Result<(), ApiError> {
     let ip_ok = c.ip.trim().is_empty() || c.ip.trim().parse::<Ipv4Addr>().is_ok();
-    if !ip_ok || c.port == 0 || c.machine == 0 || (c.enabled && c.ip.trim().is_empty()) {
+    if !ip_ok || c.port == 0 || c.machine == 0 || c.digits > 9 || (c.enabled && c.ip.trim().is_empty()) {
         return Err(ApiError::bad("bad_k50_config"));
     }
     Ok(())
@@ -588,6 +596,98 @@ pub async fn set_time(State(s): State<AppState>, user: CurrentUser) -> Result<Js
         set["time"] = info["time"].clone();
         set
     })))
+}
+
+#[derive(Deserialize)]
+struct DeviceUser {
+    no: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    privilege: i32,
+}
+
+#[derive(Serialize)]
+pub struct Compared {
+    /// The user ID on the device, as it is written there.
+    no: String,
+    device_name: String,
+    /// The member with that number in the app, if any.
+    app_name: Option<String>,
+    admin: bool,
+}
+
+#[derive(Serialize)]
+pub struct Comparison {
+    device_users: usize,
+    /// Users whose ID is a member number in the app (read with the digits setting).
+    in_app: usize,
+    not_in_app: usize,
+    admins: usize,
+    /// IDs written with zeros in front (as 051003), and their usual length.
+    zero_padded: usize,
+    padded_width: Option<usize>,
+    /// Up to 300 users, members the app knows first, for a person to check the names.
+    rows: Vec<Compared>,
+}
+
+/// POST /api/v1/k50/compare: reads every user on the device (nothing is changed) and puts
+/// each next to the app's member with the same number, so a partner can see that the IDs
+/// mean the same people before the app writes anything.
+pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Result<Comparison, String>>, ApiError> {
+    partner(&user)?;
+    let cfg = device_for(&s.db).await?;
+    let answer = match talk(&cfg, vec![json!({ "op": "users" })], Duration::from_secs(180)).await {
+        Ok(mut a) => a.remove(0),
+        Err(e) => return Ok(Json(Err(e))),
+    };
+    if answer["ok"] != json!(true) {
+        return Ok(Json(Err(answer["error"].as_str().unwrap_or("failed").to_string())));
+    }
+    let users: Vec<DeviceUser> = match &answer["users"] {
+        one @ Value::Object(_) => serde_json::from_value(one.clone()).map(|u| vec![u]).unwrap_or_default(),
+        list => serde_json::from_value(list.clone()).unwrap_or_default(),
+    };
+    let nos: Vec<i32> = users.iter().filter_map(|u| u.no.trim().parse().ok()).collect();
+    let names: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)",
+    )
+    .bind(&nos)
+    .fetch_all(&s.db)
+    .await?;
+    let app: std::collections::HashMap<i32, String> = names.into_iter().collect();
+    let padded: Vec<usize> = users.iter().filter(|u| u.no.len() > 1 && u.no.starts_with('0')).map(|u| u.no.len()).collect();
+    let padded_width = {
+        let mut counts = std::collections::HashMap::new();
+        for w in &padded {
+            *counts.entry(*w).or_insert(0) += 1;
+        }
+        counts.into_iter().max_by_key(|(_, n)| *n).map(|(w, _)| w)
+    };
+    let mut rows: Vec<Compared> = users
+        .iter()
+        .map(|u| Compared {
+            no: u.no.clone(),
+            device_name: u.name.trim().to_string(),
+            app_name: u.no.trim().parse::<i32>().ok().and_then(|n| app.get(&n).cloned()),
+            admin: u.privilege > 0,
+        })
+        .collect();
+    let in_app = rows.iter().filter(|r| r.app_name.is_some()).count();
+    let comparison = Comparison {
+        device_users: users.len(),
+        in_app,
+        not_in_app: users.len() - in_app,
+        admins: rows.iter().filter(|r| r.admin).count(),
+        zero_padded: padded.len(),
+        padded_width,
+        rows: {
+            rows.sort_by_key(|r| (r.app_name.is_none(), r.no.trim_start_matches('0').parse::<i64>().unwrap_or(i64::MAX)));
+            rows.truncate(300);
+            rows
+        },
+    };
+    Ok(Json(Ok(comparison)))
 }
 
 #[derive(Serialize)]
@@ -708,7 +808,7 @@ pub async fn check(State(s): State<AppState>, user: CurrentUser, Path(id): Path<
     hall_only(&user)?;
     let cfg = device_for(&s.db).await?;
     let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
-    let r = talk(&cfg, vec![json!({ "op": "user", "no": w.member_no.to_string() })], Duration::from_secs(40)).await.map(|mut a| a.remove(0));
+    let r = talk(&cfg, vec![json!({ "op": "user", "no": device_no(&cfg, w.member_no) })], Duration::from_secs(40)).await.map(|mut a| a.remove(0));
     if let Ok(v) = &r {
         if let Some(f) = v["fingers"].as_i64() {
             sqlx::query("UPDATE k50_users SET fingers = $2 WHERE member_id = $1").bind(id).bind(f as i32).execute(&s.db).await?;
@@ -727,7 +827,7 @@ pub async fn push_member(State(s): State<AppState>, user: CurrentUser, Path(id):
 }
 
 async fn send_one(db: &PgPool, cfg: &Config, w: &Wanted) -> Result<Value, String> {
-    let mut answers = talk(cfg, set_user_ops(w), Duration::from_secs(40)).await?;
+    let mut answers = talk(cfg, set_user_ops(cfg, w), Duration::from_secs(40)).await?;
     let answer = answers.pop().unwrap_or_default();
     record(db, w, &answer).await.map_err(|e| e.to_string())?;
     Ok(answer)
@@ -766,7 +866,7 @@ pub async fn enroll(
             return Ok(DeviceAnswer::from(sent));
         }
     }
-    let r = talk(&cfg, vec![json!({ "op": "enroll", "no": w.member_no.to_string(), "finger": b.finger })], Duration::from_secs(40))
+    let r = talk(&cfg, vec![json!({ "op": "enroll", "no": device_no(&cfg, w.member_no), "finger": b.finger })], Duration::from_secs(40))
         .await
         .map(|mut a| a.remove(0));
     if r.as_ref().is_ok_and(|v| v["ok"] == json!(true)) {
@@ -784,6 +884,15 @@ mod tests {
         assert_eq!(short_name("Ali Ahmadi"), "Ali Ahmadi");
         let long = short_name("محمد عبدالرحمن احمدزی نصیری");
         assert!(long.len() <= 24 && long.chars().count() == 12);
+    }
+
+    #[test]
+    fn padded_ids() {
+        let mut c = Config::default();
+        assert_eq!(device_no(&c, 51003), "51003");
+        c.digits = 6;
+        assert_eq!(device_no(&c, 51003), "051003");
+        assert_eq!(device_no(&c, 1234567), "1234567");
     }
 
     #[test]

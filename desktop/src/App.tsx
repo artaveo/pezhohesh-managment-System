@@ -5,7 +5,6 @@ import { Users } from "./pages/Users";
 import { MembersList } from "./pages/DueLists";
 import { Books } from "./pages/Books";
 import { Hotspot } from "./pages/Hotspot";
-import { Shares } from "./pages/Shares";
 import { Backup } from "./pages/Backup";
 import { Device } from "./pages/Device";
 import { Registrations, type RegFilter } from "./pages/Registrations";
@@ -16,7 +15,6 @@ import { MemberPage } from "./pages/members/MemberPage";
 import { NewMember } from "./pages/members/NewMember";
 import { Bills } from "./pages/Bills";
 import { Money } from "./pages/Money";
-import { Salaries } from "./pages/Salaries";
 import { Prices } from "./pages/Prices";
 import { Audit } from "./pages/Audit";
 import { FirstSetup, ForcePasswordChange, Login } from "./pages/Login";
@@ -33,7 +31,7 @@ import { Inbox } from "./pages/Inbox";
  * same thing; hiding a section here only keeps the menu tidy. Grouped as the work is: the
  * desk, the money, the education department, running the system.
  */
-type NavItem = { id: string; icon: string; label: string; group: string; section?: Section; partner?: true; soon?: true };
+type NavItem = { id: string; icon: string; label: string; group: string; section?: Section; also?: readonly Section[]; partner?: true; soon?: true };
 export const NAV = [
   { id: "dashboard", icon: "home", label: "داشبورد", group: "" },
   { id: "memberships", icon: "card", label: "پذیرش و تمدید", section: "memberships", group: "کار روزانه" },
@@ -43,9 +41,8 @@ export const NAV = [
   { id: "books", icon: "book", label: "امانت کتاب", section: "books", group: "کار روزانه" },
   { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", section: "hotspot", group: "کار روزانه" },
   { id: "receipts", icon: "receipt", label: "بل‌ها", section: "receipts", group: "حساب و پول" },
-  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", group: "حساب و پول" },
-  { id: "salaries", icon: "banknote", label: "معاش کارمندان", section: "salaries", group: "حساب و پول" },
-  { id: "shares", icon: "pie", label: "سهم شرکا", section: "shares", group: "حساب و پول" },
+  // Staff salaries and the partners' shares live inside it, under «برداشت‌ها».
+  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول", soon: true },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
   { id: "audit", icon: "history", label: "چه کسی چه کرد", partner: true, group: "مدیریت" },
@@ -61,7 +58,7 @@ export const NAV = [
 function sees(user: User, n: NavItem) {
   if (user.role === "partner") return true;
   if (n.partner) return false;
-  return !n.section || (user.sections ?? []).includes(n.section);
+  return !n.section || [n.section, ...(n.also ?? [])].some((s) => (user.sections ?? []).includes(s));
 }
 
 type PageId = (typeof NAV)[number]["id"];
@@ -191,12 +188,10 @@ function Shell() {
               : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => go({ page: "members", member: { id: null } })} />
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
-              : page === "expenses" ? <Money openSalaries={() => setPage("salaries")} />
-              : page === "salaries" ? <Salaries />
+              : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />
               : page === "hotspot" ? <Hotspot />
-              : page === "shares" ? <Shares />
               : page === "backup" ? <Backup />
               : page === "device" ? <Device />
               : page === "audit" ? <Audit openMember={(id) => openMember(id)} />

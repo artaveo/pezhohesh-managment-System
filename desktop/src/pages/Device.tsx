@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type K50Config, type K50Info, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Info, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 
@@ -18,7 +18,8 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare">("");
+  const [cmp, setCmp] = useState<K50Comparison | null>(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -42,6 +43,10 @@ export function Device() {
   const sync = () => run("sync", async () => {
     const r = await api.syncK50();
     if (r.ok) toast(`انجام شد: ${fa(r.pushed)} عضو فرستاده شد، ${fa(r.punches)} حاضری تازه خوانده شد.`);
+  });
+  const compare = () => run("compare", async () => {
+    const r = await api.compareK50();
+    if (r.Ok) setCmp(r.Ok); else setError(k50ErrorText(r.Err));
   });
   const fixTime = () => run("time", async () => {
     const r = await api.k50Time();
@@ -121,6 +126,45 @@ export function Device() {
             {info.time && <> · ساعت دستگاه <bdi dir="ltr">{info.time}</bdi></>}
           </p>
         ) : <p className="form-error">{k50ErrorText(info.error)}</p>)}
+      </section>
+
+      <section className="panel wide">
+        <h2>مقایسهٔ آیدی‌ها با دستگاه</h2>
+        <p className="muted">
+          پیش از روشن کردن به‌روزرسانی خودکار یک بار این را بزنید. همهٔ کاربران دستگاه خوانده می‌شوند (چیزی عوض نمی‌شود) و نام هر آیدی روی
+          دستگاه کنار نام همان آیدی در برنامه می‌آید. اگر نام‌ها مال یک نفر نیستند، خودکار را روشن نکنید و به من خبر بدهید.
+        </p>
+        <div className="actions">
+          <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void compare()}>{busy === "compare" ? "در حال خواندن کاربران دستگاه…" : "مقایسهٔ آیدی‌ها با دستگاه"}</button>
+        </div>
+        {cmp && (
+          <>
+            <div className="stats-row">
+              <div><span className="muted small">کاربر روی دستگاه</span><strong>{fa(cmp.device_users)}</strong></div>
+              <div><span className="muted small">آیدی‌شان در برنامه هست</span><strong>{fa(cmp.in_app)}</strong></div>
+              <div><span className="muted small">در برنامه نیست</span><strong>{fa(cmp.not_in_app)}</strong></div>
+              <div><span className="muted small">مدیر دستگاه</span><strong>{fa(cmp.admins)}</strong></div>
+            </div>
+            {cmp.zero_padded > 0 && (
+              <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
+            )}
+            <div className="table-wrap flush">
+              <table className="table">
+                <thead><tr><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
+                <tbody>
+                  {cmp.rows.map((r) => (
+                    <tr key={r.no}>
+                      <td><bdi dir="ltr">{r.no}</bdi>{r.admin && <span className="chip">مدیر دستگاه</span>}</td>
+                      <td>{r.device_name || "—"}</td>
+                      <td>{r.app_name ?? <span className="muted">در برنامه نیست</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {cmp.rows.length < cmp.device_users && <p className="muted small">{fa(cmp.rows.length)} نفر اول نشان داده شده.</p>}
+          </>
+        )}
       </section>
 
       <section className="panel wide">

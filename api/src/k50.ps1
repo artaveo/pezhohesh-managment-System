@@ -144,6 +144,17 @@ try {
                     }
                     [void]$results.Add(@{ ok = $true; logs = $list })
                 }
+                'users' {
+                    # Every user on the device (ID, name, admin or not), to compare with the app.
+                    $list = New-Object System.Collections.ArrayList
+                    if ($zk.ReadAllUserID($m)) {
+                        $no = ''; $name = ''; $pw = ''; $priv = 0; $en = $false
+                        while ($zk.SSR_GetAllUserInfo($m, [ref]$no, [ref]$name, [ref]$pw, [ref]$priv, [ref]$en)) {
+                            [void]$list.Add(@{ no = $no; name = $name; privilege = $priv; enabled = [bool]$en })
+                        }
+                    }
+                    [void]$results.Add(@{ ok = $true; users = $list })
+                }
                 'set_time' { [void]$results.Add(@{ ok = [bool]$zk.SetDeviceTime($m) }) }
                 default { [void]$results.Add(@{ ok = $false; error = 'unknown_op' }) }
             }
