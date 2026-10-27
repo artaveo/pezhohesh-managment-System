@@ -1,20 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type Bill, type BillPage } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
-import { fa, formatDay, iso, monthStart } from "../lib/solar";
+import { fa, formatDay, iso } from "../lib/solar";
 import { BillPreview, CATEGORY_LABEL } from "../components/BillSheet";
-
-type Span = "today" | "month" | "all";
-const SPANS: { id: Span; label: string }[] = [
-  { id: "today", label: "امروز" },
-  { id: "month", label: "این ماه" },
-  { id: "all", label: "همه" },
-];
+import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
 
 /** Every bill issued in the program: find, show and print again, or void a wrong one. */
 export function Bills() {
   const { user } = useAuth();
-  const [span, setSpan] = useState<Span>("today");
+  const period = usePeriod("today");
+  const { from, to, label: spanLabel } = period.range;
   const [q, setQ] = useState("");
   const [page, setPage] = useState<BillPage | null>(null);
   const [error, setError] = useState("");
@@ -24,28 +19,21 @@ export function Bills() {
 
   useEffect(() => {
     const ctl = new AbortController();
-    const today = iso(new Date());
-    const from = span === "today" ? today : span === "month" ? iso(monthStart()) : undefined;
     const t = window.setTimeout(() => {
-      api.bills({ from, q: q.trim() || undefined, limit: 300 }, ctl.signal)
+      api.bills({ from, to, q: q.trim() || undefined, limit: 300 }, ctl.signal)
         .then((p) => { setPage(p); setError(""); })
         .catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
     }, q ? 250 : 0);
     return () => { window.clearTimeout(t); ctl.abort(); };
-  }, [span, q, tick]);
+  }, [from, to, q, tick]);
 
   const today = iso(new Date());
   const mayVoid = (b: Bill) => !b.voided && (user?.role === "partner" || b.issued_on === today);
-  const spanLabel = span === "today" ? "امروز" : span === "month" ? "این ماه" : "همهٔ بل‌ها";
 
   return (
     <div className="page">
       <div className="list-tools">
-        <div className="segmented" role="tablist">
-          {SPANS.map((s) => (
-            <button key={s.id} role="tab" aria-selected={span === s.id} className={span === s.id ? "on" : ""} onClick={() => setSpan(s.id)}>{s.label}</button>
-          ))}
-        </div>
+        <PeriodPicker value={period.value} onChange={period.setValue} />
         <input className="search" type="search" placeholder="جستجو: شمارهٔ بل، نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       {page && (

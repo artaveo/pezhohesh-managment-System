@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type ListQuery, type LoanRow, type MemberRow, type Page } from "../lib/api";
 import { fa, formatShort } from "../lib/solar";
 import { DaysLeft } from "../components/DaysLeft";
+import { BillPreview } from "../components/BillSheet";
 
 const PAGE = 100;
 
@@ -71,27 +72,39 @@ function DueList<T>(props: {
 }
 
 export function MembersList({ open, add }: { open: (id: string) => void; add: () => void }) {
+  const [bill, setBill] = useState<string | null>(null);
   return (
-    <DueList<MemberRow>
-      action={<button className="btn" onClick={add}>+ عضو جدید</button>}
-      tabs={["نزدیک به ختم و تمام‌شده", "همه اعضا"]}
-      hint={["عضویت‌هایی که تا 5 روز دیگر ختم می‌شوند یا در 30 روز گذشته ختم شده‌اند؛ کمترین روز مانده اول.", "همهٔ اعضا با روزهای باقی‌ماندهٔ عضویت؛ کمترین اول."]}
-      searchHint="جستجو: نام، نام پدر، شماره تماس یا شمارهٔ عضویت"
-      load={api.members}
-      empty="عضویتی نزدیک به ختم نیست."
-      head={<tr><th>شماره</th><th>نام</th><th>نام پدر</th><th>شماره تماس</th><th>نوع عضویت</th><th>ختم عضویت</th><th>وضعیت</th></tr>}
-      row={(m) => (
-        <tr key={m.member_id} className={`clickable${m.days_left !== null && m.days_left < 0 ? " late" : ""}`} onClick={() => open(m.member_id)}>
-          <td className="num">{m.member_no}</td>
-          <td><strong>{m.name}</strong></td>
-          <td>{m.father_name ?? "—"}</td>
-          <td><bdi dir="ltr">{m.phone ?? "—"}</bdi></td>
-          <td className="muted">{m.plan_name ?? "—"}</td>
-          <td>{m.end_date ? formatShort(m.end_date) : "—"}</td>
-          <td><DaysLeft days={m.days_left} /></td>
-        </tr>
-      )}
-    />
+    <>
+      <DueList<MemberRow>
+        action={<button className="btn" onClick={add}>+ عضو جدید</button>}
+        tabs={["نزدیک به ختم و تمام‌شده", "همه اعضا"]}
+        hint={[
+          "عضویت‌هایی که تا 5 روز دیگر ختم می‌شوند یا در 30 روز گذشته ختم شده‌اند؛ کمترین روز مانده اول.",
+          "همهٔ اعضا و مهمان‌های روزانه؛ تازه‌ترین ثبت‌نام اول. اعضای اکسل که هنوز تاریخ ندارند در آخر می‌آیند.",
+        ]}
+        searchHint="جستجو: نام، نام پدر، شماره تماس یا شمارهٔ عضویت"
+        load={(q, signal) => api.members({ ...q, guests: true }, signal)}
+        empty="عضویتی نزدیک به ختم نیست."
+        head={<tr><th>شماره</th><th>نام</th><th>نام پدر</th><th>شماره تماس</th><th>نوع عضویت</th><th>آخرین ثبت</th><th>ختم عضویت</th><th>وضعیت</th></tr>}
+        row={(m) => {
+          const go = m.member_id ? () => open(m.member_id!) : m.receipt_id ? () => setBill(m.receipt_id) : undefined;
+          return (
+            <tr key={m.member_id ?? `guest-${m.receipt_id ?? m.name}-${m.last_start}`}
+              className={`${go ? "clickable" : ""}${m.days_left !== null && m.days_left < 0 && m.member_id ? " late" : ""}`} onClick={go}>
+              <td className="num">{m.member_no ?? <span className="chip kind-daily">مهمان</span>}</td>
+              <td><strong>{m.name}</strong></td>
+              <td>{m.father_name ?? "—"}</td>
+              <td><bdi dir="ltr">{m.phone ?? "—"}</bdi></td>
+              <td className="muted">{m.plan_name ?? "—"}</td>
+              <td>{m.last_start ? formatShort(m.last_start) : "—"}</td>
+              <td>{m.end_date ? formatShort(m.end_date) : "—"}</td>
+              <td>{m.member_id ? <DaysLeft days={m.days_left} /> : m.days_left !== null && m.days_left >= 0 ? <span className="days ok">امروز</span> : <span className="days none">گذشته</span>}</td>
+            </tr>
+          );
+        }}
+      />
+      {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
+    </>
   );
 }
 

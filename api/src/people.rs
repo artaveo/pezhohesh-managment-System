@@ -94,7 +94,10 @@ pub async fn merge(State(s): State<AppState>, user: CurrentUser, Json(m): Json<M
         "UPDATE staff i SET title = COALESCE(i.title, f.title), \
             department = CASE WHEN i.department IS NULL THEN f.department WHEN f.department IS NULL THEN i.department \
                               WHEN i.department = f.department THEN i.department END, \
-            aliases = i.aliases || f.full_name || f.aliases \
+            aliases = i.aliases || f.full_name || f.aliases, \
+            monthly_salary = CASE WHEN i.monthly_salary > 0 THEN i.monthly_salary ELSE f.monthly_salary END, \
+            salary_category_id = COALESCE(i.salary_category_id, f.salary_category_id), \
+            salary_from = COALESCE(i.salary_from, f.salary_from) \
          FROM staff f WHERE i.id = $2 AND f.id = $1",
     )
     .bind(m.from)

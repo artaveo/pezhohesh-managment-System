@@ -51,9 +51,9 @@ function FindMember({ openMember }: { openMember: (id: string) => void }) {
       {rows && !rows.length && <p className="muted">کسی پیدا نشد. اگر عضو تازه است، «عضو جدید» را بزنید.</p>}
       {rows && rows.length > 0 && (
         <ul className="pick-list">
-          {rows.map((m) => (
+          {rows.map((m) => m.member_id && (
             <li key={m.member_id}>
-              <button onClick={() => openMember(m.member_id)}>
+              <button onClick={() => openMember(m.member_id!)}>
                 <span className="num">{m.member_no}</span>
                 <strong>{m.name}</strong>
                 <span className="muted">{m.father_name ?? ""}</span>

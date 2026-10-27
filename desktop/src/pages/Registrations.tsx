@@ -1,18 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, type RegKind, type RegSummary, type Registration } from "../lib/api";
-import { fa, formatDay, iso, monthStart, yearStart } from "../lib/solar";
-import { SolarDate } from "../components/SolarDate";
+import { fa, formatDay } from "../lib/solar";
 import { BillPreview } from "../components/BillSheet";
+import { PeriodPicker, usePeriod, type Span } from "../components/PeriodPicker";
 
-export type RegSpan = "today" | "month" | "year" | "range";
-export type RegFilter = { span: RegSpan; kind?: RegKind };
-
-const SPANS: { id: RegSpan; label: string }[] = [
-  { id: "today", label: "امروز" },
-  { id: "month", label: "این ماه" },
-  { id: "year", label: "امسال" },
-  { id: "range", label: "بازهٔ دلخواه" },
-];
+export type RegFilter = { span: Span; kind?: RegKind };
 const KINDS: { id: RegKind | undefined; label: string }[] = [
   { id: undefined, label: "همه" },
   { id: "daily", label: "روزانه" },
@@ -29,10 +21,9 @@ export function kindLabel(r: Pick<Registration, "kind" | "first" | "record_only"
 
 /** Who signed up, and when: daily seats, new and renewed monthly members, internet. */
 export function Registrations({ initial, openMember }: { initial?: RegFilter; openMember: (id: string) => void }) {
-  const today = iso(new Date());
-  const [span, setSpan] = useState<RegSpan>(initial?.span ?? "today");
+  const period = usePeriod(initial?.span ?? "today");
+  const { from, to, label: spanText } = period.range;
   const [kind, setKind] = useState<RegKind | undefined>(initial?.kind);
-  const [range, setRange] = useState({ from: iso(monthStart()), to: today });
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Registration[]>([]);
   const [total, setTotal] = useState(0);
@@ -41,9 +32,6 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
   const [bill, setBill] = useState<string | null>(null);
   // The filters a "more" answer belongs to: a late answer for older filters is dropped.
   const filters = useRef("");
-
-  const from = span === "today" ? today : span === "month" ? iso(monthStart()) : span === "year" ? iso(yearStart()) : range.from;
-  const to = span === "range" ? range.to : today;
 
   useEffect(() => {
     filters.current = JSON.stringify([from, to, kind, q]);
@@ -66,15 +54,10 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
     }
   }
 
-  const spanText = span === "today" ? "امروز" : span === "range" ? `از ${formatDay(from)} تا ${formatDay(to)}` : span === "month" ? "این ماه" : "امسال";
   return (
     <div className="page">
       <div className="list-tools">
-        <div className="segmented" role="tablist" aria-label="زمان">
-          {SPANS.map((s) => (
-            <button key={s.id} role="tab" aria-selected={span === s.id} className={span === s.id ? "on" : ""} onClick={() => setSpan(s.id)}>{s.label}</button>
-          ))}
-        </div>
+        <PeriodPicker value={period.value} onChange={period.setValue} />
         <div className="segmented" role="tablist" aria-label="نوع">
           {KINDS.map((k) => (
             <button key={k.label} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)}>{k.label}</button>
@@ -82,12 +65,6 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
         </div>
         <input className="search" type="search" placeholder="جستجو: نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      {span === "range" && (
-        <div className="range-row">
-          <SolarDate label="از" value={range.from} onChange={(v) => v && setRange({ ...range, from: v })} />
-          <SolarDate label="تا" value={range.to} onChange={(v) => v && setRange({ ...range, to: v })} />
-        </div>
-      )}
 
       {summary && (
         <section className="kpis reg-kpis">

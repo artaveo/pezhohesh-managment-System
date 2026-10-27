@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type Bill, type HotspotBuy, type HotspotCard, type HotspotCards, type HotspotSales } from "../lib/api";
-import { fa, formatDay, iso, monthStart } from "../lib/solar";
+import { fa, formatDay, iso } from "../lib/solar";
+import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
 import { amount, decimal, fa2 } from "../lib/numbers";
 import { SolarDate } from "../components/SolarDate";
 import { RemoveButton } from "../components/RemoveButton";
@@ -9,15 +10,10 @@ import { Icon } from "../components/Icon";
 import { VoidBill } from "./Bills";
 
 type Tab = "count" | "buy" | "stock";
-type Span = "today" | "month" | "all";
 
 const gb = (v: number) => `${fa2(v)}GB`;
 const whole = (s: string) => s.replace(/\D/g, "").slice(0, 6);
 
-function range(span: Span) {
-  const today = iso(new Date());
-  return span === "today" ? { from: today, to: today } : span === "month" ? { from: iso(monthStart()) } : {};
-}
 
 /**
  * Internet hotspot cards, as in the Excel hotspot sheet: supplier bills come in with cards
@@ -185,7 +181,8 @@ function Buy({ cards, done }: { cards: HotspotCards; done: () => void }) {
 }
 
 function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; changed: () => void }) {
-  const [span, setSpan] = useState<Span>("month");
+  const period = usePeriod("month");
+  const { from, to } = period.range;
   const [sales, setSales] = useState<HotspotSales | null>(null);
   const [buys, setBuys] = useState<HotspotBuy[] | null>(null);
   const [error, setError] = useState("");
@@ -194,12 +191,12 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
 
   useEffect(() => {
     const ctl = new AbortController();
-    const r = range(span);
+    const r = { from, to };
     Promise.all([api.hotspotSales(r, ctl.signal), api.hotspotBuys(r, ctl.signal)])
       .then(([s, b]) => { setSales(s); setBuys(b); setError(""); })
       .catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
     return () => ctl.abort();
-  }, [span, tick]);
+  }, [from, to, tick]);
 
   async function removeBuy(id: string) {
     try { await api.deleteHotspotBuy(id); changed(); } catch (e) { setError(errorText(e)); }
@@ -228,11 +225,7 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
         </table>
       </div>
       <div className="list-tools">
-        <div className="segmented" role="tablist" aria-label="دوره">
-          {([["today", "امروز"], ["month", "این ماه"], ["all", "همه"]] as const).map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={span === id} className={span === id ? "on" : ""} onClick={() => setSpan(id)}>{label}</button>
-          ))}
-        </div>
+        <PeriodPicker value={period.value} onChange={period.setValue} />
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       {s && (

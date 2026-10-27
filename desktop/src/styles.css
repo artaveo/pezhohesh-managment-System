@@ -350,6 +350,7 @@ button, input { font: inherit; color: inherit; }
 .span-2 { grid-column: span 2; }
 .check.big { font-size: .92rem; margin: 2px 0; }
 .solar-date { display: grid; grid-template-columns: 64px 1fr 84px; gap: 6px; }
+.solar-date.month-year { grid-template-columns: 1fr 84px; }
 .solar-date input, .solar-date select {
   width: 100%; padding: 9px 10px; border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px;
   font: inherit; font-size: 1rem; color: var(--fg); text-align: center;
@@ -515,3 +516,14 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .dest { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--glass-strong); }
 .dest .muted.small { margin: 0; }
 .drive-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+/* One period filter for every list (PeriodPicker) */
+.period-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.period-step { display: inline-flex; align-items: center; gap: 8px; }
+.period-step select { min-width: 9em; font: inherit; padding: 5px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); }
+.period-picker .range-row .field { min-width: 15em; }
+
+/* Salaries */
+.salary-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.salary-head h2 { margin-bottom: 2px; }
+.salary-balance { display: flex; align-items: center; gap: 10px; }

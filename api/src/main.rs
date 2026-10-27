@@ -37,6 +37,7 @@ mod online;
 mod people;
 mod registrations;
 mod reports;
+mod salaries;
 mod solar;
 
 #[derive(Clone)]
@@ -126,6 +127,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
                 *core.write().unwrap() = Core { ready: true, ..Default::default() };
                 tracing::info!("database ready");
                 tokio::spawn(backup::schedule(db.clone(), url.clone()));
+                tokio::spawn(salaries::schedule(db.clone()));
                 tokio::spawn(online::schedule(db, url));
                 return;
             }
@@ -247,6 +249,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/expenses", get(money::expenses).post(money::create_expense))
         .route("/api/v1/expenses/:id", delete(money::delete_expense))
         .route("/api/v1/staff", get(money::staff))
+        .route("/api/v1/salaries", get(salaries::list).post(salaries::create))
+        .route("/api/v1/salaries/:id", put(salaries::update))
         .route("/api/v1/withdrawals", get(money::withdrawals).post(money::create_withdrawal))
         .route("/api/v1/withdrawals/:id", delete(money::delete_withdrawal))
         .route("/api/v1/book-rules", get(books::rules).put(books::set_rules))

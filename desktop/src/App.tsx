@@ -15,6 +15,7 @@ import { MemberPage } from "./pages/members/MemberPage";
 import { NewMember } from "./pages/members/NewMember";
 import { Bills } from "./pages/Bills";
 import { Money } from "./pages/Money";
+import { Salaries } from "./pages/Salaries";
 import { Prices } from "./pages/Prices";
 import { FirstSetup, ForcePasswordChange, Login } from "./pages/Login";
 import { Offline } from "./pages/Offline";
@@ -35,6 +36,7 @@ const NAV = [
   { id: "memberships", icon: "card", label: "پذیرش و تمدید", roles: HALL },
   { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL },
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL },
+  { id: "salaries", icon: "briefcase", label: "معاش کارمندان", roles: HALL },
   { id: "books", icon: "book", label: "امانت کتاب", roles: HALL },
   { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", roles: HALL },
   { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL },
@@ -125,6 +127,7 @@ function Shell() {
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
               : page === "expenses" ? <Money />
+              : page === "salaries" ? <Salaries />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />
               : page === "hotspot" ? <Hotspot />

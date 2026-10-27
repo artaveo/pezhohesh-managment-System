@@ -16,9 +16,9 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct Params {
     /// [from, to] inclusive, by the day of its bill (a period recorded without a bill:
-    /// the day it started).
-    from: NaiveDate,
-    to: NaiveDate,
+    /// the day it started). Left out: no limit on that side.
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
     /// monthly | daily | internet; left out: all.
     kind: Option<String>,
     q: Option<String>,
@@ -65,12 +65,12 @@ pub struct Page {
 
 // $1 from, $2 to, $3 kind, $4 search pattern.
 const BASE: &str = "SELECT * FROM v_registrations \
-    WHERE day BETWEEN $1 AND $2 AND ($3::text IS NULL OR kind = $3) \
+    WHERE ($1::date IS NULL OR day >= $1) AND ($2::date IS NULL OR day <= $2) AND ($3::text IS NULL OR kind = $3) \
       AND ($4::text IS NULL OR name ILIKE $4 OR phone ILIKE $4 OR member_no::text LIKE $4)";
 
 pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Params>) -> Result<Json<Page>, ApiError> {
     hall_only(&user)?;
-    if p.to < p.from || (p.to - p.from).num_days() > 3700 {
+    if p.from.zip(p.to).is_some_and(|(from, to)| to < from) {
         return Err(ApiError::bad("bad_range"));
     }
     let kind = p.kind.filter(|k| ["monthly", "daily", "internet"].contains(&k.as_str()));

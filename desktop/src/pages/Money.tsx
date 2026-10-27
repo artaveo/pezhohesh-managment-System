@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type Category, type Expense, type Lines, type Person, type Withdrawal } from "../lib/api";
-import { fa, formatDay, iso, monthStart } from "../lib/solar";
+import { fa, formatDay, iso } from "../lib/solar";
 import { SolarDate } from "../components/SolarDate";
+import { PeriodPicker, usePeriod, type Range } from "../components/PeriodPicker";
 import { RemoveButton } from "../components/RemoveButton";
 
 type Tab = "expenses" | "withdrawals";
-type Span = "today" | "month" | "all";
+type Period = Range & { label: string };
 
 /** Money going out: daily expenses by statement line, and cash the partners take. */
 export function Money() {
   const [tab, setTab] = useState<Tab>("expenses");
-  const [span, setSpan] = useState<Span>("month");
+  const period = usePeriod("month");
   return (
     <div className="page">
       <div className="list-tools">
@@ -18,24 +19,15 @@ export function Money() {
           <button role="tab" aria-selected={tab === "expenses"} className={tab === "expenses" ? "on" : ""} onClick={() => setTab("expenses")}>مصارف</button>
           <button role="tab" aria-selected={tab === "withdrawals"} className={tab === "withdrawals" ? "on" : ""} onClick={() => setTab("withdrawals")}>برداشت‌ها</button>
         </div>
-        <div className="segmented" role="tablist" aria-label="دوره">
-          {([["today", "امروز"], ["month", "این ماه"], ["all", "همه"]] as const).map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={span === id} className={span === id ? "on" : ""} onClick={() => setSpan(id)}>{label}</button>
-          ))}
-        </div>
+        <PeriodPicker value={period.value} onChange={period.setValue} />
       </div>
-      {tab === "expenses" ? <Expenses span={span} /> : <Withdrawals span={span} />}
+      {tab === "expenses" ? <Expenses period={period.range} /> : <Withdrawals period={period.range} />}
     </div>
   );
 }
 
-function range(span: Span) {
-  const today = iso(new Date());
-  return span === "today" ? { from: today, to: today } : span === "month" ? { from: iso(monthStart()) } : {};
-}
-const SPAN_LABEL: Record<Span, string> = { today: "امروز", month: "این ماه", all: "همه" };
 
-function Expenses({ span }: { span: Span }) {
+function Expenses({ period }: { period: Period }) {
   const [cats, setCats] = useState<Category[]>([]);
   const [lines, setLines] = useState<Lines<Expense> | null>(null);
   const [error, setError] = useState("");
@@ -50,9 +42,9 @@ function Expenses({ span }: { span: Span }) {
   useEffect(() => { api.categories().then((c) => { setCats(c); setCat((x) => x || c[0]?.id || ""); }).catch((e) => setError(errorText(e))); }, [tick]);
   useEffect(() => {
     const ctl = new AbortController();
-    api.expenses(range(span), ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
+    api.expenses({ from: period.from, to: period.to }, ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
     return () => ctl.abort();
-  }, [span, tick]);
+  }, [period.from, period.to, tick]);
 
   async function save() {
     setBusy(true);
@@ -97,7 +89,7 @@ function Expenses({ span }: { span: Span }) {
         <div className="actions"><button className="btn" disabled={!ready || busy} onClick={() => void save()}>ثبت</button></div>
       </section>
       <p className="muted small">
-        مصارف {SPAN_LABEL[span]}: {fa(lines?.total ?? 0)} مورد · مجموع {fa(lines?.sum ?? 0)} افغانی
+        مصارف {period.label}: {fa(lines?.total ?? 0)} مورد · مجموع {fa(lines?.sum ?? 0)} افغانی
         {lines && lines.rows.length < lines.total && ` · ${fa(lines.rows.length)} مورد تازه‌تر نشان داده شده`}
       </p>
       <div className="glass table-wrap">
@@ -110,7 +102,7 @@ function Expenses({ span }: { span: Span }) {
                 <td>{e.category}</td>
                 <td className="muted">{e.description ?? "—"}</td>
                 <td className="num">{fa(e.amount)}</td>
-                <td className="muted">{e.from_excel ? "اکسل" : e.created_by ?? "—"}</td>
+                <td className="muted">{e.from_excel ? "اکسل" : e.created_by ?? "خودکار (معاش)"}</td>
                 <td>{e.removable && <RemoveButton onConfirm={() => void remove(e.id)} />}</td>
               </tr>
             ))}
@@ -122,7 +114,7 @@ function Expenses({ span }: { span: Span }) {
   );
 }
 
-function Withdrawals({ span }: { span: Span }) {
+function Withdrawals({ period }: { period: Period }) {
   const [people, setPeople] = useState<Person[]>([]);
   const [lines, setLines] = useState<Lines<Withdrawal> | null>(null);
   const [error, setError] = useState("");
@@ -136,9 +128,9 @@ function Withdrawals({ span }: { span: Span }) {
   useEffect(() => { api.staff().then((p) => { setPeople(p); setWho((x) => x || p[0]?.id || ""); }).catch((e) => setError(errorText(e))); }, []);
   useEffect(() => {
     const ctl = new AbortController();
-    api.withdrawals(range(span), ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
+    api.withdrawals({ from: period.from, to: period.to }, ctl.signal).then(setLines).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
     return () => ctl.abort();
-  }, [span, tick]);
+  }, [period.from, period.to, tick]);
 
   async function save() {
     setBusy(true);
@@ -162,7 +154,7 @@ function Withdrawals({ span }: { span: Span }) {
     <>
       <section className="panel wide">
         <h2>ثبت برداشت</h2>
-        <p className="muted">پولی که یکی از شرکا از صندوق می‌برد. معاش مدیر و کارمندان در «مصارف» ثبت می‌شود، نه اینجا.</p>
+        <p className="muted">پولی که یکی از شرکا یا کارمندان از صندوق می‌برد. معاش ثابت کارمندان خودش هر ماه در «مصارف» ثبت می‌شود؛ پولی که کارمند می‌گیرد اینجا به نام خودش ثبت شود تا در «معاش کارمندان» از طلبش کم شود.</p>
         <div className="form-grid">
           <label className="field wide">
             <span>برداشت کننده</span>
@@ -178,7 +170,7 @@ function Withdrawals({ span }: { span: Span }) {
         <div className="actions"><button className="btn" disabled={!who || !day || !(Number(amount) > 0) || busy} onClick={() => void save()}>ثبت</button></div>
       </section>
       <p className="muted small">
-        برداشت‌های {SPAN_LABEL[span]}: {fa(lines?.total ?? 0)} مورد · مجموع {fa(lines?.sum ?? 0)} افغانی
+        برداشت‌های {period.label}: {fa(lines?.total ?? 0)} مورد · مجموع {fa(lines?.sum ?? 0)} افغانی
         {lines && lines.rows.length < lines.total && ` · ${fa(lines.rows.length)} مورد تازه‌تر نشان داده شده`}
       </p>
       <div className="glass table-wrap">

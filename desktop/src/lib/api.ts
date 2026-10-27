@@ -79,17 +79,22 @@ export type Registration = {
   receipt_id: string | null; receipt_no: string | null; first: boolean; record_only: boolean;
 };
 export type RegSummary = { daily: number; monthly_new: number; monthly_renewed: number; internet: number; amount: number };
-export type RegQuery = { from: string; to: string; kind?: RegKind; q?: string; limit?: number; offset?: number };
+export type RegQuery = { from?: string; to?: string; kind?: RegKind; q?: string; limit?: number; offset?: number };
 
 export type MemberRow = {
-  member_id: string;
-  member_no: number;
+  /** null: a guest's daily seat (only on the full list, with `guests`). */
+  member_id: string | null;
+  member_no: number | null;
   name: string;
   father_name: string | null;
   phone: string | null;
   plan_name: string | null;
   end_date: string | null;
   days_left: number | null;
+  /** Start of the latest period of any kind, daily seats too. */
+  last_start: string | null;
+  /** A guest's daily seat: its bill. */
+  receipt_id: string | null;
 };
 
 export type LoanRow = {
@@ -134,6 +139,19 @@ export type Category = { id: string; name: string };
 export type Lines<T> = { total: number; sum: number; rows: T[] };
 export type Expense = { id: string; spent_on: string; category: string; description: string | null; amount: number; created_by: string | null; from_excel: boolean; removable: boolean };
 export type Person = { id: string; full_name: string; title: string | null };
+export type SalaryMonth = { accrued: number; taken: number };
+export type SalaryPerson = {
+  id: string; full_name: string; title: string | null; monthly_salary: number;
+  category_id: string | null; category: string | null;
+  /** First day of the Solar month the salary starts. */
+  salary_from: string | null; active: boolean;
+  /** Hamal..Hut of the year asked for. */
+  months: SalaryMonth[];
+  /** Salary minus what was taken before the year (positive: owed to the person), and up to today. */
+  before: number; balance: number;
+};
+export type SalaryPage = { year: number; this_month: number | null; people: SalaryPerson[]; categories: { id: string; name: string }[] };
+export type SalaryInput = { full_name?: string; title?: string; monthly_salary: number; category_id: string; from: string; active: boolean };
 export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
 export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number };
@@ -193,9 +211,9 @@ export type Loan = {
 const query = (r: Record<string, string | number | undefined>) =>
   new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
 
-export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number };
+export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number; guests?: boolean };
 const listParams = (p: ListQuery) =>
-  new URLSearchParams({ scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
+  new URLSearchParams({ scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0), guests: String(!!p.guests) });
 
 /** An error answer from the API: `code` is its machine-readable reason (invalid_login, locked...). */
 export class ApiError extends Error {
@@ -288,7 +306,9 @@ export const api = {
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 
   registrations: (p: RegQuery, signal?: AbortSignal) => {
-    const qs = new URLSearchParams({ from: p.from, to: p.to, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
+    const qs = new URLSearchParams({ limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
+    if (p.from) qs.set("from", p.from);
+    if (p.to) qs.set("to", p.to);
     if (p.kind) qs.set("kind", p.kind);
     if (p.q?.trim()) qs.set("q", p.q.trim());
     return request<Page<Registration> & { summary: RegSummary }>(`/registrations?${qs}`, { signal });
@@ -315,6 +335,9 @@ export const api = {
   createExpense: (e: { category_id: string; spent_on?: string; amount: number; description?: string }) => request<string>("/expenses", { method: "POST", body: e }),
   deleteExpense: (id: string) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
   staff: () => request<Person[]>("/staff"),
+  salaries: (year?: number, signal?: AbortSignal) => request<SalaryPage>(`/salaries${year ? `?year=${year}` : ""}`, { signal }),
+  createSalary: (s: SalaryInput) => request<string>("/salaries", { method: "POST", body: s }),
+  updateSalary: (id: string, s: SalaryInput) => request<void>(`/salaries/${id}`, { method: "PUT", body: s }),
   withdrawals: (r: Range, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
   createWithdrawal: (w: { staff_id: string; taken_on?: string; amount: number; note?: string }) => request<string>("/withdrawals", { method: "POST", body: w }),
   deleteWithdrawal: (id: string) => request<void>(`/withdrawals/${id}`, { method: "DELETE" }),
@@ -404,6 +427,8 @@ export function errorText(e: unknown): string {
     case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
     case "bad_online_plan": return "زمان ارسال درست نیست.";
     case "bad_range": return "بازهٔ تاریخ درست نیست: «تا» نباید پیش از «از» باشد.";
+    case "bad_date": return "ماه شروع درست نیست (سال 1400 به بعد، و نه بیشتر از یک سال بعد).";
+    case "bad_salary_line": return "سطر مصارف را از لیست انتخاب کنید.";
     case "drive_not_found": return "این درایو دیگر وصل نیست.";
     case "drive_not_writable": return "روی این درایو نمی‌شود نوشت (شاید قفل است).";
     case "person_has_login": return "این شخص از قبل حساب ورود دارد.";
