@@ -45,8 +45,23 @@ struct StaffRow {
 
 #[derive(Serialize, Default, Clone, Copy)]
 pub struct Month {
+    year: i32,
+    month: u32,
     accrued: f64,
     taken: f64,
+}
+
+/// One payment to the person: a line of their statement line, or a withdrawal in their name.
+#[derive(Serialize, FromRow)]
+pub struct Payment {
+    id: Uuid,
+    day: NaiveDate,
+    amount: f64,
+    note: Option<String>,
+    /// "expense" or "withdrawal".
+    source: String,
+    #[serde(skip)]
+    staff_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -60,19 +75,21 @@ pub struct Person {
     /// First day of the Solar month the salary starts.
     salary_from: Option<NaiveDate>,
     active: bool,
-    /// Hamal..Hut of the year asked for.
+    /// Every month of the range asked for, from the first salary month up to this month, oldest first.
     months: Vec<Month>,
-    /// Salary minus what was taken, before the year starts (positive: owed to the person).
-    before: f64,
-    /// The same up to today.
+    /// The payments of the range, oldest first.
+    payments: Vec<Payment>,
+    /// Salary minus what was paid before the range (positive: owed to the person).
+    opening: f64,
+    /// The same up to today, whatever the range.
     balance: f64,
+    last_paid: Option<NaiveDate>,
 }
 
 #[derive(Serialize)]
 pub struct Page {
-    year: i32,
-    /// The month today is in, when `year` is this year (months after it are not posted yet).
-    this_month: Option<u32>,
+    this_year: i32,
+    this_month: u32,
     people: Vec<Person>,
     /// Statement lines a salary can be paid under (partners set them).
     categories: Vec<Category>,
@@ -80,15 +97,35 @@ pub struct Page {
 
 #[derive(Deserialize)]
 pub struct Params {
-    year: Option<i32>,
+    /// Inclusive days; left out = no limit. Months count whole.
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 }
 
-/// GET /api/v1/salaries?year=1405
+const PAID: &str = "SELECT e.id, e.spent_on AS day, e.amount::float8 AS amount, e.description AS note, 'expense' AS source, s.id AS staff_id \
+     FROM staff s JOIN expenses e ON e.category_id = s.salary_category_id AND e.department = 'hall' \
+     WHERE s.id = ANY($1) AND e.deleted_at IS NULL AND e.currency = 'AFN' AND e.spent_on >= s.salary_from \
+     UNION ALL \
+     SELECT w.id, w.taken_on, w.amount::float8, w.note, 'withdrawal', w.staff_id FROM withdrawals w JOIN staff s ON s.id = w.staff_id \
+     WHERE w.staff_id = ANY($1) AND w.deleted_at IS NULL AND w.currency = 'AFN' \
+       AND s.salary_from IS NOT NULL AND w.taken_on >= s.salary_from \
+     ORDER BY day, amount";
+
+fn next((y, m): (i32, u32)) -> (i32, u32) {
+    if m == 12 { (y + 1, 1) } else { (y, m + 1) }
+}
+
+/// GET /api/v1/salaries?from=&to=: everyone on the payroll, and each one's account over the range.
 pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Params>) -> Result<Json<Page>, ApiError> {
     hall_only(&user)?;
+    if p.from.zip(p.to).is_some_and(|(f, t)| t < f) {
+        return Err(ApiError::bad("bad_range"));
+    }
     let now = today();
-    let (this_year, (this_m, _)) = (solar::year_of(now), solar::month_day(now));
-    let year = p.year.unwrap_or(this_year);
+    let this = (solar::year_of(now), solar::month_day(now).0);
+    let ym = |d: NaiveDate| (solar::year_of(d), solar::month_day(d).0);
+    let lo = p.from.map(ym);
+    let hi = p.to.map(ym).map_or(this, |h| h.min(this));
 
     let mut tx = begin_as(&s.db, &user).await?;
     let staff: Vec<StaffRow> = sqlx::query_as(&format!(
@@ -108,45 +145,55 @@ pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
     .await?;
     // Paid: the lines of the person's statement line (from the Excel book or typed since),
     // and any withdrawal written under their name, from their first salary month on.
-    let taken: Vec<(Uuid, NaiveDate, f64)> = sqlx::query_as(
-        "SELECT s.id, e.spent_on, e.amount::float8 FROM staff s \
-         JOIN expenses e ON e.category_id = s.salary_category_id AND e.department = 'hall' \
-         WHERE s.id = ANY($1) AND e.deleted_at IS NULL AND e.currency = 'AFN' AND e.spent_on >= s.salary_from \
-         UNION ALL \
-         SELECT w.staff_id, w.taken_on, w.amount::float8 FROM withdrawals w JOIN staff s ON s.id = w.staff_id \
-         WHERE w.staff_id = ANY($1) AND w.deleted_at IS NULL AND w.currency = 'AFN' \
-           AND s.salary_from IS NOT NULL AND w.taken_on >= s.salary_from",
-    )
-    .bind(&ids)
-    .fetch_all(&mut *tx)
-    .await?;
+    let paid: Vec<Payment> = sqlx::query_as(PAID).bind(&ids).fetch_all(&mut *tx).await?;
     let categories = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' ORDER BY sort_order, name")
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
 
     // (person, year, month) -> totals
-    let mut by: HashMap<(Uuid, i32, u32), Month> = HashMap::new();
+    let mut by: HashMap<(Uuid, i32, u32), (f64, f64)> = HashMap::new();
     for (id, y, m, a) in accrued {
-        by.entry((id, y, m as u32)).or_default().accrued += a;
+        by.entry((id, y, m as u32)).or_default().0 += a;
     }
-    for (id, day, a) in taken {
-        by.entry((id, solar::year_of(day), solar::month_day(day).0)).or_default().taken += a;
+    for pay in &paid {
+        let (y, m) = ym(pay.day);
+        by.entry((pay.staff_id, y, m)).or_default().1 += pay.amount;
+    }
+    let mut paid_by: HashMap<Uuid, Vec<Payment>> = HashMap::new();
+    for pay in paid {
+        paid_by.entry(pay.staff_id).or_default().push(pay);
     }
     let people = staff
         .into_iter()
         .map(|r| {
-            let months = (1..=12).map(|m| by.get(&(r.id, year, m)).copied().unwrap_or_default()).collect();
-            let (mut before, mut balance) = (0.0, 0.0);
-            for (&(id, y, m), v) in &by {
-                // "Up to today": a withdrawal typed with a later date waits for its month.
-                if id == r.id && (y, m) <= (this_year, this_m) {
-                    balance += v.accrued - v.taken;
-                    if y < year {
-                        before += v.accrued - v.taken;
+            let (mut opening, mut balance) = (0.0, 0.0);
+            let mut first: Option<(i32, u32)> = r.salary_from.map(ym);
+            for (&(id, y, m), (a, t)) in &by {
+                // "Up to today": a payment typed with a later date waits for its month.
+                if id == r.id && (y, m) <= this {
+                    balance += a - t;
+                    if lo.is_some_and(|lo| (y, m) < lo) {
+                        opening += a - t;
                     }
+                    first = Some(first.map_or((y, m), |f| f.min((y, m))));
                 }
             }
+            let mut months = Vec::new();
+            if let Some(first) = first {
+                let mut at = lo.map_or(first, |lo| lo.max(first));
+                while at <= hi {
+                    let (a, t) = by.get(&(r.id, at.0, at.1)).copied().unwrap_or_default();
+                    months.push(Month { year: at.0, month: at.1, accrued: a, taken: t });
+                    at = next(at);
+                }
+            }
+            let all = paid_by.remove(&r.id).unwrap_or_default();
+            let last_paid = all.iter().map(|p| p.day).filter(|d| *d <= now).max();
+            let payments = all
+                .into_iter()
+                .filter(|p| lo.is_none_or(|lo| ym(p.day) >= lo) && ym(p.day) <= hi)
+                .collect();
             Person {
                 id: r.id,
                 full_name: r.full_name,
@@ -157,12 +204,14 @@ pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
                 salary_from: r.salary_from,
                 active: r.active,
                 months,
-                before,
+                payments,
+                opening,
                 balance,
+                last_paid,
             }
         })
         .collect();
-    Ok(Json(Page { year, this_month: (year == this_year).then_some(this_m), people, categories }))
+    Ok(Json(Page { this_year: this.0, this_month: this.1, people, categories }))
 }
 
 #[derive(Deserialize)]
@@ -175,6 +224,9 @@ pub struct Input {
     from: NaiveDate,
     #[serde(default = "yes")]
     active: bool,
+    /// On a change: any day of the first month the new amount counts from (this month if left out).
+    #[serde(default)]
+    amount_from: Option<NaiveDate>,
 }
 fn yes() -> bool {
     true
@@ -292,14 +344,18 @@ pub async fn update(State(s): State<AppState>, user: CurrentUser, Path(id): Path
             (fy, fm) = if fm == 12 { (fy + 1, 1) } else { (fy, fm + 1) };
         }
     }
-    // This month follows the new amount.
-    sqlx::query("UPDATE salary_accruals SET amount = $4 WHERE staff_id = $1 AND solar_year = $2 AND solar_month = $3")
-        .bind(id)
-        .bind(y)
-        .bind(m as i32)
-        .bind(i.monthly_salary)
-        .execute(&mut *tx)
-        .await?;
+    // The new amount counts from the month asked for (this month by default); earlier months
+    // keep the salary they had, as a raise does not change what was due before.
+    let (ay, am) = i.amount_from.map_or((y, m), |d| (solar::year_of(d), solar::month_day(d).0));
+    sqlx::query(
+        "UPDATE salary_accruals SET amount = $4 WHERE staff_id = $1 AND (solar_year, solar_month) >= ($2, $3) AND amount <> 0",
+    )
+    .bind(id)
+    .bind(ay)
+    .bind(am as i32)
+    .bind(i.monthly_salary)
+    .execute(&mut *tx)
+    .await?;
     // Months before a later start are taken back.
     let (fy, (fm, _)) = (solar::year_of(from), solar::month_day(from));
     sqlx::query("DELETE FROM salary_accruals WHERE staff_id = $1 AND (solar_year, solar_month) < ($2, $3)")
@@ -312,6 +368,38 @@ pub async fn update(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     if let Err(e) = post_due(&s.db).await {
         tracing::warn!("salary posting: {e:#}");
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct MonthInput {
+    year: i32,
+    month: u32,
+    amount: f64,
+}
+
+/// PUT /api/v1/salaries/:id/month (partners): corrects the salary of one month already noted.
+pub async fn set_month(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(i): Json<MonthInput>) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    if !(i.amount.is_finite() && (0.0..=10_000_000.0).contains(&i.amount)) {
+        return Err(ApiError::bad("bad_amount"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let n = sqlx::query(&format!(
+        "UPDATE salary_accruals a SET amount = $4 FROM staff s \
+         WHERE a.staff_id = s.id AND s.id = $1 AND {PAYROLL} AND a.solar_year = $2 AND a.solar_month = $3"
+    ))
+    .bind(id)
+    .bind(i.year)
+    .bind(i.month as i32)
+    .bind(i.amount)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(ApiError(StatusCode::NOT_FOUND, "not_found"));
+    }
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

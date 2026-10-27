@@ -63,7 +63,7 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
             <button key={k.label} role="tab" aria-selected={kind === k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)}>{k.label}</button>
           ))}
         </div>
-        <input className="search" type="search" placeholder="جستجو: نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="search" type="search" placeholder="جستجو: نام، آیدی یا شماره تماس" aria-label="جستجو: نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
       {summary && (

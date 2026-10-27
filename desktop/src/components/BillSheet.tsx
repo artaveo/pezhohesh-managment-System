@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { api, errorText, type Bill } from "../lib/api";
 import { fa, formatDay, formatNumeric } from "../lib/solar";
 import { inWords } from "../lib/words";
+import { Modal } from "./Modal";
 
 export const CATEGORY_LABEL: Record<string, string> = {
   monthly: "عضویت ماهانه", daily: "عضویت روزانه", internet: "انترنت ماهانه", hotspot: "انترنت هاتسپات",
@@ -102,23 +103,21 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
   }
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="بل">
-      <div className="modal-body">
-        <div className="modal-tools no-print">
-          <button className="btn" onClick={print} disabled={!bill}>چاپ</button>
-          <label className="paper-pick">
-            <span className="muted small">اندازهٔ ورق</span>
-            <select value={paper} onChange={(e) => choose(e.target.value as Paper)}>
-              {(Object.keys(PAPER) as Paper[]).map((k) => <option key={k} value={k}>{PAPER[k].label}</option>)}
-            </select>
-          </label>
-          <button className="btn ghost" onClick={onClose}>بستن</button>
-        </div>
-        {error && <p className="form-error">{error}</p>}
-        {bill ? <div style={{ zoom: Math.min(PAPER[paper].zoom, 1) }}><BillSheet bill={bill} /></div> : !error && <p className="muted">در حال بارگذاری…</p>}
+    <Modal label="بل" onClose={onClose} bare>
+      <div className="modal-tools no-print">
+        <button className="btn" onClick={print} disabled={!bill}>چاپ</button>
+        <label className="paper-pick">
+          <span className="muted small">اندازهٔ ورق</span>
+          <select value={paper} onChange={(e) => choose(e.target.value as Paper)}>
+            {(Object.keys(PAPER) as Paper[]).map((k) => <option key={k} value={k}>{PAPER[k].label}</option>)}
+          </select>
+        </label>
+        <button className="btn ghost" onClick={onClose}>بستن</button>
       </div>
-      {/* Printing shows only this copy, outside the app, so the bill is exactly one page. */}
-      {bill && createPortal(<div className="print-only"><BillSheet bill={bill} /></div>, document.body)}
-    </div>
+      {error && <p className="form-error">{error}</p>}
+      {bill ? <div style={{ zoom: Math.min(PAPER[paper].zoom, 1) }}><BillSheet bill={bill} /></div> : !error && <p className="muted">در حال بارگذاری…</p>}
+    {/* Printing shows only this copy, outside the app, so the bill is exactly one page. */}
+    {bill && createPortal(<div className="print-only"><BillSheet bill={bill} /></div>, document.body)}
+    </Modal>
   );
 }

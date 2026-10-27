@@ -3,6 +3,7 @@ import { api, ApiError, errorText, type DocKind, type MemberDocument } from "../
 import { shrink, useDocumentUrl } from "../../lib/images";
 import { CameraCapture } from "../../components/CameraCapture";
 import { RemoveButton } from "../../components/RemoveButton";
+import { Modal } from "../../components/Modal";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -96,14 +97,12 @@ function Slot({ label, doc, busy, pdf, onFile, onCamera, onView, onRemove }: {
 function Viewer({ doc, onClose }: { doc: MemberDocument; onClose: () => void }) {
   const { url, failed } = useDocumentUrl(doc.id);
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="عکس" onClick={onClose}>
-      <div className="modal-body doc-view" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-tools"><button className="btn ghost" onClick={onClose}>بستن</button></div>
-        {failed ? <p className="form-error">{errorText(new ApiError(404, "file_missing"))}</p>
-          : !url ? <p className="muted">در حال بارگذاری…</p>
-          : doc.mime_type === "application/pdf" ? <iframe src={url} title="PDF" />
-          : <img src={url} alt="" />}
-      </div>
-    </div>
+    <Modal label="عکس" onClose={onClose} bare className="doc-view">
+      <div className="modal-tools"><button className="btn ghost" onClick={onClose}>بستن</button></div>
+      {failed ? <p className="form-error">{errorText(new ApiError(404, "file_missing"))}</p>
+        : !url ? <p className="muted">در حال بارگذاری…</p>
+        : doc.mime_type === "application/pdf" ? <iframe src={url} title="PDF" />
+        : <img src={url} alt="" />}
+    </Modal>
   );
 }

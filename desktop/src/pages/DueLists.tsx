@@ -51,7 +51,7 @@ function DueList<T>(props: {
             </button>
           ))}
         </div>
-        <input ref={search} className="search" type="search" placeholder={props.searchHint} value={q} onChange={(e) => setQ(e.target.value)} />
+        <input ref={search} className="search" type="search" placeholder={props.searchHint} aria-label={props.searchHint} value={q} onChange={(e) => setQ(e.target.value)} />
         {props.action}
       </div>
       <p className="muted small">{props.hint[scope === "attention" ? 0 : 1]}{page ? ` · ${fa(page.total)} مورد` : ""}</p>
@@ -90,7 +90,8 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
           const go = m.member_id ? () => open(m.member_id!) : m.receipt_id ? () => setBill(m.receipt_id) : undefined;
           return (
             <tr key={m.member_id ?? `guest-${m.receipt_id ?? m.name}-${m.last_start}`}
-              className={`${go ? "clickable" : ""}${m.days_left !== null && m.days_left < 0 && m.member_id ? " late" : ""}`} onClick={go}>
+              className={`${go ? "clickable" : ""}${m.days_left !== null && m.days_left < 0 && m.member_id ? " late" : ""}`} onClick={go}
+              tabIndex={go ? 0 : undefined} onKeyDown={go ? (e) => { if (e.key === "Enter") go(); } : undefined}>
               <td className="num">{m.member_no ?? <span className="chip kind-daily">مهمان</span>}</td>
               <td><strong>{m.name}</strong></td>
               <td>{m.father_name ?? "—"}</td>
@@ -119,7 +120,8 @@ export function LoansList({ open, action }: { open: (id: string) => void; action
       empty="هیچ کتابی نزدیک به موعد یا دیرکرده نیست."
       head={<tr><th>کتاب</th><th>امانت‌گیرنده</th><th>آیدی / کارت</th><th>شماره تماس</th><th>تاریخ امانت</th><th>موعد برگشت</th><th>وضعیت</th></tr>}
       row={(l) => (
-        <tr key={l.loan_id} className={`clickable${l.days_left < 0 ? " late" : ""}`} onClick={() => open(l.loan_id)}>
+        <tr key={l.loan_id} className={`clickable${l.days_left < 0 ? " late" : ""}`} onClick={() => open(l.loan_id)}
+          tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter") open(l.loan_id); }}>
           <td><strong>{l.book_title}</strong></td>
           <td>{l.member_name}</td>
           <td className="num"><bdi dir="ltr">{l.card_no}</bdi></td>

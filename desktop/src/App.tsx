@@ -17,6 +17,7 @@ import { Bills } from "./pages/Bills";
 import { Money } from "./pages/Money";
 import { Salaries } from "./pages/Salaries";
 import { Prices } from "./pages/Prices";
+import { Audit } from "./pages/Audit";
 import { FirstSetup, ForcePasswordChange, Login } from "./pages/Login";
 import { Offline } from "./pages/Offline";
 import { Icon } from "./components/Icon";
@@ -26,30 +27,35 @@ import { api, ROLE_LABEL, type Role } from "./lib/api";
 
 const ALL: Role[] = ["partner", "manager", "pec_staff"];
 const HALL: Role[] = ["partner", "manager"];
+const PARTNER: Role[] = ["partner"];
 
 // Which roles see each section. The API and the database enforce the same rules;
-// hiding a section here only keeps the menu tidy.
+// hiding a section here only keeps the menu tidy. Grouped as the work is: the desk,
+// the money, the education department, running the system.
 const NAV = [
-  { id: "dashboard", icon: "home", label: "داشبورد", roles: ALL },
-  { id: "members", icon: "users", label: "اعضا", roles: HALL },
-  { id: "registrations", icon: "plus", label: "ثبت‌نام‌ها", roles: HALL },
-  { id: "memberships", icon: "card", label: "پذیرش و تمدید", roles: HALL },
-  { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL },
-  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL },
-  { id: "salaries", icon: "briefcase", label: "معاش کارمندان", roles: HALL },
-  { id: "books", icon: "book", label: "امانت کتاب", roles: HALL },
-  { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", roles: HALL },
-  { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL },
-  { id: "pec", icon: "briefcase", label: "خدمات تحصیلی", roles: ["partner", "pec_staff"] as Role[] },
-  { id: "shares", icon: "pie", label: "سهم شرکا", roles: ["partner"] as Role[] },
-  { id: "users", icon: "shield", label: "کاربران", roles: ["partner"] as Role[] },
-  { id: "backup", icon: "database", label: "پشتیبان", roles: ["partner"] as Role[] },
-  { id: "prices", icon: "settings", label: "قیمت‌ها", roles: ["partner"] as Role[] },
-  { id: "import", icon: "upload", label: "ورود از اکسل", roles: ["partner"] as Role[] },
-  { id: "settings", icon: "settings", label: "تنظیمات من", roles: ALL },
+  { id: "dashboard", icon: "home", label: "داشبورد", roles: ALL, group: "" },
+  { id: "memberships", icon: "card", label: "پذیرش و تمدید", roles: HALL, group: "کار روزانه" },
+  { id: "members", icon: "users", label: "اعضا", roles: HALL, group: "کار روزانه" },
+  { id: "registrations", icon: "userPlus", label: "ثبت‌نام‌ها", roles: HALL, group: "کار روزانه" },
+  { id: "books", icon: "book", label: "امانت کتاب", roles: HALL, group: "کار روزانه" },
+  { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", roles: HALL, group: "کار روزانه" },
+  { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL, group: "حساب و پول" },
+  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL, group: "حساب و پول" },
+  { id: "salaries", icon: "banknote", label: "معاش کارمندان", roles: HALL, group: "حساب و پول" },
+  { id: "shares", icon: "pie", label: "سهم شرکا", roles: PARTNER, group: "حساب و پول" },
+  { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL, group: "حساب و پول", soon: true },
+  { id: "pec", icon: "cap", label: "خدمات تحصیلی", roles: ["partner", "pec_staff"] as Role[], group: "خدمات تحصیلی", soon: true },
+  { id: "audit", icon: "history", label: "چه کسی چه کرد", roles: PARTNER, group: "مدیریت" },
+  { id: "users", icon: "shield", label: "کاربران", roles: PARTNER, group: "مدیریت" },
+  { id: "prices", icon: "tag", label: "قیمت‌ها", roles: PARTNER, group: "مدیریت" },
+  { id: "backup", icon: "database", label: "پشتیبان", roles: PARTNER, group: "مدیریت" },
+  { id: "import", icon: "upload", label: "ورود از اکسل", roles: PARTNER, group: "مدیریت" },
+  { id: "settings", icon: "user", label: "تنظیمات من", roles: ALL, group: "" },
 ] as const;
 
 type PageId = (typeof NAV)[number]["id"];
+/** Where the app is: a page, and inside "members" one member or the new-member form. */
+type View = { page: PageId; member: { id: string | null; bill?: string | null } | null; reg?: RegFilter };
 
 export default function App() {
   const { status, user, retry } = useAuth();
@@ -64,20 +70,38 @@ function Shell() {
   const { user, signOut } = useAuth();
   const { dark, setMode } = useTheme();
   const nav = NAV.filter((n) => (n.roles as readonly Role[]).includes(user!.role));
-  const [page, setPageId] = useState<PageId>("dashboard");
-  // Inside "members": one member's page, or the new-member form (with the bill to show after saving).
-  const [member, setMember] = useState<{ id: string | null; bill?: string | null } | null>(null);
-  const [reg, setReg] = useState<RegFilter | undefined>(undefined);
-  const setPage = (id: PageId) => { setPageId(id); setMember(null); setReg(undefined); };
-  const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) => {
-    setPage(id);
-    if (id === "registrations") setReg({ span: "today", kind });
+  const [view, setView] = useState<View>({ page: "dashboard", member: null });
+  // Earlier views, for «برگشت» (and Alt+←), like a browser's history.
+  const [history, setHistory] = useState<View[]>([]);
+  const [listKey, setListKey] = useState(0);
+  const go = (next: View) => {
+    setHistory((h) => [...h.slice(-29), view]);
+    setView(next);
   };
-  const openMember = (id: string, bill: string | null = null) => { setPageId("members"); setMember({ id, bill }); };
+  const back = () => {
+    const prev = history[history.length - 1];
+    if (!prev) return;
+    setHistory((h) => h.slice(0, -1));
+    setView(prev);
+  };
+  const { page, member, reg } = view;
+  const setPage = (id: PageId) => { if (id !== page || member) go({ page: id, member: null }); };
+  const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) =>
+    go({ page: id, member: null, reg: id === "registrations" ? { span: "today", kind } : undefined });
+  const openMember = (id: string, bill: string | null = null) => go({ page: "members", member: { id, bill } });
   useEffect(() => {
-    if (!nav.some((n) => n.id === page)) setPage("dashboard");
+    if (!nav.some((n) => n.id === page)) setView({ page: "dashboard", member: null });
   }, [user, nav, page]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.preventDefault(); back(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const current = nav.find((n) => n.id === page) ?? nav[0];
+  const main = nav.filter((n) => n.id !== "settings");
+  const groups = [...new Set(main.map((n) => n.group))];
 
   return (
     <div className="shell">
@@ -89,9 +113,23 @@ function Shell() {
             <span>سیستم مدیریت</span>
           </div>
         </div>
-        <nav>
-          {nav.map((n) => (
-            <button key={n.id} className={n.id === page ? "active" : ""} onClick={() => setPage(n.id)}>
+        <nav aria-label="بخش‌ها">
+          {groups.map((g) => (
+            <div key={g || "top"} role="group" aria-label={g || "داشبورد"}>
+              {g && <div className="nav-group">{g}</div>}
+              {main.filter((n) => n.group === g).map((n) => (
+                <button key={n.id} className={n.id === page ? "active" : ""} aria-current={n.id === page ? "page" : undefined} onClick={() => setPage(n.id)}>
+                  <Icon name={n.icon} size={19} />
+                  <span>{n.label}</span>
+                  {"soon" in n && n.soon && <span className="soon">به‌زودی</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <nav aria-label="من">
+          {nav.filter((n) => n.id === "settings").map((n) => (
+            <button key={n.id} className={n.id === page ? "active" : ""} aria-current={n.id === page ? "page" : undefined} onClick={() => setPage(n.id)}>
               <Icon name={n.icon} size={19} />
               <span>{n.label}</span>
             </button>
@@ -113,6 +151,13 @@ function Shell() {
         </div>
       </aside>
       <main className="content">
+        {page === "dashboard" && !history.length ? null : (
+          <div className="back-row">
+            <button className="btn ghost small" disabled={!history.length} onClick={back} title="Alt + ←">
+              <Icon name="back" size={16} /> برگشت
+            </button>
+          </div>
+        )}
         {page === "dashboard" ? (
           user!.role === "pec_staff" ? <PecHome /> : <Dashboard go={goFromDashboard} />
         ) : (
@@ -120,19 +165,27 @@ function Shell() {
             <h1>{member?.id === null ? "عضو جدید" : current.label}</h1>
             {page === "settings" ? <Settings />
               : page === "users" ? <Users />
-              : page === "members" && member?.id ? <MemberPage key={member.id} id={member.id} openBill={member.bill} onBack={() => setMember(null)} />
-              : page === "members" && member ? <NewMember onSaved={(id, bill) => openMember(id, bill)} onCancel={() => setMember(null)} />
-              : page === "members" ? <MembersList open={(id) => openMember(id)} add={() => setMember({ id: null })} />
-              : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => { setPageId("members"); setMember({ id: null }); }} />
+              : page === "members" ? (
+                <>
+                  {member?.id && <MemberPage key={member.id} id={member.id} openBill={member.bill} onBack={back} onRemoved={() => { setListKey((k) => k + 1); back(); }} />}
+                  {member && member.id === null && <NewMember onSaved={(id, bill) => openMember(id, bill)} onCancel={back} />}
+                  {/* The list stays mounted under a member's page, so its search and place are kept. */}
+                  <div hidden={!!member}>
+                    <MembersList key={listKey} open={(id) => openMember(id)} add={() => go({ page: "members", member: { id: null } })} />
+                  </div>
+                </>
+              )
+              : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => go({ page: "members", member: { id: null } })} />
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
-              : page === "expenses" ? <Money />
+              : page === "expenses" ? <Money openSalaries={() => setPage("salaries")} />
               : page === "salaries" ? <Salaries />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />
               : page === "hotspot" ? <Hotspot />
               : page === "shares" ? <Shares />
               : page === "backup" ? <Backup />
+              : page === "audit" ? <Audit openMember={(id) => openMember(id)} />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />
               : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
           </>

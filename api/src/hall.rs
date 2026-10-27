@@ -660,7 +660,12 @@ pub async fn void_bill(
 
 /// A period typed in by mistake without a bill (record_only) can be removed again: by a
 /// partner at any time, by the manager on the day it was typed.
-pub async fn delete_period(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+pub async fn delete_period(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(r): Query<Reason>,
+) -> Result<StatusCode, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let row: Option<(bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
@@ -677,7 +682,102 @@ pub async fn delete_period(State(s): State<AppState>, user: CurrentUser, Path(id
     if !user.is_partner() && !typed_today(created) {
         return Err(ApiError(StatusCode::FORBIDDEN, "remove_today_only"));
     }
-    sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE memberships SET deleted_at = now(), deleted_reason = $2 WHERE id = $1")
+        .bind(id)
+        .bind(clean(&r.reason))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct Reason {
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PeriodDates {
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    note: Option<String>,
+}
+
+/// Correcting the dates of a period typed wrong. The bill keeps its amount; the audit log
+/// keeps the old dates. Same rule as removing: a partner at any time, the manager on the day.
+pub async fn update_period(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(b): Json<PeriodDates>,
+) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    if b.end_date < b.start_date {
+        return Err(ApiError::bad("bad_range"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let created: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at FROM memberships WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(NOT_FOUND)?;
+    if !user.is_partner() && !typed_today(created) {
+        return Err(ApiError(StatusCode::FORBIDDEN, "remove_today_only"));
+    }
+    sqlx::query("UPDATE memberships SET start_date = $2, end_date = $3, note = $4 WHERE id = $1")
+        .bind(id)
+        .bind(b.start_date)
+        .bind(b.end_date)
+        .bind(clean(&b.note))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removing a member (partners only). Their periods and documents go with them (by trigger,
+/// see migration 0013); their bills stay, because the money was received. Blocked while
+/// they still have a book or a guarantee out.
+pub async fn delete_member(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(r): Query<Reason>,
+) -> Result<StatusCode, ApiError> {
+    if !user.is_partner() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query("UPDATE members SET deleted_at = now(), deleted_reason = $2 WHERE id = $1 AND deleted_at IS NULL")
+        .bind(id)
+        .bind(clean(&r.reason))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(d) if d.message() == "member_has_open_loans" => ApiError::bad("member_has_open_loans"),
+            _ => e.into(),
+        })?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Bringing a removed member back, with the periods and documents removed together with them.
+pub async fn restore_member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    if !user.is_partner() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query("UPDATE members SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,19 +1,29 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type MemberDetail, type MemberInput, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
+import { api, errorText, type MemberDetail, type MemberInput, type Period, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
 import { daysBetween, fa, formatDay, iso, parseIso } from "../../lib/solar";
 import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview } from "../../components/BillSheet";
-import { RemoveButton } from "../../components/RemoveButton";
+import { DeleteDialog } from "../../components/DeleteDialog";
+import { Modal } from "../../components/Modal";
+import { SolarDate } from "../../components/SolarDate";
+import { Icon } from "../../components/Icon";
+import { useToast } from "../../components/Toast";
+import { useAuth } from "../../auth/AuthProvider";
 import { MemberCardPreview } from "../../components/MemberCard";
 import { useDocumentUrl } from "../../lib/images";
 import { Documents } from "./Documents";
 
-const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
 import { MemberFields } from "./MemberFields";
 
+const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
+
 /** One member: details, every paid period, and renewing (which prints the bill). */
-export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () => void; openBill?: string | null }) {
+export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: () => void; onRemoved?: () => void; openBill?: string | null }) {
+  const toast = useToast();
+  const partner = useAuth().user?.role === "partner";
+  const [removing, setRemoving] = useState<"member" | Period | null>(null);
+  const [dates, setDates] = useState<Period | null>(null);
   const [d, setD] = useState<MemberDetail | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
@@ -30,16 +40,9 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
   const m = d.member;
   const name = `${m.first_name} ${m.last_name ?? ""}`.trim();
 
-  async function removePeriod(pid: string) {
-    try { await api.deletePeriod(pid); await load(); } catch (e) { setError(errorText(e)); }
-  }
 
   return (
     <div className="page">
-      <div className="page-head">
-        <button className="btn ghost" onClick={onBack}>→ برگشت به اعضا</button>
-      </div>
-
       <section className="panel wide member-head">
         <div className="member-title">
           {photo && <img className="member-photo" src={photo} alt="" />}
@@ -68,6 +71,7 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
             {!d.periods.length && <button className="btn ghost" onClick={() => setMode("record")}>ثبت تاریخ عضویت فعلی (پولش قبلاً گرفته شده)</button>}
             <button className="btn ghost" onClick={() => setMode("edit")}>ویرایش مشخصات</button>
             <button className="btn ghost" onClick={() => setCard(true)}>چاپ کارت عضویت</button>
+            {partner && <button className="btn ghost danger-text" onClick={() => setRemoving("member")}><Icon name="trash" /> حذف عضو</button>}
           </div>
         )}
       </section>
@@ -85,7 +89,7 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
 
       <section className="glass table-wrap">
         <table className="table">
-          <thead><tr><th>نوع</th><th>از</th><th>تا</th><th>مبلغ</th><th>بل</th><th /></tr></thead>
+          <thead><tr><th>نوع</th><th>از</th><th>تا</th><th className="num">مبلغ</th><th>بل</th><th><span className="sr-only">کارها</span></th></tr></thead>
           <tbody>
             {d.periods.map((p) => (
               <tr key={p.id}>
@@ -94,7 +98,12 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
                 <td>{formatDay(p.end_date)}</td>
                 <td className="num">{p.receipt_id ? fa(p.fee - p.discount) : "—"}</td>
                 <td>{p.receipt_no ? <button className="link" onClick={() => setBill(p.receipt_id)}><bdi dir="ltr">{p.receipt_no}</bdi></button> : "—"}</td>
-                <td>{p.removable && <RemoveButton onConfirm={() => void removePeriod(p.id)} />}</td>
+                <td>
+                  <span className="row-tools">
+                    {(partner || p.removable) && <button className="btn small ghost" aria-label="اصلاح تاریخ" onClick={() => setDates(p)}><Icon name="edit" /></button>}
+                    {p.removable && <button className="btn small ghost" aria-label="حذف" onClick={() => setRemoving(p)}><Icon name="trash" /></button>}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -102,6 +111,24 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
         {!d.periods.length && <p className="muted empty">هنوز هیچ دوره‌ای ثبت نشده. اگر این عضو از اکسل آمده، تاریخ عضویت فعلی‌اش را از دستگاه اثر انگشت ثبت کنید.</p>}
       </section>
 
+      {removing === "member" && (
+        <DeleteDialog title={`حذف ${name}`} action="حذف عضو" reasonRequired onClose={() => setRemoving(null)}
+          onConfirm={async (reason) => {
+            await api.deleteMember(id, reason);
+            setRemoving(null);
+            toast(`${name} حذف شد.`, async () => { await api.restoreMember(id); });
+            onRemoved?.();
+          }}>
+          دوره‌ها و عکس و تذکرهٔ این عضو هم با او حذف می‌شوند. بل‌هایش می‌مانند، چون پولش گرفته شده. اگر اشتباه شد، از «چه کسی چه کرد» برگردانده می‌شود.
+        </DeleteDialog>
+      )}
+      {removing && removing !== "member" && (
+        <DeleteDialog title="حذف دوره" onClose={() => setRemoving(null)}
+          onConfirm={async (reason) => { await api.deletePeriod(removing.id, reason); setRemoving(null); await load(); toast("دوره حذف شد."); }}>
+          {removing.plan_name}، از {formatDay(removing.start_date)} تا {formatDay(removing.end_date)}.
+        </DeleteDialog>
+      )}
+      {dates && <PeriodDates period={dates} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("تاریخ دوره اصلاح شد."); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
     </div>
@@ -186,5 +213,36 @@ function AddPeriod({ id, detail, plans, record, onDone, onCancel }: {
         <button className="btn ghost" onClick={onCancel}>انصراف</button>
       </div>
     </section>
+  );
+}
+
+/** Correcting the dates of a period typed wrong; the bill keeps its amount. */
+function PeriodDates({ period, onClose }: { period: Period; onClose: (saved: boolean) => void }) {
+  const [start, setStart] = useState(period.start_date);
+  const [end, setEnd] = useState(period.end_date);
+  const [note, setNote] = useState(period.note ?? "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    if (!start || !end) return setError("هر دو تاریخ را انتخاب کنید.");
+    if (end < start) return setError("تاریخ ختم پیش از شروع است.");
+    setBusy(true);
+    try { await api.updatePeriod(period.id, { start_date: start, end_date: end, note }); onClose(true); } catch (e) { setError(errorText(e)); setBusy(false); }
+  }
+  return (
+    <Modal label="اصلاح تاریخ دوره" onClose={() => onClose(false)}>
+      <h2>اصلاح تاریخ دوره</h2>
+      <p className="muted">{period.plan_name}{period.receipt_no && <>، بل <bdi dir="ltr">{period.receipt_no}</bdi> (مبلغ بل تغییر نمی‌کند)</>}. تاریخ‌های قبلی در «چه کسی چه کرد» می‌مانند.</p>
+      <div className="form-grid">
+        <SolarDate label="از" value={start} onChange={setStart} />
+        <SolarDate label="تا" value={end} onChange={setEnd} />
+        <label className="field wide span-2"><span>یادداشت</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: روزهای بسته بودن سالن اضافه شد" /></label>
+      </div>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" disabled={busy} onClick={() => void save()}>ذخیره</button>
+        <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
+      </div>
+    </Modal>
   );
 }

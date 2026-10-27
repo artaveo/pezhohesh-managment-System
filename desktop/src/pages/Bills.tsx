@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { fa, formatDay, iso } from "../lib/solar";
 import { BillPreview, CATEGORY_LABEL } from "../components/BillSheet";
 import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
+import { Modal } from "../components/Modal";
 
 /** Every bill issued in the program: find, show and print again, or void a wrong one. */
 export function Bills() {
@@ -34,7 +35,7 @@ export function Bills() {
     <div className="page">
       <div className="list-tools">
         <PeriodPicker value={period.value} onChange={period.setValue} />
-        <input className="search" type="search" placeholder="جستجو: شمارهٔ بل، نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="search" type="search" placeholder="جستجو: شمارهٔ بل، نام، آیدی یا شماره تماس" aria-label="جستجو: شمارهٔ بل، نام، آیدی یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       {page && (
         <p className="muted small">
@@ -81,20 +82,18 @@ export function VoidBill({ bill, note, onClose }: { bill: Bill; note?: string; o
     try { await api.voidBill(bill.id, reason); onClose(true); } catch (e) { setError(errorText(e)); setBusy(false); }
   }
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="باطل کردن بل">
-      <div className="modal-body panel">
-        <h2>باطل کردن بل <bdi dir="ltr">{bill.receipt_no}</bdi></h2>
-        <p className="muted">
-          {fa(bill.amount)} افغانی، {bill.customer ?? bill.description}. بل پاک نمی‌شود؛ با نشان «باطل» می‌ماند و از درآمد کم می‌شود.
-          {note ? ` ${note}` : bill.book_loan_id ? " اگر ضمانتش هنوز نزد ماست، کتاب دوباره «بیرون» حساب می‌شود تا برگشتش را با مبلغ درست ثبت کنید." : bill.start_date && " عضویتی که با این بل ثبت شده هم برداشته می‌شود."}
-        </p>
-        <label className="field wide"><span>دلیل *</span><input value={reason} onChange={(e) => setReason(e.target.value)} autoFocus placeholder="مثلاً: مبلغ اشتباه نوشته شد" /></label>
-        {error && <p className="form-error">{error}</p>}
-        <div className="actions">
-          <button className="btn danger" disabled={!reason.trim() || busy} onClick={() => void confirm()}>باطل کن</button>
-          <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
-        </div>
+    <Modal label="باطل کردن بل" onClose={() => onClose(false)}>
+      <h2>باطل کردن بل <bdi dir="ltr">{bill.receipt_no}</bdi></h2>
+      <p className="muted">
+        {fa(bill.amount)} افغانی، {bill.customer ?? bill.description}. بل پاک نمی‌شود؛ با نشان «باطل» می‌ماند و از درآمد کم می‌شود.
+        {note ? ` ${note}` : bill.book_loan_id ? " اگر ضمانتش هنوز نزد ماست، کتاب دوباره «بیرون» حساب می‌شود تا برگشتش را با مبلغ درست ثبت کنید." : bill.start_date && " عضویتی که با این بل ثبت شده هم برداشته می‌شود."}
+      </p>
+      <label className="field wide"><span>دلیل *</span><input value={reason} onChange={(e) => setReason(e.target.value)} autoFocus placeholder="مثلاً: مبلغ اشتباه نوشته شد" /></label>
+      {error && <p className="form-error">{error}</p>}
+      <div className="actions">
+        <button className="btn danger" disabled={!reason.trim() || busy} onClick={() => void confirm()}>باطل کن</button>
+        <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
       </div>
-    </div>
+    </Modal>
   );
 }

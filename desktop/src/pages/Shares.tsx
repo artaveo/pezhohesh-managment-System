@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { addDays, fa, iso, monthName, monthsOfYear, nextYear, parseIso, yearNumber, yearStart } from "../lib/solar";
-import { loadRanges, total, type Range, type Sum } from "../lib/reports";
+import { balance, loadRanges, total, type Range, type Sum } from "../lib/reports";
 import { useLoad } from "../lib/useLoad";
 import { MANAGER_SALARY, PARTNERS, shares } from "../lib/shares";
 import { Failed, Loading } from "../components/Stat";
@@ -71,7 +71,7 @@ export function Shares() {
         <div className="glass kpi">
           <span className="kpi-label">موجودی (پول باقی‌مانده)</span>
           <span className="kpi-value">{fa(cash)} <small>؋</small></span>
-          <span className="muted small">بیلانس {fa(data.year.income - data.year.expenses)} منهای همهٔ برداشت‌ها</span>
+          <span className="muted small">بیلانس {fa(balance(data.year))} منهای همهٔ برداشت‌ها</span>
         </div>
       </section>
 
@@ -88,7 +88,8 @@ export function Shares() {
             <tbody>
               {row("مجموع درآمد", (s) => s.income)}
               {row("مجموع مصارفات", (s) => s.expenses)}
-              {row("بیلانس", (s) => s.income - s.expenses, "net")}
+              {data.year.estimated !== 0 && row("بیلانس برآوردی (دستی)", (s) => s.estimated)}
+              {row("بیلانس", balance, "net")}
               {row(MANAGER_SALARY, (s) => s.expenses_by_category[MANAGER_SALARY] ?? 0)}
               <tr className="section"><th scope="row" colSpan={14}>سهمیه</th></tr>
               {PARTNERS.map((p) => row(`سهمیه ${p.short}`, of(p.name, "share"), "sum"))}

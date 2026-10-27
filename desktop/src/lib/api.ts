@@ -51,7 +51,7 @@ export type Dashboard = {
 /** Income and expenses for consecutive date ranges [from, to). */
 export type PeriodRow = {
   from: string; to: string;
-  income: number; expenses: number; new_members: number;
+  income: number; expenses: number; estimated: number; new_members: number;
   income_by_category?: Record<string, number>;
   expenses_by_category?: Record<string, number>;
   withdrawals_by_person?: Record<string, number>;
@@ -137,22 +137,40 @@ export type Bill = {
 export type BillPage = { total: number; sum: number; rows: Bill[] };
 export type Category = { id: string; name: string };
 export type Lines<T> = { total: number; sum: number; rows: T[] };
-export type Expense = { id: string; spent_on: string; category: string; description: string | null; amount: number; created_by: string | null; from_excel: boolean; removable: boolean };
+export type Expense = { id: string; spent_on: string; category_id: string; category: string; description: string | null; amount: number; created_by: string | null; from_excel: boolean; removable: boolean };
 export type Person = { id: string; full_name: string; title: string | null };
-export type SalaryMonth = { accrued: number; taken: number };
+export type SalaryMonth = { year: number; month: number; accrued: number; taken: number };
+export type SalaryPayment = { id: string; day: string; amount: number; note: string | null; source: "expense" | "withdrawal" };
 export type SalaryPerson = {
   id: string; full_name: string; title: string | null; monthly_salary: number;
   category_id: string | null; category: string | null;
   /** First day of the Solar month the salary starts. */
   salary_from: string | null; active: boolean;
-  /** Hamal..Hut of the year asked for. */
+  /** Every month of the range from the first salary month up to this month, oldest first. */
   months: SalaryMonth[];
-  /** Salary minus what was taken before the year (positive: owed to the person), and up to today. */
-  before: number; balance: number;
+  /** Payments of the range, oldest first. */
+  payments: SalaryPayment[];
+  /** Salary minus what was paid before the range (positive: owed to the person), and up to today. */
+  opening: number; balance: number; last_paid: string | null;
 };
-export type SalaryPage = { year: number; this_month: number | null; people: SalaryPerson[]; categories: { id: string; name: string }[] };
-export type SalaryInput = { full_name?: string; title?: string; monthly_salary: number; category_id: string; from: string; active: boolean };
-export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
+export type SalaryPage = { this_year: number; this_month: number; people: SalaryPerson[]; categories: { id: string; name: string }[] };
+export type SalaryInput = {
+  full_name?: string; title?: string; monthly_salary: number; category_id: string; from: string; active: boolean;
+  /** On a change: a day of the first month the new amount counts from. */
+  amount_from?: string;
+};
+export type ExpenseInput = { category_id: string; spent_on?: string; amount: number; description?: string };
+export type WithdrawalInput = { staff_id: string; taken_on?: string; amount: number; note?: string };
+export type AuditFilter = { from?: string; to?: string; table?: string; user?: string; q?: string; import?: boolean; before?: number };
+export type AuditChange = { field: string; before: unknown; after: unknown };
+export type AuditLine = {
+  id: number; at: string; user: string | null; table: string; row_id: string | null;
+  kind: "insert" | "update" | "remove" | "restore" | "void";
+  label: string; amount: unknown; reason: string | null; member_id: string | null; changes: AuditChange[]; restorable: boolean;
+};
+export type AuditPage = { lines: AuditLine[]; more: boolean; users: { id: string; name: string }[] };
+export type MonthSummary = { id: string; solar_year: number; solar_month: number; starts_on: string; net_balance: number; note: string | null };
+export type Withdrawal = { id: string; taken_on: string; staff_id: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
 export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number };
 export type BackupOutcome = {
@@ -262,6 +280,8 @@ async function request<T>(path: string, init: { method?: string; body?: unknown;
 
 type Session = { token: string; user: User };
 
+const why = (reason?: string) => reason ? `?${query({ reason })}` : "";
+
 export const api = {
   setupStatus: () => request<{ needs_setup: boolean }>("/setup"),
   setup: (b: { full_name: string; username: string; password: string }) => request<Session>("/setup", { method: "POST", body: b }),
@@ -318,7 +338,10 @@ export const api = {
   member: (id: string, signal?: AbortSignal) => request<MemberDetail>(`/members/${id}`, { signal }),
   updateMember: (id: string, m: MemberInput) => request<void>(`/members/${id}`, { method: "PUT", body: m }),
   addPeriod: (id: string, p: PeriodInput) => request<Saved>(`/members/${id}/periods`, { method: "POST", body: p }),
-  deletePeriod: (id: string) => request<void>(`/periods/${id}`, { method: "DELETE" }),
+  deletePeriod: (id: string, reason?: string) => request<void>(`/periods/${id}${why(reason)}`, { method: "DELETE" }),
+  updatePeriod: (id: string, p: { start_date: string; end_date: string; note?: string | null }) => request<void>(`/periods/${id}`, { method: "PUT", body: p }),
+  deleteMember: (id: string, reason?: string) => request<void>(`/members/${id}${why(reason)}`, { method: "DELETE" }),
+  restoreMember: (id: string) => request<void>(`/members/${id}/restore`, { method: "POST" }),
   dailySeat: (b: { member_id?: string | null; guest_name?: string | null } & PeriodInput) => request<Saved>("/daily-seats", { method: "POST", body: b }),
   otherBill: (b: { income_category: string; amount: number; description?: string }) => request<Saved>("/bills", { method: "POST", body: b }),
   bills: (p: Range & { q?: string; limit?: number; offset?: number }, signal?: AbortSignal) =>
@@ -332,15 +355,23 @@ export const api = {
   categories: () => request<Category[]>("/expense-categories"),
   createCategory: (name: string) => request<string>("/expense-categories", { method: "POST", body: { name } }),
   expenses: (r: Range, signal?: AbortSignal) => request<Lines<Expense>>(`/expenses?${query(r)}`, { signal }),
-  createExpense: (e: { category_id: string; spent_on?: string; amount: number; description?: string }) => request<string>("/expenses", { method: "POST", body: e }),
-  deleteExpense: (id: string) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
+  createExpense: (e: ExpenseInput) => request<string>("/expenses", { method: "POST", body: e }),
+  updateExpense: (id: string, e: ExpenseInput) => request<void>(`/expenses/${id}`, { method: "PUT", body: e }),
+  deleteExpense: (id: string, reason?: string) => request<void>(`/expenses/${id}${why(reason)}`, { method: "DELETE" }),
+  restoreExpense: (id: string) => request<void>(`/expenses/${id}/restore`, { method: "POST" }),
   staff: () => request<Person[]>("/staff"),
-  salaries: (year?: number, signal?: AbortSignal) => request<SalaryPage>(`/salaries${year ? `?year=${year}` : ""}`, { signal }),
+  salaries: (r: Range = {}, signal?: AbortSignal) => request<SalaryPage>(`/salaries?${query(r)}`, { signal }),
+  setSalaryMonth: (id: string, m: { year: number; month: number; amount: number }) => request<void>(`/salaries/${id}/month`, { method: "PUT", body: m }),
   createSalary: (s: SalaryInput) => request<string>("/salaries", { method: "POST", body: s }),
   updateSalary: (id: string, s: SalaryInput) => request<void>(`/salaries/${id}`, { method: "PUT", body: s }),
   withdrawals: (r: Range, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
-  createWithdrawal: (w: { staff_id: string; taken_on?: string; amount: number; note?: string }) => request<string>("/withdrawals", { method: "POST", body: w }),
-  deleteWithdrawal: (id: string) => request<void>(`/withdrawals/${id}`, { method: "DELETE" }),
+  createWithdrawal: (w: WithdrawalInput) => request<string>("/withdrawals", { method: "POST", body: w }),
+  updateWithdrawal: (id: string, w: WithdrawalInput) => request<void>(`/withdrawals/${id}`, { method: "PUT", body: w }),
+  deleteWithdrawal: (id: string, reason?: string) => request<void>(`/withdrawals/${id}${why(reason)}`, { method: "DELETE" }),
+  restoreWithdrawal: (id: string) => request<void>(`/withdrawals/${id}/restore`, { method: "POST" }),
+  audit: (f: AuditFilter, signal?: AbortSignal) => request<AuditPage>(`/audit?${query({ ...f, import: f.import ? "true" : undefined })}`, { signal }),
+  monthSummaries: (year: number, signal?: AbortSignal) => request<MonthSummary[]>(`/month-summaries?year=${year}`, { signal }),
+  updateMonthSummary: (id: string, b: { net_balance: number; note?: string | null }) => request<void>(`/month-summaries/${id}`, { method: "PUT", body: b }),
   bookRules: () => request<BookRules>("/book-rules"),
   setBookRules: (r: BookRules) => request<void>("/book-rules", { method: "PUT", body: r }),
   bookTitles: () => request<string[]>("/book-titles"),
@@ -401,6 +432,8 @@ export function errorText(e: unknown): string {
     case "void_today_only": return "مدیر فقط بل‌های امروز را می‌تواند باطل کند. برای بل‌های قبلی از یکی از شرکا بخواهید.";
     case "remove_today_only": return "مدیر فقط چیزی را که امروز ثبت شده می‌تواند پاک کند.";
     case "void_the_bill": return "این دوره بل دارد؛ اول بل آن را باطل کنید.";
+    case "member_has_open_loans": return "این عضو هنوز کتاب یا ضمانتی نزد کتابخانه دارد؛ اول آن را برگشت بزنید، بعد عضو را حذف کنید.";
+    case "partners_only": return "برداشت فقط برای شرکا است. پول کارمند را از صفحهٔ «معاش کارمندان» با «پرداخت» ثبت کنید.";
     case "not_found": return "پیدا نشد؛ شاید کسی دیگر آن را تغییر داده باشد.";
     case "no_device": return "شمارهٔ بل این کمپیوتر تنظیم نشده.";
     case "postgres_down": return "دیتابیس (PostgreSQL) جواب نمی‌دهد. چند لحظه بعد دوباره امتحان کنید.";

@@ -10,6 +10,7 @@ import { SolarDate } from "../components/SolarDate";
 import { RemoveButton } from "../components/RemoveButton";
 import { BillPreview } from "../components/BillSheet";
 import { Icon } from "../components/Icon";
+import { Modal } from "../components/Modal";
 
 type Tab = "loans" | "lend" | "deposits" | "new-deposit";
 
@@ -69,7 +70,7 @@ function FindBorrower({ pick }: { pick: (b: Borrower) => void }) {
   }, [q]);
   return (
     <>
-      <input className="search big" type="search" autoFocus placeholder="کارت امانت (p-105)، آیدی عضو، نام یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="search big" type="search" autoFocus placeholder="کارت امانت (p-105)، آیدی عضو، نام یا شماره تماس" aria-label="کارت امانت (p-105)، آیدی عضو، نام یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       {error && <p className="form-error">{error}</p>}
       {rows && !rows.length && <p className="muted">کسی پیدا نشد. اگر عضو قرائت‌خانه نیست، اول «ضمانت جدید» بگیرید.</p>}
       {rows && rows.length > 0 && (
@@ -207,39 +208,37 @@ function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | n
   const total = amount(fee) + amount(fine);
   const c = loan?.charge;
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="برگشت کتاب">
-      <div className="modal-body panel">
-        <h2>برگشت کتاب</h2>
-        {!loan ? (error ? <p className="form-error">{error}</p> : <p className="muted">در حال بارگذاری…</p>) : (
-          <>
-            <p><strong>«{loan.book_title}»</strong> · {loan.borrower} <span className="muted">(<bdi dir="ltr">{loan.card_no}</bdi>)</span></p>
-            <p className="muted small">
-              امانت {formatDay(loan.loaned_on)} · موعد {formatDay(loan.due_on)} · فیس هفته‌وار {fa(loan.weekly_fee)} افغانی
-            </p>
-            <div className="form-grid">
-              <SolarDate label="تاریخ برگشت" value={on} onChange={setOn} />
-              <label className="field wide">
-                <span>فیس (افغانی)</span>
-                <input dir="ltr" inputMode="numeric" value={fee} onChange={(e) => setFee(digits(e.target.value))} />
-                {c && <small className="muted">{fa(c.weeks)} هفته × {fa(loan.weekly_fee)}</small>}
-              </label>
-              <label className="field wide">
-                <span>جریمه (افغانی)</span>
-                <input dir="ltr" inputMode="numeric" value={fine} onChange={(e) => setFine(digits(e.target.value))} />
-                {c && <small className={c.days_late ? "form-error inline" : "muted"}>{c.days_late ? `${fa(c.days_late)} روز دیرکرد` : "به وقتش برگشت"}</small>}
-              </label>
-            </div>
-            <p className="period-sum">{total > 0 ? <>پرداخت: <strong>{fa(total)} افغانی</strong> (بل چاپ می‌شود)</> : "پولی گرفته نمی‌شود؛ بل صادر نمی‌شود."}</p>
-            {error && <p className="form-error">{error}</p>}
-            <div className="actions">
-              <button className="btn" disabled={!on || busy} onClick={() => void save()}>{total > 0 ? "ثبت برگشت و بل" : "ثبت برگشت"}</button>
-              <button className="btn ghost" onClick={() => onClose(null)}>انصراف</button>
-              {loan.removable && <span className="muted small">اشتباه ثبت شده؟ <RemoveButton onConfirm={() => void remove()} /></span>}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+    <Modal label="برگشت کتاب" onClose={() => onClose(null)}>
+      <h2>برگشت کتاب</h2>
+      {!loan ? (error ? <p className="form-error">{error}</p> : <p className="muted">در حال بارگذاری…</p>) : (
+        <>
+          <p><strong>«{loan.book_title}»</strong> · {loan.borrower} <span className="muted">(<bdi dir="ltr">{loan.card_no}</bdi>)</span></p>
+          <p className="muted small">
+            امانت {formatDay(loan.loaned_on)} · موعد {formatDay(loan.due_on)} · فیس هفته‌وار {fa(loan.weekly_fee)} افغانی
+          </p>
+          <div className="form-grid">
+            <SolarDate label="تاریخ برگشت" value={on} onChange={setOn} />
+            <label className="field wide">
+              <span>فیس (افغانی)</span>
+              <input dir="ltr" inputMode="numeric" value={fee} onChange={(e) => setFee(digits(e.target.value))} />
+              {c && <small className="muted">{fa(c.weeks)} هفته × {fa(loan.weekly_fee)}</small>}
+            </label>
+            <label className="field wide">
+              <span>جریمه (افغانی)</span>
+              <input dir="ltr" inputMode="numeric" value={fine} onChange={(e) => setFine(digits(e.target.value))} />
+              {c && <small className={c.days_late ? "form-error inline" : "muted"}>{c.days_late ? `${fa(c.days_late)} روز دیرکرد` : "به وقتش برگشت"}</small>}
+            </label>
+          </div>
+          <p className="period-sum">{total > 0 ? <>پرداخت: <strong>{fa(total)} افغانی</strong> (بل چاپ می‌شود)</> : "پولی گرفته نمی‌شود؛ بل صادر نمی‌شود."}</p>
+          {error && <p className="form-error">{error}</p>}
+          <div className="actions">
+            <button className="btn" disabled={!on || busy} onClick={() => void save()}>{total > 0 ? "ثبت برگشت و بل" : "ثبت برگشت"}</button>
+            <button className="btn ghost" onClick={() => onClose(null)}>انصراف</button>
+            {loan.removable && <span className="muted small">اشتباه ثبت شده؟ <RemoveButton onConfirm={() => void remove()} /></span>}
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -278,7 +277,7 @@ function Deposits({ lendTo }: { lendTo: (b: Borrower) => void }) {
           <button role="tab" aria-selected={scope === "open"} className={scope === "open" ? "on" : ""} onClick={() => setScope("open")}>ضمانت‌های نزد ما</button>
           <button role="tab" aria-selected={scope === "all"} className={scope === "all" ? "on" : ""} onClick={() => setScope("all")}>همه، با پس داده‌شده‌ها</button>
         </div>
-        <input className="search" type="search" placeholder="جستجو: کارت، نام، نام پدر یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="search" type="search" placeholder="جستجو: کارت، نام، نام پدر یا شماره تماس" aria-label="جستجو: کارت، نام، نام پدر یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <p className="muted small">
         {fa(page?.total ?? 0)} کارت · پول ضمانت نزد ما: <strong>{fa(page?.cash_held ?? 0)} افغانی</strong> (مال امانت‌گیرنده‌هاست، درآمد نیست)

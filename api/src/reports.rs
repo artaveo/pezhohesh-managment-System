@@ -27,6 +27,8 @@ pub struct Period {
     to: chrono::NaiveDate,
     income: f64,
     expenses: f64,
+    /// Hand-made balance estimates of months whose detail was lost (counted as balance).
+    estimated: f64,
     new_members: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     income_by_category: Option<BTreeMap<String, f64>>,
@@ -52,6 +54,7 @@ struct Totals {
     i: i32,
     income: f64,
     expenses: f64,
+    estimated: f64,
     new_members: i64,
 }
 
@@ -87,6 +90,8 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
                 AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS income,
             COALESCE((SELECT sum(amount) FROM expenses e WHERE e.deleted_at IS NULL
                 AND e.department = 'hall' AND e.currency = 'AFN' AND e.spent_on >= b.lo AND e.spent_on < b.hi), 0)::float8 AS expenses,
+            COALESCE((SELECT sum(net_balance) FROM month_summaries ms WHERE ms.deleted_at IS NULL
+                AND ms.department = 'hall' AND ms.starts_on >= b.lo AND ms.starts_on < b.hi), 0)::float8 AS estimated,
             (SELECT count(*) FROM members m WHERE m.deleted_at IS NULL AND m.joined_on >= b.lo AND m.joined_on < b.hi) AS new_members
         FROM unnest($1::date[], $2::date[]) WITH ORDINALITY AS b(lo, hi, n)
         ORDER BY b.n
@@ -157,7 +162,8 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
             .await?;
 
     let (first_day, all_time_income): (Option<chrono::NaiveDate>, f64) = sqlx::query_as(
-        "SELECT min(issued_on), COALESCE(sum(amount), 0)::float8 FROM receipts \
+        "SELECT LEAST(min(issued_on), (SELECT min(starts_on) FROM month_summaries WHERE deleted_at IS NULL AND department = 'hall')), \
+                COALESCE(sum(amount), 0)::float8 FROM receipts \
          WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'",
     )
     .fetch_one(&mut *tx)
@@ -173,6 +179,7 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
                 to: hi[i],
                 income: t.income,
                 expenses: t.expenses,
+                estimated: t.estimated,
                 new_members: t.new_members,
                 income_by_category: p.categories.then(|| std::mem::take(&mut inc_cat[i])),
                 expenses_by_category: p.categories.then(|| std::mem::take(&mut exp_cat[i])),

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Modal } from "./Modal";
 
 /**
  * Takes a picture with the laptop's camera (or a USB webcam). For a member's photo the
@@ -47,17 +48,15 @@ export function CameraCapture({ portrait, onTaken, onClose }: { portrait: boolea
   }
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="کمره">
-      <div className="modal-body camera">
-        <div className={portrait ? "camera-frame portrait" : "camera-frame"}>
-          <video ref={video} autoPlay playsInline muted onLoadedMetadata={() => setReady(true)} />
-        </div>
-        {error && <p className="form-error">{error}</p>}
-        <div className="actions">
-          <button className="btn big" disabled={!ready} onClick={take}>عکس بگیر</button>
-          <button className="btn ghost" onClick={onClose}>بستن</button>
-        </div>
+    <Modal label="کمره" onClose={onClose} bare className="camera">
+      <div className={portrait ? "camera-frame portrait" : "camera-frame"}>
+        <video ref={video} autoPlay playsInline muted onLoadedMetadata={() => setReady(true)} />
       </div>
-    </div>
+      {error && <p className="form-error">{error}</p>}
+      <div className="actions">
+        <button className="btn big" disabled={!ready} onClick={take}>عکس بگیر</button>
+        <button className="btn ghost" onClick={onClose}>بستن</button>
+      </div>
+    </Modal>
   );
 }

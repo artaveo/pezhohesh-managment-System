@@ -46,7 +46,7 @@ function FindMember({ openMember }: { openMember: (id: string) => void }) {
   }, [q]);
   return (
     <section className="panel wide">
-      <input className="search big" type="search" autoFocus placeholder="آیدی، نام یا شماره تماس عضو را بنویسید" value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="search big" type="search" autoFocus placeholder="آیدی، نام یا شماره تماس عضو را بنویسید" aria-label="آیدی، نام یا شماره تماس عضو را بنویسید" value={q} onChange={(e) => setQ(e.target.value)} />
       {error && <p className="form-error">{error}</p>}
       {rows && !rows.length && <p className="muted">کسی پیدا نشد. اگر عضو تازه است، «عضو جدید» را بزنید.</p>}
       {rows && rows.length > 0 && (

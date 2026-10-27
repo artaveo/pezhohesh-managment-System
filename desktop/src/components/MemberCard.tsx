@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { Member } from "../lib/api";
 import { formatDay } from "../lib/solar";
 import { useDocumentUrl } from "../lib/images";
+import { Modal } from "./Modal";
 
 /** The membership card, at the size of a bank card (85.6 × 54 mm). */
 export function MemberCardFace({ member, photo }: { member: Member; photo: string | null }) {
@@ -56,24 +57,22 @@ export function MemberCardPreview({ member, photoId, onClose }: { member: Member
   }
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="کارت عضویت">
-      <div className="modal-body panel card-modal">
-        <div className="modal-tools no-print">
-          <button className="btn" onClick={print} disabled={!!photoId && !photo && !failed}>چاپ</button>
-          <button className="btn ghost" onClick={onClose}>بستن</button>
-        </div>
-        <div className="paper-choice" role="radiogroup" aria-label="چاپ روی">
-          <label className="check"><input type="radio" checked={paper === "card"} onChange={() => setPaper("card")} /> کارت PVC (سینی کارت پرینتر)</label>
-          <label className="check"><input type="radio" checked={paper === "a4"} onChange={() => setPaper("a4")} /> کاغذ A4 (برای بریدن)</label>
-        </div>
-        {!photoId && <p className="notice warn">این عضو هنوز عکس ندارد. اول عکسش را در «عکس و تذکره» اضافه کنید.</p>}
-        {failed && <p className="notice warn">عکس این عضو باز نشد. دوباره عکسش را اضافه کنید.</p>}
-        <div className="member-card-stage"><MemberCardFace member={member} photo={photo} /></div>
-        <p className="muted small">
-          در پنجرهٔ چاپ، اندازهٔ کاغذ را «Card» یا «CR80 (86×54 mm)» و مقیاس را 100٪ (Actual size) بگذارید.
-        </p>
+    <Modal label="کارت عضویت" onClose={onClose} className="card-modal">
+      <div className="modal-tools no-print">
+        <button className="btn" onClick={print} disabled={!!photoId && !photo && !failed}>چاپ</button>
+        <button className="btn ghost" onClick={onClose}>بستن</button>
       </div>
+      <div className="paper-choice" role="radiogroup" aria-label="چاپ روی">
+        <label className="check"><input type="radio" checked={paper === "card"} onChange={() => setPaper("card")} /> کارت PVC (سینی کارت پرینتر)</label>
+        <label className="check"><input type="radio" checked={paper === "a4"} onChange={() => setPaper("a4")} /> کاغذ A4 (برای بریدن)</label>
+      </div>
+      {!photoId && <p className="notice warn">این عضو هنوز عکس ندارد. اول عکسش را در «عکس و تذکره» اضافه کنید.</p>}
+      {failed && <p className="notice warn">عکس این عضو باز نشد. دوباره عکسش را اضافه کنید.</p>}
+      <div className="member-card-stage"><MemberCardFace member={member} photo={photo} /></div>
+      <p className="muted small">
+        در پنجرهٔ چاپ، اندازهٔ کاغذ را «Card» یا «CR80 (86×54 mm)» و مقیاس را 100٪ (Actual size) بگذارید.
+      </p>
       {createPortal(<div className={`print-only card-print ${paper}`}><MemberCardFace member={member} photo={photo} /></div>, document.body)}
-    </div>
+    </Modal>
   );
 }

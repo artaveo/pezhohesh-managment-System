@@ -1,4 +1,4 @@
-import type { Sum } from "./reports";
+import { balance, type Sum } from "./reports";
 
 /** The statement line paid to the admin manager (M in the Excel share formula). */
 export const MANAGER_SALARY = "اجوره مدیر اداری";
@@ -17,7 +17,7 @@ export const PARTNERS = [
 export type Share = { name: string; short: string; share: number; taken: number; left: number };
 
 export function shares(s: Sum): Share[] {
-  const b = s.income - s.expenses;
+  const b = balance(s);
   const m = s.expenses_by_category[MANAGER_SALARY] ?? 0;
   return PARTNERS.map((p) => {
     const share = p.part * (b + m) - (p.paysManager ? m : 0);

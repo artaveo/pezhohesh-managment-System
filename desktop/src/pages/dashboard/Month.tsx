@@ -1,5 +1,5 @@
 import { addDays, daysBetween, fa, iso, monthName, monthStart, nextMonth, prevMonth, sameMonthLastYear, yearNumber } from "../../lib/solar";
-import { asBars, loadRanges, total } from "../../lib/reports";
+import { asBars, balance, loadRanges, total } from "../../lib/reports";
 import { useLoad } from "../../lib/useLoad";
 import { Failed, Figure, Kpi, Loading } from "../../components/Stat";
 import { TrendChart } from "../../components/charts/TrendChart";
@@ -45,7 +45,7 @@ export function MonthView() {
   const name = monthName(now);
   const vsPrev = `نسبت به ${monthName(pm)}`;
   const vsLast = `نسبت به ${monthName(ly)} ${yearNumber(ly)}`;
-  const net = (s: typeof cur) => s.income - s.expenses;
+  const net = balance;
   const rows: { label: string; get: (s: typeof cur) => number; unit: string; upIsGood?: boolean }[] = [
     { label: "درآمد", get: (s) => s.income, unit: "؋" },
     { label: "مصارف", get: (s) => s.expenses, unit: "؋", upIsGood: false },

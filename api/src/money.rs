@@ -35,10 +35,16 @@ fn removable(user: &CurrentUser, created: DateTime<Utc>, from_excel: bool) -> bo
 }
 
 async fn may_remove(tx: &mut sqlx::PgConnection, user: &CurrentUser, table: &str, id: Uuid) -> Result<(), ApiError> {
+    may_change(tx, user, table, id, false).await
+}
+
+/// The same rule for changing a line, removing it, and bringing a removed one back.
+async fn may_change(tx: &mut sqlx::PgConnection, user: &CurrentUser, table: &str, id: Uuid, removed: bool) -> Result<(), ApiError> {
     let row: Option<(DateTime<Utc>, bool)> = sqlx::query_as(&format!(
-        "SELECT created_at, import_batch_id IS NOT NULL FROM {table} WHERE id = $1 AND deleted_at IS NULL"
+        "SELECT created_at, import_batch_id IS NOT NULL FROM {table} WHERE id = $1 AND (deleted_at IS NOT NULL) = $2 FOR UPDATE"
     ))
     .bind(id)
+    .bind(removed)
     .fetch_optional(&mut *tx)
     .await?;
     match row {
@@ -50,6 +56,11 @@ async fn may_remove(tx: &mut sqlx::PgConnection, user: &CurrentUser, table: &str
 
 /// Lists show the newest lines; the count and sum cover the whole range.
 const SHOWN: i64 = 500;
+
+#[derive(Deserialize)]
+pub struct Reason {
+    reason: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct Range {
@@ -207,6 +218,7 @@ pub async fn create_category(State(s): State<AppState>, user: CurrentUser, Json(
 pub struct Expense {
     id: Uuid,
     spent_on: NaiveDate,
+    category_id: Uuid,
     category: String,
     description: Option<String>,
     amount: f64,
@@ -236,7 +248,7 @@ pub async fn expenses(State(s): State<AppState>, user: CurrentUser, Query(r): Qu
         .fetch_one(&mut *tx)
         .await?;
     let mut rows: Vec<Expense> = sqlx::query_as(&format!(
-        "SELECT e.id, e.spent_on, c.name AS category, e.description, e.amount::float8 AS amount, \
+        "SELECT e.id, e.spent_on, e.category_id, c.name AS category, e.description, e.amount::float8 AS amount, \
                 s.full_name AS created_by, e.import_batch_id IS NOT NULL AS from_excel, e.created_at \
          FROM expenses e JOIN expense_categories c ON c.id = e.category_id \
          LEFT JOIN app_users u ON u.id = e.created_by LEFT JOIN staff s ON s.id = u.staff_id \
@@ -280,17 +292,69 @@ pub async fn create_expense(State(s): State<AppState>, user: CurrentUser, Json(e
     Ok(Json(id))
 }
 
-pub async fn delete_expense(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+pub async fn update_expense(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(e): Json<ExpenseInput>,
+) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    amount_ok(e.amount)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    may_remove(&mut tx, &user, "expenses", id).await?;
+    sqlx::query("UPDATE expenses SET category_id = $2, spent_on = COALESCE($3, spent_on), description = $4, amount = $5 WHERE id = $1")
+        .bind(id)
+        .bind(e.category_id)
+        .bind(e.spent_on)
+        .bind(note(&e.description))
+        .bind(e.amount)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_expense(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(r): Query<Reason>,
+) -> Result<StatusCode, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     may_remove(&mut tx, &user, "expenses", id).await?;
-    sqlx::query("UPDATE expenses SET deleted_at = now() WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE expenses SET deleted_at = now(), deleted_reason = $2 WHERE id = $1")
+        .bind(id)
+        .bind(note(&r.reason))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn restore_expense(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    may_change(&mut tx, &user, "expenses", id, true).await?;
+    sqlx::query("UPDATE expenses SET deleted_at = NULL, deleted_reason = NULL WHERE id = $1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
-// Withdrawals: cash a partner (or staff member) takes out
+// Withdrawals: cash a partner takes out of the profit. Staff are paid from their salary
+// line (an expense), so the profit is not counted twice.
+
+/// A partner: on the books as «شریک», or signed in with a partner's account.
+const IS_PARTNER: &str = "(p.title = 'شریک' OR EXISTS (SELECT 1 FROM app_users u WHERE u.staff_id = p.id AND u.role = 'partner'))";
+
+async fn partner_only(tx: &mut sqlx::PgConnection, staff_id: Uuid) -> Result<(), ApiError> {
+    let ok: bool = sqlx::query_scalar(&format!("SELECT EXISTS (SELECT 1 FROM staff p WHERE p.id = $1 AND p.deleted_at IS NULL AND {IS_PARTNER})"))
+        .bind(staff_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if ok { Ok(()) } else { Err(ApiError::bad("partners_only")) }
+}
 
 #[derive(Serialize, FromRow)]
 pub struct Person {
@@ -303,8 +367,7 @@ pub async fn staff(State(s): State<AppState>, user: CurrentUser) -> Result<Json<
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let rows = sqlx::query_as(
-        "SELECT id, full_name, title FROM staff WHERE active AND deleted_at IS NULL AND department IS DISTINCT FROM 'pec' \
-         ORDER BY (title = 'شریک') DESC NULLS LAST, full_name",
+        &format!("SELECT id, full_name, title FROM staff p WHERE active AND deleted_at IS NULL AND {IS_PARTNER} ORDER BY full_name"),
     )
     .fetch_all(&mut *tx)
     .await?;
@@ -316,6 +379,7 @@ pub async fn staff(State(s): State<AppState>, user: CurrentUser) -> Result<Json<
 pub struct Withdrawal {
     id: Uuid,
     taken_on: NaiveDate,
+    staff_id: Uuid,
     person: String,
     amount: f64,
     note: Option<String>,
@@ -338,7 +402,7 @@ pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r):
         .fetch_one(&mut *tx)
         .await?;
     let mut rows: Vec<Withdrawal> = sqlx::query_as(&format!(
-        "SELECT w.id, w.taken_on, p.full_name AS person, w.amount::float8 AS amount, w.note, \
+        "SELECT w.id, w.taken_on, w.staff_id, p.full_name AS person, w.amount::float8 AS amount, w.note, \
                 s.full_name AS paid_by, w.import_batch_id IS NOT NULL AS from_excel, w.created_at \
          FROM withdrawals w JOIN staff p ON p.id = w.staff_id \
          LEFT JOIN app_users u ON u.id = w.paid_by LEFT JOIN staff s ON s.id = u.staff_id \
@@ -366,6 +430,7 @@ pub async fn create_withdrawal(State(s): State<AppState>, user: CurrentUser, Jso
     amount_ok(w.amount)?;
     let id = Uuid::new_v4();
     let mut tx = begin_as(&s.db, &user).await?;
+    partner_only(&mut tx, w.staff_id).await?;
     sqlx::query(
         "INSERT INTO withdrawals (id, staff_id, department, taken_on, amount, note, paid_by) VALUES ($1, $2, 'hall', $3, $4, $5, $6)",
     )
@@ -381,11 +446,52 @@ pub async fn create_withdrawal(State(s): State<AppState>, user: CurrentUser, Jso
     Ok(Json(id))
 }
 
-pub async fn delete_withdrawal(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+pub async fn update_withdrawal(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(w): Json<WithdrawalInput>,
+) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    amount_ok(w.amount)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    may_remove(&mut tx, &user, "withdrawals", id).await?;
+    partner_only(&mut tx, w.staff_id).await?;
+    sqlx::query("UPDATE withdrawals SET staff_id = $2, taken_on = COALESCE($3, taken_on), amount = $4, note = $5 WHERE id = $1")
+        .bind(id)
+        .bind(w.staff_id)
+        .bind(w.taken_on)
+        .bind(w.amount)
+        .bind(note(&w.note))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_withdrawal(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(r): Query<Reason>,
+) -> Result<StatusCode, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     may_remove(&mut tx, &user, "withdrawals", id).await?;
-    sqlx::query("UPDATE withdrawals SET deleted_at = now() WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE withdrawals SET deleted_at = now(), deleted_reason = $2 WHERE id = $1")
+        .bind(id)
+        .bind(note(&r.reason))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn restore_withdrawal(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    may_change(&mut tx, &user, "withdrawals", id, true).await?;
+    sqlx::query("UPDATE withdrawals SET deleted_at = NULL, deleted_reason = NULL WHERE id = $1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -97,6 +97,10 @@ mod tests {
         assert_eq!(to_gregorian(1404, 1, 1), Some(d(2025, 3, 21)));
         assert_eq!(to_gregorian(1403, 12, 30), Some(d(2025, 3, 20))); // 1403 is a leap year
         assert_eq!(month_len(1404, 12), 29);
+        // The 1404 months of migration 0012.
+        assert_eq!(to_gregorian(1404, 10, 1), Some(d(2025, 12, 22)));
+        assert_eq!(to_gregorian(1404, 11, 1), Some(d(2026, 1, 21)));
+        assert_eq!(to_gregorian(1404, 12, 1), Some(d(2026, 2, 20)));
         assert_eq!(to_gregorian(1405, 7, 31), None);
         assert_eq!(month_of("سرطان "), Some(4));
         assert_eq!(year_of(d(2026, 3, 20)), 1404);
