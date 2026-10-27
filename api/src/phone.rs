@@ -288,13 +288,27 @@ pub struct Status {
     hotspot_url: String,
 }
 
-/// The laptop's IPv4 addresses on its networks (not loopback, not "no network" 169.254.x.x).
+/// Networks no phone can be on: VPNs, Tailscale, Hyper-V and other virtual adapters.
+pub(crate) fn virtual_network(name: &str, ip: std::net::Ipv4Addr) -> bool {
+    const NAMES: &[&str] = &[
+        "vethernet", "hyper-v", "virtual", "vmware", "vbox", "docker", "wsl", "tailscale", "zerotier", "vpn", "tun", "tap",
+        "wireguard", "wg", "bluetooth", "loopback", "pseudo",
+    ];
+    let name = name.to_lowercase();
+    let o = ip.octets();
+    // 100.64.0.0/10: Tailscale and carrier-grade NAT, never a local Wi-Fi.
+    NAMES.iter().any(|n| name.contains(n)) || (o[0] == 100 && (64..128).contains(&o[1]))
+}
+
+/// The laptop's IPv4 addresses a phone could reach: the hotspot and the real Wi-Fi or cable
+/// networks (not loopback, not "no network" 169.254.x.x, not VPNs or virtual adapters).
 fn addresses() -> Vec<Address> {
     let mut list: Vec<Address> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|i| match i.ip() {
-            IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() => Some(v4.to_string()),
+            IpAddr::V4(v4) if v4.to_string() == HOTSPOT_IP => Some(v4.to_string()),
+            IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() && !virtual_network(&i.name, v4) => Some(v4.to_string()),
             _ => None,
         })
         .map(|ip| Address { hotspot: ip == HOTSPOT_IP, url: format!("http://{ip}:{PORT}/") })
@@ -353,4 +367,21 @@ pub async fn qr(user: CurrentUser, Query(q): Query<QrText>) -> Result<Response, 
         .light_color(qrcode::render::svg::Color("#ffffff"))
         .build();
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::virtual_network;
+
+    #[test]
+    fn virtual_networks() {
+        let ip = |s: &str| s.parse().unwrap();
+        assert!(virtual_network("vEthernet (Default Switch)", ip("172.20.144.1")));
+        assert!(virtual_network("ProTUN", ip("10.2.0.2")));
+        assert!(virtual_network("Tailscale", ip("100.101.1.2")));
+        assert!(virtual_network("Ethernet 3", ip("100.80.1.2")));
+        assert!(!virtual_network("Wi-Fi", ip("10.75.12.168")));
+        assert!(!virtual_network("Ethernet", ip("192.168.1.20")));
+        assert!(!virtual_network("Local Area Connection* 10", ip("192.168.137.1")));
+    }
 }

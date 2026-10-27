@@ -36,6 +36,22 @@ export type Arrived = {
   by_phone_id: string | null; by_phone_name: string | null; by_phone_no: number | null;
 };
 export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
+export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number };
+export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
+export type K50Status = {
+  config: K50Config; last: K50Round | null; pending: number; sent: number; punches_today: number;
+  errors: { member_no: number; name: string; error: string; error_at: string }[];
+};
+/** What the device answered (the rest of the fields depend on the question). */
+export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknown };
+export type K50Info = K50Answer & { serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string };
+export type K50User = K50Answer & { exists?: boolean; enabled?: boolean; fingers?: number; valid?: { start: string; end: string } | null };
+export type MemberK50 = {
+  configured: boolean; auto: boolean; enabled: boolean; start_date: string | null; end_date: string | null;
+  sent: { member_no: number; pushed_start: string | null; pushed_end: string | null; pushed_enabled: boolean | null; pushed_at: string | null;
+    valid_dates: boolean | null; fingers: number | null; error: string | null; error_at: string | null } | null;
+  visits: string[];
+};
 export type RestorePoint = { path: string; name: string; kind: "folder" | "usb" | "gdrive"; folder: string; size: number; modified: string | null };
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -427,6 +443,16 @@ export const api = {
   /** A QR code (SVG) for the sticker. */
   qr: (text: string) => request<Blob>(`/qr?${new URLSearchParams({ text })}`, { blob: true }),
   online: () => request<OnlineStatus>("/online"),
+  k50: () => request<K50Status>("/k50"),
+  setK50: (c: K50Config) => request<void>("/k50", { method: "PUT", body: c }),
+  testK50: (c: K50Config) => request<K50Info>("/k50/test", { method: "POST", body: c }),
+  scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
+  syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
+  k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
+  memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
+  checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),
+  pushMemberK50: (id: string) => request<K50Answer>(`/members/${id}/k50/push`, { method: "POST" }),
+  enrollK50: (id: string, finger: number) => request<K50Answer>(`/members/${id}/k50/enroll`, { method: "POST", body: { finger } }),
   setOnline: (p: { every_hours: number; url?: string }) => request<void>("/online", { method: "PUT", body: p }),
   onlineNow: () => request<OnlineOutcome>("/online", { method: "POST" }),
   hotspotCards: (signal?: AbortSignal) => request<HotspotCards>("/hotspot/cards", { signal }),
@@ -523,8 +549,27 @@ export function errorText(e: unknown): string {
     case "sheet_missing_monthly": return "شیت «عضویت ماهانه» در این فایل پیدا نشد.";
     case "sheet_missing_statement": return "شیت «محاسبات» در این فایل پیدا نشد.";
     case "bad_year": return "سال را درست بنویسید، مثلاً 1405.";
+    case "no_ip": return "آدرس دستگاه انگشت هنوز تنظیم نشده. یکی از شرکا آن را در «دستگاه انگشت» می‌نویسد.";
+    case "bad_k50_config": return "آدرس دستگاه درست نیست (مثلاً 192.168.1.201).";
+    case "no_active_seat": return "این عضو الان عضویت فعال سالن ندارد. اول تمدید کنید، بعد انگشت را ثبت کنید.";
+    case "bad_finger": return "انگشت را از فهرست انتخاب کنید.";
     default: return "کار انجام نشد. دوباره امتحان کنید.";
   }
+}
+
+/** Persian message for what the fingerprint device (or its helper) answered. */
+export function k50ErrorText(error: string | null | undefined): string {
+  const e = error ?? "";
+  if (e.startsWith("connect_failed")) return "به دستگاه وصل نشد. دستگاه روشن و به سویچ وصل است؟ آدرس IP درست است؟ ZKAccess بسته است؟";
+  if (e === "sdk_missing") return "برنامهٔ ارتباط با دستگاه (zkemkeeper که همراه ZKAccess نصب می‌شود) روی این لپ‌تاپ پیدا نشد.";
+  if (e === "timeout") return "دستگاه دیر جواب داد. چند لحظه بعد دوباره امتحان کنید.";
+  if (e === "no_ip") return "آدرس دستگاه هنوز تنظیم نشده.";
+  if (e === "not_windows" || e === "no_powershell") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";
+  if (e === "device_admin") return "این آیدی روی دستگاه «مدیر دستگاه» است؛ برنامه به آن دست نمی‌زند.";
+  if (e.startsWith("set_user_failed")) return "دستگاه این عضو را نپذیرفت.";
+  if (e === "enroll_failed") return "دستگاه برای ثبت انگشت آماده نشد. اگر این انگشت قبلاً ثبت شده، انگشت دیگری را انتخاب کنید.";
+  if (e === "exception" || e.startsWith("helper")) return "ارتباط با دستگاه کامل نشد. جزئیات در api.log است.";
+  return e ? "دستگاه کار را انجام نداد." : "";
 }
 
 export const ROLE_LABEL: Record<Role, string> = {

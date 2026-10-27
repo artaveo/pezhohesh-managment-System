@@ -191,6 +191,7 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
         None => (None, None),
     };
     tx.commit().await?;
+    crate::k50::poke();
     Ok(Json(Saved { member_id: Some(id), member_no: Some(no), membership_id, receipt_id }))
 }
 
@@ -224,6 +225,7 @@ pub async fn update_member(
         return Err(NOT_FOUND);
     }
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -290,6 +292,7 @@ pub async fn add_member_period(
     let mut tx = begin_as(&s.db, &user).await?;
     let (membership_id, receipt_id) = add_period(&mut tx, &user, Some(id), None, &p).await?;
     tx.commit().await?;
+    crate::k50::poke();
     Ok(Json(Saved { member_id: Some(id), member_no: None, membership_id: Some(membership_id), receipt_id }))
 }
 
@@ -318,6 +321,7 @@ pub async fn daily_seat(State(s): State<AppState>, user: CurrentUser, Json(b): J
     }
     let (membership_id, receipt_id) = add_period(&mut tx, &user, b.member_id, guest, &b.period).await?;
     tx.commit().await?;
+    crate::k50::poke();
     Ok(Json(Saved { member_id: b.member_id, member_no: None, membership_id: Some(membership_id), receipt_id }))
 }
 
@@ -655,6 +659,7 @@ pub async fn void_bill(
         .await?;
     }
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -688,6 +693,7 @@ pub async fn delete_period(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -733,6 +739,7 @@ pub async fn update_period(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -762,6 +769,7 @@ pub async fn delete_member(
         return Err(NOT_FOUND);
     }
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -779,5 +787,6 @@ pub async fn restore_member(State(s): State<AppState>, user: CurrentUser, Path(i
         return Err(NOT_FOUND);
     }
     tx.commit().await?;
+    crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
 }

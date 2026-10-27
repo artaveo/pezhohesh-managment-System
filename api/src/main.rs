@@ -33,6 +33,7 @@ mod documents;
 mod hall;
 mod hotspot;
 mod import_excel;
+mod k50;
 mod lists;
 mod money;
 mod online;
@@ -148,6 +149,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
                 tracing::info!("database ready");
                 tokio::spawn(backup::schedule(db.clone(), url.clone()));
                 tokio::spawn(salaries::schedule(db.clone()));
+                tokio::spawn(k50::schedule(db.clone()));
                 tokio::spawn(online::schedule(db, url));
                 return;
             }
@@ -256,6 +258,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/members/:id", get(hall::member).put(hall::update_member).delete(hall::delete_member))
         .route("/api/v1/members/:id/restore", post(hall::restore_member))
         .route("/api/v1/members/:id/periods", post(hall::add_member_period))
+        .route("/api/v1/members/:id/k50", get(k50::member))
+        .route("/api/v1/members/:id/k50/check", post(k50::check))
+        .route("/api/v1/members/:id/k50/push", post(k50::push_member))
+        .route("/api/v1/members/:id/k50/enroll", post(k50::enroll))
         .route(
             "/api/v1/members/:id/documents/:kind",
             post(documents::add).layer(axum::extract::DefaultBodyLimit::max(documents::MAX_BYTES + 1024)),
@@ -307,6 +313,11 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/inbox/:id/reject", post(phone::reject))
         .route("/api/v1/phone-upload", get(phone::status).put(phone::set_status))
         .route("/api/v1/qr", get(phone::qr))
+        .route("/api/v1/k50", get(k50::status).put(k50::set_config))
+        .route("/api/v1/k50/test", post(k50::test))
+        .route("/api/v1/k50/scan", post(k50::scan))
+        .route("/api/v1/k50/sync", post(k50::sync_now))
+        .route("/api/v1/k50/time", post(k50::set_time))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

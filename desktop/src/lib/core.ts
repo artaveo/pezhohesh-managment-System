@@ -46,3 +46,17 @@ export async function firewallOpen(): Promise<boolean | null> {
 
 /** Opens the phone page's port in Windows Firewall as administrator (Windows asks first). */
 export const openFirewall = () => invoke<void>("open_firewall");
+
+/** The laptop's Mobile hotspot, for phones sending photos (see src-tauri/src/hotspot.rs). */
+export type Hotspot = {
+  available: boolean; on: boolean; clients: number; ssid: string; password: string;
+  closes_at: number | null; error: string | null;
+};
+
+export async function hotspotStatus(): Promise<Hotspot | null> {
+  if (!isTauri()) return null;
+  try { return await invoke<Hotspot>("hotspot_status"); } catch { return null; }
+}
+/** Opens it for `minutes` (0: until closed by hand). */
+export const hotspotStart = (minutes: number) => invoke<Hotspot>("hotspot_start", { minutes });
+export const hotspotStop = () => invoke<Hotspot>("hotspot_stop");

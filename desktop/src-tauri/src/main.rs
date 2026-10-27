@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod firewall;
+mod hotspot;
 mod postgres;
 mod saved_login;
 
@@ -157,10 +158,14 @@ fn main() {
             api_log,
             pick_folder,
             firewall::firewall_open,
-            firewall::open_firewall
+            firewall::open_firewall,
+            hotspot::hotspot_status,
+            hotspot::hotspot_start,
+            hotspot::hotspot_stop
         ])
         .setup(|app| {
             postgres::start_if_stopped();
+            hotspot::watch();
             app.manage(Api(Mutex::new(start_api())));
             // The API can stop while the app stays open (for example around sleep and
             // resume); bring it back within seconds instead of waiting for "try again".
@@ -176,6 +181,7 @@ fn main() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 CLOSING.store(true, Ordering::SeqCst);
+                hotspot::close_if_opened();
                 if let Some(mut child) = app.state::<Api>().0.lock().unwrap().take() {
                     let _ = child.kill();
                 }

@@ -13,6 +13,7 @@ import { useAuth } from "../../auth/AuthProvider";
 import { MemberCardPreview } from "../../components/MemberCard";
 import { useDocumentUrl } from "../../lib/images";
 import { Documents } from "./Documents";
+import { Fingerprint } from "./Fingerprint";
 
 import { MemberFields } from "./MemberFields";
 
@@ -86,6 +87,7 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
       )}
 
       <Documents memberId={id} docs={d.documents} onChange={() => void load()} />
+      <Fingerprint memberId={id} reload={d.periods.length} />
 
       <section className="glass table-wrap">
         <table className="table">

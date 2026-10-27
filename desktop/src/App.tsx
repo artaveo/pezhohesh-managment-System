@@ -7,6 +7,7 @@ import { Books } from "./pages/Books";
 import { Hotspot } from "./pages/Hotspot";
 import { Shares } from "./pages/Shares";
 import { Backup } from "./pages/Backup";
+import { Device } from "./pages/Device";
 import { Registrations, type RegFilter } from "./pages/Registrations";
 import type { RegKind } from "./lib/api";
 import { ImportExcel } from "./pages/ImportExcel";
@@ -51,6 +52,7 @@ export const NAV = [
   { id: "users", icon: "shield", label: "کاربران", partner: true, group: "مدیریت" },
   { id: "prices", icon: "tag", label: "قیمت‌ها", partner: true, group: "مدیریت" },
   { id: "backup", icon: "database", label: "پشتیبان", partner: true, group: "مدیریت" },
+  { id: "device", icon: "fingerprint", label: "دستگاه انگشت", partner: true, group: "مدیریت" },
   { id: "import", icon: "upload", label: "ورود از اکسل", partner: true, group: "مدیریت" },
   { id: "settings", icon: "user", label: "تنظیمات من", group: "" },
 ] as const satisfies readonly NavItem[];
@@ -196,6 +198,7 @@ function Shell() {
               : page === "hotspot" ? <Hotspot />
               : page === "shares" ? <Shares />
               : page === "backup" ? <Backup />
+              : page === "device" ? <Device />
               : page === "audit" ? <Audit openMember={(id) => openMember(id)} />
               : page === "inbox" ? <Inbox openMember={(id) => openMember(id)} />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />

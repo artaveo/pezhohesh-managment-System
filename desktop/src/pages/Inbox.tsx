@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorText, type Arrived, type DocKind, type MemberRow, type PhoneUpload } from "../lib/api";
-import { firewallOpen, openFirewall } from "../lib/core";
+import { firewallOpen, hotspotStart, hotspotStatus, hotspotStop, openFirewall, type Hotspot } from "../lib/core";
 import { fa, formatDay, iso } from "../lib/solar";
 import { useAuth } from "../auth/AuthProvider";
 import { useToast } from "../components/Toast";
@@ -63,6 +63,7 @@ export function Inbox({ openMember }: { openMember: (id: string) => void }) {
         </p>
         <button className="btn" onClick={() => setSticker(true)}><Icon name="qr" size={18} /> QR و تنظیمات</button>
       </div>
+      <HotspotBar />
       {failed ? <Failed retry={() => setTick((t) => t + 1)} />
         : !rows ? <p className="muted">در حال خواندن…</p>
         : !rows.length ? <p className="glass muted empty">چیزی منتظر نیست. آنچه از موبایل برسد اینجا دیده می‌شود.</p>
@@ -230,6 +231,64 @@ function MemberPicker({ hint, onPick, onCancel }: { hint?: string; onPick: (t: T
 }
 
 // ---------------------------------------------------------------------------
+// The laptop's hotspot: on only while phones send, then off by itself
+
+const OPEN_MINUTES = 15;
+
+function HotspotBar() {
+  const toast = useToast();
+  const [h, setH] = useState<Hotspot | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [, setNow] = useState(0);
+  useEffect(() => {
+    let live = true;
+    const check = () => hotspotStatus().then((x) => live && setH(x));
+    void check();
+    const t = window.setInterval(() => { void check(); setNow(Date.now()); }, 10_000);
+    return () => { live = false; window.clearInterval(t); };
+  }, []);
+  if (!h) return null; // not the desktop app
+  if (!h.available) {
+    return <p className="glass notice warn small">هاتسپات ویندوز روی این لپ‌تاپ در دسترس نیست{h.error === "no_connection" ? " (لپ‌تاپ به هیچ شبکه‌ای وصل نیست)" : ""}. آن را از Settings ← Network &amp; internet ← Mobile hotspot امتحان کنید.</p>;
+  }
+  async function act(start: boolean) {
+    setBusy(true);
+    try {
+      const r = start ? await hotspotStart(OPEN_MINUTES) : await hotspotStop();
+      setH(r);
+      if (r.error) toast(start ? "هاتسپات روشن نشد. آن را از Settings ← Mobile hotspot روشن کنید." : "هاتسپات خاموش نشد.");
+    } catch {
+      toast("نشد. یک بار دیگر امتحان کنید.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const left = h.closes_at ? Math.max(1, Math.ceil((h.closes_at * 1000 - Date.now()) / 60000)) : null;
+  return (
+    <div className="glass hotspot-bar">
+      <Icon name="wifi" size={20} />
+      <div>
+        <b>هاتسپات لپ‌تاپ: </b>
+        {h.on ? <span className="status on">روشن</span> : <span className="status off">خاموش</span>}
+        {h.on && <span className="muted"> · {h.clients ? `${fa(h.clients)} گوشی وصل` : "هنوز گوشی‌ای وصل نیست"}</span>}
+        {h.on && left !== null && <span className="muted"> · {fa(left)} دقیقهٔ دیگر خودش خاموش می‌شود</span>}
+        <div className="muted small">
+          گوشی اعضا از راه هاتسپات به برنامه می‌رسد. ویندوز از این راه انترنت لپ‌تاپ را هم می‌دهد، پس فقط وقتی کسی عکس می‌فرستد روشنش کنید.
+        </div>
+      </div>
+      <div className="row-actions">
+        {h.on
+          ? <>
+              <button className="btn small" disabled={busy} onClick={() => void act(true)}>{fa(OPEN_MINUTES)} دقیقهٔ دیگر</button>
+              <button className="btn ghost small" disabled={busy} onClick={() => void act(false)}>خاموش</button>
+            </>
+          : <button className="btn small" disabled={busy} onClick={() => void act(true)}>روشن برای {fa(OPEN_MINUTES)} دقیقه</button>}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The sticker for the back of the laptop
 
 const WIFI_KEY = "pz-hotspot-wifi";
@@ -274,8 +333,16 @@ function PhoneSticker({ onClose }: { onClose: () => void }) {
   const [firewall, setFirewall] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [fromWindows, setFromWindows] = useState(false);
   const load = () => api.phoneUpload().then((s) => { setStatus(s); setAddress((a) => a || s.hotspot_url); }, () => setFailed(true));
-  useEffect(() => { void load(); void firewallOpen().then(setFirewall); }, []);
+  useEffect(() => {
+    void load();
+    void firewallOpen().then(setFirewall);
+    // The hotspot's own name and password, as Windows has them, for the "join this Wi-Fi" code.
+    void hotspotStatus().then((h) => {
+      if (h?.ssid) { setWifi({ ssid: h.ssid, password: h.password }); setFromWindows(true); }
+    });
+  }, []);
   useEffect(() => { try { localStorage.setItem(WIFI_KEY, JSON.stringify(wifi)); } catch { /* not kept */ } }, [wifi]);
 
   const pageQr = useQr(address || null);
@@ -337,7 +404,10 @@ function PhoneSticker({ onClose }: { onClose: () => void }) {
             <label className="field"><span>نام وای‌فای هاتسپات (اختیاری)</span><input value={wifi.ssid} onChange={(e) => setWifi({ ...wifi, ssid: e.target.value })} dir="ltr" /></label>
             <label className="field"><span>رمز وای‌فای</span><input value={wifi.password} onChange={(e) => setWifi({ ...wifi, password: e.target.value })} dir="ltr" /></label>
           </div>
-          <p className="muted small">اگر نام و رمز وای‌فای را بنویسید، یک QR دوم هم روی برچسب می‌آید که موبایل را بدون تایپ رمز به وای‌فای وصل می‌کند.</p>
+          <p className="muted small">
+            {fromWindows ? "نام و رمز از تنظیمات هاتسپات ویندوز خوانده شد. " : ""}
+            با نام و رمز وای‌فای، یک QR دوم هم روی برچسب می‌آید که موبایل را بدون تایپ رمز به هاتسپات وصل می‌کند. اگر رمز هاتسپات را در ویندوز عوض کردید، برچسب را دوباره چاپ کنید.
+          </p>
         </div>
       )}
       <div className="sticker-stage"><Sticker pageQr={pageQr} wifiQr={wifiQr} address={address} ssid={wifi.ssid.trim()} /></div>

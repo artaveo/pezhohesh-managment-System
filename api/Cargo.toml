@@ -1,12 +1,12 @@
 [package]
 name = "pezhohesh-api"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 description = "Core API for the Pezhohesh management system (study hall + educational services)"
 
 [dependencies]
 axum = "0.7"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "process", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "process", "fs", "net", "time", "sync", "io-util"] }
 url = "2"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }

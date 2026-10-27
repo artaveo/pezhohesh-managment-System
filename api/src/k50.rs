@@ -1,0 +1,778 @@
+//! The ZKTeco K50 fingerprint device at the door. Each member is a user on the device under
+//! their member number, with the dates their seat is paid for, so the device itself refuses
+//! a finger once the seat has run out, even while the laptop is off. The app works out from
+//! the memberships what the device should hold and sends only what changed (`k50_users` is
+//! what it last sent); it also reads the device's punches into `attendance`.
+//!
+//! The device is driven through ZKTeco's own SDK (installed with ZKAccess), by the
+//! PowerShell helper in `k50.ps1`. ZKAccess has to be closed while the app talks to the device.
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::{FromRow, PgPool};
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
+
+use crate::auth::{ApiError, CurrentUser};
+use crate::hall::{hall_only, today};
+use crate::AppState;
+
+const HELPER: &str = include_str!("k50.ps1");
+/// Members sent in one talk with the device.
+const BATCH: i64 = 40;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct Config {
+    /// The app keeps the device up to date by itself.
+    enabled: bool,
+    ip: String,
+    port: u16,
+    machine: u32,
+    /// The device's communication password (0: none).
+    comm_key: u32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0 }
+    }
+}
+
+/// How the last round with the device went (kept in memory; the page shows it).
+#[derive(Serialize, Clone, Default)]
+pub struct Last {
+    at: Option<DateTime<Utc>>,
+    ok: bool,
+    error: Option<String>,
+    pushed: u32,
+    failed: u32,
+    punches: u32,
+}
+
+static LAST: Mutex<Option<Last>> = Mutex::new(None);
+/// One talk with the device at a time.
+static DEVICE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static POKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// While someone puts their finger on the device, the rounds leave it alone (seconds since 1970).
+static ENROLLING_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A membership changed: bring the device up to date soon, not at the next round.
+pub fn poke() {
+    POKE.notify_one();
+}
+
+async fn config(db: &PgPool) -> Result<Config, sqlx::Error> {
+    let v: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50'").fetch_optional(db).await?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
+}
+
+async fn save_setting(db: &PgPool, key: &str, value: Value) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()")
+        .bind(key)
+        .bind(value)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The helper
+
+/// Runs `ops` against the device in one connection; one answer per op, each with its own `ok`.
+async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value>, String> {
+    if cfg.ip.trim().parse::<Ipv4Addr>().is_err() {
+        return Err("no_ip".into());
+    }
+    let _one = DEVICE.lock().await;
+    let request = json!({ "ip": cfg.ip.trim(), "port": cfg.port, "machine": cfg.machine, "key": cfg.comm_key, "ops": ops });
+    let mut cmd = helper_command()?;
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("helper: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(request.to_string().as_bytes()).await.map_err(|e| format!("helper: {e}"))?;
+    }
+    let output = tokio::time::timeout(wait, child.wait_with_output()).await.map_err(|_| "timeout".to_string())?.map_err(|e| format!("helper: {e}"))?;
+    let answer: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        let err = String::from_utf8_lossy(&output.stderr);
+        format!("helper: {}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no answer").trim())
+    })?;
+    if answer["ok"] != json!(true) {
+        let error = answer["error"].as_str().unwrap_or("failed");
+        return Err(match answer["code"].as_i64() {
+            Some(code) => format!("{error} ({code})"),
+            None => error.to_string(),
+        });
+    }
+    let results = match &answer["results"] {
+        Value::Array(list) => list.clone(),
+        // PowerShell writes a list of one as the item itself.
+        one @ Value::Object(_) => vec![one.clone()],
+        _ => Vec::new(),
+    };
+    if results.len() != ops.len() {
+        return Err("helper: short answer".into());
+    }
+    Ok(results)
+}
+
+/// 32-bit PowerShell (the SDK is 32-bit), with the script written next to the app's temp
+/// files once per version. `K50_HELPER` names a stand-in program for tests.
+fn helper_command() -> Result<tokio::process::Command, String> {
+    if let Ok(fake) = std::env::var("K50_HELPER") {
+        return Ok(tokio::process::Command::new(fake));
+    }
+    if !cfg!(windows) {
+        return Err("not_windows".into());
+    }
+    let script = std::env::temp_dir().join(format!("pezhohesh-k50-{}.ps1", env!("CARGO_PKG_VERSION")));
+    if std::fs::read_to_string(&script).ok().as_deref() != Some(HELPER) {
+        std::fs::write(&script, HELPER).map_err(|e| format!("helper: {e}"))?;
+    }
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let shell = ["SysWOW64", "System32"]
+        .iter()
+        .map(|d| std::path::Path::new(&windir).join(d).join(r"WindowsPowerShell\v1.0\powershell.exe"))
+        .find(|p| p.exists())
+        .ok_or("no_powershell")?;
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]).arg(script);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    Ok(cmd)
+}
+
+// ---------------------------------------------------------------------------
+// What the device should hold
+
+#[derive(FromRow, Clone)]
+struct Wanted {
+    member_id: Uuid,
+    member_no: i32,
+    name: String,
+    enabled: bool,
+    start_date: Option<NaiveDate>,
+    end_date: Option<NaiveDate>,
+    /// The number it was sent under before, when that has changed since.
+    old_no: Option<i32>,
+}
+
+/// Per member: let in while a monthly or daily seat covers today, from the start of that
+/// seat to the end of the last one paid for. Internet-only periods do not open the door.
+const WANTED: &str = "
+WITH seat AS (
+    SELECT ms.member_id, ms.start_date, ms.end_date
+    FROM memberships ms JOIN plans p ON p.id = ms.plan_id
+    WHERE ms.deleted_at IS NULL AND ms.member_id IS NOT NULL AND p.kind IN ('monthly', 'daily')
+), want AS (
+    SELECT m.id AS member_id, m.member_no,
+           trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name,
+           (m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date)) AS enabled,
+           COALESCE((SELECT min(s.start_date) FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date),
+                    (SELECT max(s.start_date) FROM seat s WHERE s.member_id = m.id)) AS start_date,
+           (SELECT max(s.end_date) FROM seat s WHERE s.member_id = m.id) AS end_date
+    FROM members m
+)
+SELECT w.member_id, w.member_no, w.name, w.enabled, w.start_date, w.end_date,
+       CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no
+FROM want w LEFT JOIN k50_users k ON k.member_id = w.member_id
+";
+
+/// Sent when it is wanted now and the device does not have it yet, or when what was sent
+/// before has changed. Members who were never sent and are not let in are left alone (the
+/// device may still hold them from ZKAccess). A member the device refused waits half an hour.
+const DIFFERS: &str = "
+    (k.member_id IS NULL OR k.pushed_at IS NULL OR k.member_no <> w.member_no
+     OR k.pushed_enabled IS DISTINCT FROM w.enabled OR k.pushed_start IS DISTINCT FROM w.start_date
+     OR k.pushed_end IS DISTINCT FROM w.end_date)
+    AND (w.enabled OR k.pushed_at IS NOT NULL)
+    AND (k.error_at IS NULL OR k.error_at < now() - interval '30 minutes')";
+
+async fn pending(db: &PgPool) -> Result<Vec<Wanted>, sqlx::Error> {
+    sqlx::query_as(&format!("{WANTED} WHERE {DIFFERS} ORDER BY w.enabled DESC, w.member_no LIMIT {BATCH}"))
+        .bind(today())
+        .fetch_all(db)
+        .await
+}
+
+async fn pending_count(db: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(&format!("SELECT count(*) FROM ({WANTED} WHERE {DIFFERS}) x")).bind(today()).fetch_one(db).await
+}
+
+async fn wanted(db: &PgPool, member: Uuid) -> Result<Option<Wanted>, sqlx::Error> {
+    sqlx::query_as(&format!("{WANTED} WHERE w.member_id = $2")).bind(today()).bind(member).fetch_optional(db).await
+}
+
+/// The device keeps 24 bytes of a name.
+fn short_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if out.len() + c.len_utf8() > 24 {
+            break;
+        }
+        out.push(c);
+    }
+    out.trim_end().to_string()
+}
+
+fn set_user_ops(w: &Wanted) -> Vec<Value> {
+    let mut ops = Vec::new();
+    if let Some(old) = w.old_no {
+        ops.push(json!({ "op": "set_user", "no": old.to_string(), "enabled": false }));
+    }
+    ops.push(json!({
+        "op": "set_user", "no": w.member_no.to_string(), "name": short_name(&w.name), "enabled": w.enabled,
+        "start": w.start_date.map(|d| d.to_string()), "end": w.end_date.map(|d| d.to_string()),
+    }));
+    ops
+}
+
+/// Writes what the device answered for one member.
+async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::Error> {
+    let ok = answer["ok"] == json!(true);
+    if ok {
+        sqlx::query(
+            "INSERT INTO k50_users (member_id, member_no, pushed_name, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates) \
+             VALUES ($1, $2, $3, $4, $5, $6, now(), $7) \
+             ON CONFLICT (member_id) DO UPDATE SET member_no = $2, pushed_name = $3, pushed_start = $4, pushed_end = $5, \
+               pushed_enabled = $6, pushed_at = now(), valid_dates = $7, error = NULL, error_at = NULL",
+        )
+        .bind(w.member_id)
+        .bind(w.member_no)
+        .bind(short_name(&w.name))
+        .bind(w.start_date)
+        .bind(w.end_date)
+        .bind(w.enabled)
+        .bind(answer["valid_dates"].as_bool())
+        .execute(db)
+        .await?;
+    } else {
+        let error = answer["error"].as_str().unwrap_or("failed").to_string();
+        sqlx::query(
+            "INSERT INTO k50_users (member_id, member_no, error, error_at) VALUES ($1, $2, $3, now()) \
+             ON CONFLICT (member_id) DO UPDATE SET error = $3, error_at = now()",
+        )
+        .bind(w.member_id)
+        .bind(w.member_no)
+        .bind(error)
+        .execute(db)
+        .await?;
+    }
+    Ok(ok)
+}
+
+/// Sends a batch; the answer for the member's own number is the one that counts.
+async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), String> {
+    let mut ops = Vec::new();
+    let mut own = Vec::new();
+    for w in list {
+        ops.extend(set_user_ops(w));
+        own.push(ops.len() - 1);
+    }
+    let answers = talk(cfg, ops, Duration::from_secs(30 + list.len() as u64 * 2)).await?;
+    let (mut ok, mut failed) = (0, 0);
+    for (w, i) in list.iter().zip(own) {
+        if record(db, w, &answers[i]).await.map_err(|e| e.to_string())? {
+            ok += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    Ok((ok, failed))
+}
+
+// ---------------------------------------------------------------------------
+// Punches
+
+#[derive(Deserialize)]
+struct Punch {
+    no: String,
+    at: String,
+    #[serde(default)]
+    verify: i32,
+}
+
+/// The device's clock is the office's local time.
+fn device_time(at: &str) -> Option<DateTime<Utc>> {
+    let local = NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S").ok()?;
+    chrono::Local.from_local_datetime(&local).earliest().map(|t| t.with_timezone(&Utc))
+}
+
+/// Reads the punches the app has not seen yet; the device keeps its own copy of all of them.
+async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
+    let since: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_logs_since'")
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let since = since.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
+    let answers = talk(cfg, vec![json!({ "op": "logs", "since": since })], Duration::from_secs(180)).await?;
+    let a = &answers[0];
+    if a["ok"] != json!(true) {
+        return Err(a["error"].as_str().unwrap_or("logs_failed").to_string());
+    }
+    let list: Vec<Punch> = match &a["logs"] {
+        Value::Array(_) => serde_json::from_value(a["logs"].clone()).unwrap_or_default(),
+        one @ Value::Object(_) => serde_json::from_value(one.clone()).map(|p| vec![p]).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let newest = list.iter().map(|p| p.at.as_str()).max().map(String::from);
+    let (mut nos, mut ats, mut modes) = (Vec::new(), Vec::new(), Vec::new());
+    for p in &list {
+        if let (Ok(no), Some(at)) = (p.no.trim().parse::<i32>(), device_time(&p.at)) {
+            nos.push(no);
+            ats.push(at);
+            modes.push(p.verify);
+        }
+    }
+    let added = sqlx::query(
+        "INSERT INTO attendance (member_id, device_user_no, punched_at, verify_mode) \
+         SELECT (SELECT m.id FROM members m WHERE m.member_no = l.no), l.no, l.at, l.mode \
+         FROM UNNEST($1::int[], $2::timestamptz[], $3::int[]) AS l(no, at, mode) \
+         ON CONFLICT (device_user_no, punched_at) DO NOTHING",
+    )
+    .bind(&nos)
+    .bind(&ats)
+    .bind(&modes)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+    if let Some(newest) = newest.filter(|n| *n > since) {
+        save_setting(db, "k50_logs_since", json!(newest)).await.map_err(|e| e.to_string())?;
+    }
+    Ok(added as u32)
+}
+
+// ---------------------------------------------------------------------------
+// The rounds
+
+/// Sends everything that changed (a few batches at most) and, when asked, reads the punches.
+async fn round(db: &PgPool, cfg: &Config, punches: bool, batches: u32) -> Last {
+    let mut last = Last { at: Some(Utc::now()), ok: true, ..Default::default() };
+    for _ in 0..batches {
+        let list = match pending(db).await {
+            Ok(list) if list.is_empty() => break,
+            Ok(list) => list,
+            Err(e) => {
+                last.error = Some(e.to_string());
+                break;
+            }
+        };
+        match push(db, cfg, &list).await {
+            Ok((ok, failed)) => {
+                last.pushed += ok;
+                last.failed += failed;
+            }
+            Err(e) => {
+                last.error = Some(e);
+                break;
+            }
+        }
+    }
+    if punches && last.error.is_none() {
+        match pull_punches(db, cfg).await {
+            Ok(n) => last.punches = n,
+            Err(e) => last.error = Some(e),
+        }
+    }
+    last.ok = last.error.is_none();
+    if let Some(e) = &last.error {
+        tracing::warn!("k50: {e}");
+    }
+    *LAST.lock().unwrap() = Some(last.clone());
+    last
+}
+
+/// Every two minutes (and soon after a membership changes) the device is brought up to
+/// date; every ten minutes its punches are read. Nothing runs until a partner turns it on.
+pub async fn schedule(db: PgPool) {
+    let mut since_punches = Duration::from_secs(600);
+    loop {
+        let poked = tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(120)) => false,
+            _ = POKE.notified() => true,
+        };
+        if poked {
+            // A register-and-renew comes as a few changes in a row.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        } else {
+            since_punches += Duration::from_secs(120);
+        }
+        let Ok(cfg) = config(&db).await else { continue };
+        if !cfg.enabled || cfg.ip.trim().is_empty() || now_secs() < ENROLLING_UNTIL.load(Ordering::SeqCst) {
+            continue;
+        }
+        let punches = since_punches >= Duration::from_secs(600);
+        let last = round(&db, &cfg, punches, 5).await;
+        if punches && last.ok {
+            since_punches = Duration::ZERO;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The device page (partners)
+
+fn partner(user: &CurrentUser) -> Result<(), ApiError> {
+    if user.is_partner() { Ok(()) } else { Err(ApiError::FORBIDDEN) }
+}
+
+#[derive(Serialize)]
+pub struct Status {
+    config: Config,
+    last: Option<Last>,
+    /// Members waiting to be sent.
+    pending: i64,
+    /// Members on the device, and those it refused last time.
+    sent: i64,
+    errors: Vec<UserError>,
+    punches_today: i64,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct UserError {
+    member_no: i32,
+    name: String,
+    error: String,
+    error_at: DateTime<Utc>,
+}
+
+/// GET /api/v1/k50
+pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Status>, ApiError> {
+    partner(&user)?;
+    let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM k50_users WHERE pushed_at IS NOT NULL").fetch_one(&s.db).await?;
+    let errors: Vec<UserError> = sqlx::query_as(
+        "SELECT k.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name, k.error, k.error_at \
+         FROM k50_users k JOIN members m ON m.id = k.member_id WHERE k.error IS NOT NULL ORDER BY k.error_at DESC LIMIT 50",
+    )
+    .fetch_all(&s.db)
+    .await?;
+    let punches_today: i64 = sqlx::query_scalar("SELECT count(*) FROM attendance WHERE punched_at >= $1")
+        .bind(day_start(today()))
+        .fetch_one(&s.db)
+        .await?;
+    let pending = pending_count(&s.db).await?;
+    let last = LAST.lock().unwrap().clone();
+    Ok(Json(Status {
+        config: config(&s.db).await?,
+        last,
+        pending,
+        sent,
+        errors,
+        punches_today,
+    }))
+}
+
+fn day_start(day: NaiveDate) -> DateTime<Utc> {
+    chrono::Local
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap_or_default())
+        .earliest()
+        .map_or_else(Utc::now, |t| t.with_timezone(&Utc))
+}
+
+fn check_config(c: &Config) -> Result<(), ApiError> {
+    let ip_ok = c.ip.trim().is_empty() || c.ip.trim().parse::<Ipv4Addr>().is_ok();
+    if !ip_ok || c.port == 0 || c.machine == 0 || (c.enabled && c.ip.trim().is_empty()) {
+        return Err(ApiError::bad("bad_k50_config"));
+    }
+    Ok(())
+}
+
+/// PUT /api/v1/k50
+pub async fn set_config(State(s): State<AppState>, user: CurrentUser, Json(mut c): Json<Config>) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    c.ip = c.ip.trim().to_string();
+    check_config(&c)?;
+    save_setting(&s.db, "k50", serde_json::to_value(&c).unwrap_or_default()).await?;
+    if c.enabled {
+        poke();
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a device answered, or why it could not.
+#[derive(Serialize)]
+pub struct DeviceAnswer {
+    ok: bool,
+    error: Option<String>,
+    #[serde(flatten)]
+    result: Option<Value>,
+}
+
+impl DeviceAnswer {
+    fn from(r: Result<Value, String>) -> Json<DeviceAnswer> {
+        Json(match r {
+            Ok(v) if v["ok"] == json!(true) => DeviceAnswer { ok: true, error: None, result: Some(without_ok(v)) },
+            Ok(v) => DeviceAnswer { ok: false, error: Some(v["error"].as_str().unwrap_or("failed").to_string()), result: Some(without_ok(v)) },
+            Err(e) => DeviceAnswer { ok: false, error: Some(e), result: None },
+        })
+    }
+}
+
+fn without_ok(mut v: Value) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        o.remove("ok");
+        o.remove("error");
+    }
+    v
+}
+
+/// POST /api/v1/k50/test: reaches the device (with the address on the form, saved or not)
+/// and says what it is: serial number, users, fingers, its clock.
+pub async fn test(State(s): State<AppState>, user: CurrentUser, Json(mut c): Json<Config>) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    c.ip = c.ip.trim().to_string();
+    check_config(&Config { enabled: false, ..c.clone() })?;
+    let _ = &s;
+    let r = talk(&c, vec![json!({ "op": "info" })], Duration::from_secs(40)).await.map(|mut a| a.remove(0));
+    if let Ok(info) = &r {
+        tracing::info!("k50 test: {info}");
+    }
+    Ok(DeviceAnswer::from(r))
+}
+
+/// POST /api/v1/k50/sync: one full round now, punches included.
+pub async fn sync_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Last>, ApiError> {
+    partner(&user)?;
+    let cfg = config(&s.db).await?;
+    if cfg.ip.trim().is_empty() {
+        return Err(ApiError::bad("no_ip"));
+    }
+    Ok(Json(round(&s.db, &cfg, true, 100).await))
+}
+
+/// POST /api/v1/k50/time: sets the device's clock to the laptop's.
+pub async fn set_time(State(s): State<AppState>, user: CurrentUser) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    let cfg = config(&s.db).await?;
+    let r = talk(&cfg, vec![json!({ "op": "set_time" }), json!({ "op": "info" })], Duration::from_secs(40)).await;
+    Ok(DeviceAnswer::from(r.map(|mut a| {
+        let info = a.remove(1);
+        let mut set = a.remove(0);
+        set["time"] = info["time"].clone();
+        set
+    })))
+}
+
+#[derive(Serialize)]
+pub struct Found {
+    ip: String,
+    /// The laptop's own address on that network.
+    via: String,
+}
+
+/// POST /api/v1/k50/scan: looks for devices (TCP port 4370) on the laptop's own networks.
+pub async fn scan(user: CurrentUser) -> Result<Json<Vec<Found>>, ApiError> {
+    partner(&user)?;
+    let nets: Vec<(Ipv4Addr, u32)> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(v4)
+                if !v4.ip.is_loopback() && !v4.ip.is_link_local() && !crate::phone::virtual_network(&i.name, v4.ip) =>
+            {
+                Some((v4.ip, u32::from(v4.netmask).count_ones()))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut tasks = tokio::task::JoinSet::new();
+    for (own, prefix) in nets {
+        // The /24 around the laptop's address (a bigger network would take too long).
+        let base = u32::from(own) & if prefix >= 24 { u32::MAX << (32 - prefix) } else { 0xFFFF_FF00 };
+        let size = if prefix >= 24 { 1u32 << (32 - prefix) } else { 256 };
+        for n in 1..size.saturating_sub(1) {
+            let ip = Ipv4Addr::from(base + n);
+            if ip == own {
+                continue;
+            }
+            tasks.spawn(async move {
+                let addr = SocketAddr::from((ip, 4370));
+                let open = tokio::time::timeout(Duration::from_millis(700), tokio::net::TcpStream::connect(addr)).await.is_ok_and(|r| r.is_ok());
+                open.then(|| Found { ip: ip.to_string(), via: own.to_string() })
+            });
+        }
+    }
+    let mut found = Vec::new();
+    while let Some(r) = tasks.join_next().await {
+        if let Ok(Some(f)) = r {
+            found.push(f);
+        }
+    }
+    found.sort_by(|a, b| a.ip.cmp(&b.ip));
+    Ok(Json(found))
+}
+
+// ---------------------------------------------------------------------------
+// On the member page (the desk)
+
+#[derive(Serialize, FromRow)]
+pub struct Sent {
+    member_no: i32,
+    pushed_start: Option<NaiveDate>,
+    pushed_end: Option<NaiveDate>,
+    pushed_enabled: Option<bool>,
+    pushed_at: Option<DateTime<Utc>>,
+    valid_dates: Option<bool>,
+    fingers: Option<i32>,
+    error: Option<String>,
+    error_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+pub struct MemberK50 {
+    /// The device is set up (an address is saved).
+    configured: bool,
+    auto: bool,
+    /// What the device should hold for this member now.
+    enabled: bool,
+    start_date: Option<NaiveDate>,
+    end_date: Option<NaiveDate>,
+    sent: Option<Sent>,
+    visits: Vec<DateTime<Utc>>,
+}
+
+/// GET /api/v1/members/:id/k50 (from the database only; the device is asked with /check).
+pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<MemberK50>, ApiError> {
+    hall_only(&user)?;
+    let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    let cfg = config(&s.db).await?;
+    let sent: Option<Sent> = sqlx::query_as(
+        "SELECT member_no, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates, fingers, error, error_at FROM k50_users WHERE member_id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&s.db)
+    .await?;
+    let visits: Vec<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT punched_at FROM attendance WHERE member_id = $1 ORDER BY punched_at DESC LIMIT 10")
+            .bind(id)
+            .fetch_all(&s.db)
+            .await?;
+    Ok(Json(MemberK50 {
+        configured: !cfg.ip.is_empty(),
+        auto: cfg.enabled,
+        enabled: w.enabled,
+        start_date: w.start_date,
+        end_date: w.end_date,
+        sent,
+        visits,
+    }))
+}
+
+async fn device_for(db: &PgPool) -> Result<Config, ApiError> {
+    let cfg = config(db).await?;
+    if cfg.ip.is_empty() {
+        return Err(ApiError::bad("no_ip"));
+    }
+    Ok(cfg)
+}
+
+/// POST /api/v1/members/:id/k50/check: what the device holds for this member (fingers too).
+pub async fn check(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<DeviceAnswer>, ApiError> {
+    hall_only(&user)?;
+    let cfg = device_for(&s.db).await?;
+    let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    let r = talk(&cfg, vec![json!({ "op": "user", "no": w.member_no.to_string() })], Duration::from_secs(40)).await.map(|mut a| a.remove(0));
+    if let Ok(v) = &r {
+        if let Some(f) = v["fingers"].as_i64() {
+            sqlx::query("UPDATE k50_users SET fingers = $2 WHERE member_id = $1").bind(id).bind(f as i32).execute(&s.db).await?;
+        }
+    }
+    Ok(DeviceAnswer::from(r))
+}
+
+/// POST /api/v1/members/:id/k50/push: sends this member's dates now.
+pub async fn push_member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<DeviceAnswer>, ApiError> {
+    hall_only(&user)?;
+    let cfg = device_for(&s.db).await?;
+    let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    let r = send_one(&s.db, &cfg, &w).await;
+    Ok(DeviceAnswer::from(r))
+}
+
+async fn send_one(db: &PgPool, cfg: &Config, w: &Wanted) -> Result<Value, String> {
+    let mut answers = talk(cfg, set_user_ops(w), Duration::from_secs(40)).await?;
+    let answer = answers.pop().unwrap_or_default();
+    record(db, w, &answer).await.map_err(|e| e.to_string())?;
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub struct Enroll {
+    /// 0-9, the device's finger numbers (6 is the right index finger).
+    finger: u8,
+}
+
+/// POST /api/v1/members/:id/k50/enroll: puts the member on the device (if not there yet)
+/// and turns the device to "put your finger" for them; they press it three times.
+pub async fn enroll(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(b): Json<Enroll>,
+) -> Result<Json<DeviceAnswer>, ApiError> {
+    hall_only(&user)?;
+    if b.finger > 9 {
+        return Err(ApiError::bad("bad_finger"));
+    }
+    let cfg = device_for(&s.db).await?;
+    let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    // As at the desk today: register and pay first, then the finger.
+    if !w.enabled {
+        return Err(ApiError::bad("no_active_seat"));
+    }
+    let sent = send_one(&s.db, &cfg, &w).await;
+    if let Err(e) = &sent {
+        return Ok(DeviceAnswer::from(Err(e.clone())));
+    }
+    if let Ok(v) = &sent {
+        if v["ok"] != json!(true) {
+            return Ok(DeviceAnswer::from(sent));
+        }
+    }
+    let r = talk(&cfg, vec![json!({ "op": "enroll", "no": w.member_no.to_string(), "finger": b.finger })], Duration::from_secs(40))
+        .await
+        .map(|mut a| a.remove(0));
+    if r.as_ref().is_ok_and(|v| v["ok"] == json!(true)) {
+        ENROLLING_UNTIL.store(now_secs() + 120, Ordering::SeqCst);
+    }
+    Ok(DeviceAnswer::from(r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_fit_the_device() {
+        assert_eq!(short_name("Ali Ahmadi"), "Ali Ahmadi");
+        let long = short_name("محمد عبدالرحمن احمدزی نصیری");
+        assert!(long.len() <= 24 && long.chars().count() == 12);
+    }
+
+    #[test]
+    fn device_clock_is_local() {
+        let t = device_time("2026-10-27 08:30:00").unwrap();
+        assert_eq!(t.with_timezone(&chrono::Local).format("%H:%M").to_string(), "08:30");
+        assert!(device_time("bad").is_none());
+    }
+}
