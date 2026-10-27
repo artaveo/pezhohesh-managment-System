@@ -24,6 +24,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 mod auth;
+mod backup;
 mod books;
 mod dashboard;
 mod hall;
@@ -120,6 +121,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
             Ok(()) => {
                 *core.write().unwrap() = Core { ready: true, ..Default::default() };
                 tracing::info!("database ready");
+                tokio::spawn(backup::schedule(db, url));
                 return;
             }
             Err(e) => {
@@ -248,6 +250,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/hotspot/buys", get(hotspot::buys).post(hotspot::create_buy))
         .route("/api/v1/hotspot/buys/:id", delete(hotspot::delete_buy))
         .route("/api/v1/hotspot/sales", get(hotspot::sales).post(hotspot::create_sale))
+        .route("/api/v1/backup", get(backup::status).put(backup::set_plan).post(backup::backup_now))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

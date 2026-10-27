@@ -72,6 +72,13 @@ pub fn year_of(date: NaiveDate) -> i32 {
     }
 }
 
+/// Solar month and day of a Gregorian date.
+pub fn month_day(date: NaiveDate) -> (u32, u32) {
+    let nowruz = to_gregorian(year_of(date), 1, 1).unwrap_or(date);
+    let days = (date - nowruz).num_days().max(0) as u32;
+    if days < 186 { (days / 31 + 1, days % 31 + 1) } else { (7 + (days - 186) / 30, (days - 186) % 30 + 1) }
+}
+
 /// Month number (1-12) of a header such as "حمل " or "عقرب".
 pub fn month_of(header: &str) -> Option<u32> {
     let h = header.trim();
@@ -95,5 +102,10 @@ mod tests {
         assert_eq!(year_of(d(2026, 3, 20)), 1404);
         assert_eq!(year_of(d(2026, 3, 21)), 1405);
         assert_eq!(year_of(d(2026, 10, 27)), 1405);
+        assert_eq!(month_day(d(2026, 10, 27)), (8, 5));
+        assert_eq!(month_day(d(2026, 3, 21)), (1, 1));
+        assert_eq!(month_day(d(2026, 9, 22)), (6, 31));
+        assert_eq!(month_day(d(2026, 9, 23)), (7, 1));
+        assert_eq!(month_day(d(2025, 3, 20)), (12, 30));
     }
 }

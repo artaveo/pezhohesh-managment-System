@@ -397,6 +397,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .card-count input { text-align: center; font-size: 1.1rem; }
 .hotspot-kpis { grid-template-columns: 1.35fr 1fr 1fr 1fr; }
 .kpis.settle { grid-template-columns: repeat(3, 1fr); }
+.backup-folders { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 4px; }
 
 .modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(15, 20, 15, .45); overflow: auto; }
 .modal-body { display: flex; flex-direction: column; gap: 12px; align-items: center; max-width: 100%; }

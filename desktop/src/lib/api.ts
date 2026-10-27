@@ -123,6 +123,12 @@ export type Expense = { id: string; spent_on: string; category: string; descript
 export type Person = { id: string; full_name: string; title: string | null };
 export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
+export type BackupPlan = { folders: string[]; every_hours: number; keep: number };
+export type BackupOutcome = { at: string | null; ok: boolean; folders: { folder: string; file: string | null; error: string | null }[] };
+export type BackupStatus = {
+  plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
+  files: { name: string; size: number; modified: string | null }[];
+};
 export type HotspotCard = { volume_gb: number; price: number; active: boolean; bought: number; sold: number; in_hand: number };
 export type HotspotCards = { cost_per_gb: number; cards: HotspotCard[] };
 export type CardCount = { volume_gb: number; quantity: number };
@@ -292,6 +298,9 @@ export const api = {
   returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number }) =>
     request<{ receipt_id: string | null }>(`/book-loans/${id}/return`, { method: "POST", body: b }),
   deleteLoan: (id: string) => request<void>(`/book-loans/${id}`, { method: "DELETE" }),
+  backup: () => request<BackupStatus>("/backup"),
+  setBackupPlan: (p: BackupPlan) => request<void>("/backup", { method: "PUT", body: p }),
+  backupNow: () => request<BackupOutcome>("/backup", { method: "POST" }),
   hotspotCards: (signal?: AbortSignal) => request<HotspotCards>("/hotspot/cards", { signal }),
   setHotspotCards: (p: { cost_per_gb: number; cards: { volume_gb: number; price: number; active: boolean }[] }) =>
     request<void>("/hotspot/cards", { method: "PUT", body: p }),
@@ -349,6 +358,8 @@ export function errorText(e: unknown): string {
     case "already_returned": return "این قبلاً برگشت خورده.";
     case "before_start": return "این تاریخ پیش از تاریخ شروع است.";
     case "future_date": return "تاریخ آینده قبول نمی‌شود.";
+    case "bad_backup_plan": return "تعداد نسخه‌ها باید بین 1 و 365 باشد.";
+    case "folder_required": return "دست‌کم یک پوشه برای پشتیبان بنویسید.";
     case "no_cards": return "تعداد دست‌کم یک کارت را بنویسید.";
     case "bad_card": return "این نوع کارت در فهرست کارت‌ها نیست.";
     case "cards_sold": return "بعضی کارت‌های این بل فروخته شده‌اند؛ پاک نمی‌شود.";
