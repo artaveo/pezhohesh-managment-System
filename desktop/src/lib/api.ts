@@ -69,6 +69,17 @@ export type ImportReport = {
 };
 
 export type Page<T> = { total: number; rows: T[] };
+export type PersonRow = { id: string; full_name: string; title: string | null; usernames: string[]; withdrawals: number; withdrawn: number };
+
+export type RegKind = "monthly" | "daily" | "internet";
+export type Registration = {
+  id: string; day: string; kind: RegKind; plan_name: string;
+  member_id: string | null; member_no: number | null; name: string; phone: string | null;
+  start_date: string; end_date: string; amount: number;
+  receipt_id: string | null; receipt_no: string | null; first: boolean; record_only: boolean;
+};
+export type RegSummary = { daily: number; monthly_new: number; monthly_renewed: number; internet: number; amount: number };
+export type RegQuery = { from: string; to: string; kind?: RegKind; q?: string; limit?: number; offset?: number };
 
 export type MemberRow = {
   member_id: string;
@@ -125,12 +136,16 @@ export type Expense = { id: string; spent_on: string; category: string; descript
 export type Person = { id: string; full_name: string; title: string | null };
 export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
-export type BackupPlan = { folders: string[]; every_hours: number; keep: number };
-export type BackupOutcome = { at: string | null; ok: boolean; folders: { folder: string; file: string | null; error: string | null }[] };
+export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number };
+export type BackupOutcome = {
+  at: string | null; ok: boolean;
+  folders: { kind: "folder" | "usb" | "gdrive"; folder: string; file: string | null; error: string | null }[];
+};
 export type OnlineOutcome = { at: string | null; ok: boolean; error: string | null; seconds: number | null };
 export type OnlineStatus = { host: string | null; every_hours: number; last: OnlineOutcome | null };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
+  usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean }[];
   files: { name: string; size: number; modified: string | null }[];
 };
 export type HotspotCard = { volume_gb: number; price: number; active: boolean; bought: number; sold: number; in_hand: number };
@@ -239,7 +254,9 @@ export const api = {
   setTheme: (color: string | null) => request<void>("/me/theme", { method: "PUT", body: { color } }),
   setThemeMode: (mode: ThemeMode) => request<void>("/me/theme-mode", { method: "PUT", body: { mode } }),
   users: () => request<UserRow[]>("/users"),
-  createUser: (b: { full_name: string; username: string; password: string; role: Role; can_see_pec_finance: boolean }) =>
+  people: () => request<PersonRow[]>("/people"),
+  mergePeople: (from: string, into: string) => request<void>("/people/merge", { method: "POST", body: { from, into } }),
+  createUser: (b: { full_name: string; username: string; password: string; role: Role; can_see_pec_finance: boolean; staff_id?: string }) =>
     request<{ id: string }>("/users", { method: "POST", body: b }),
   updateUser: (id: string, b: Partial<{ role: Role; active: boolean; can_see_pec_finance: boolean; reset_password: string }>) =>
     request<void>(`/users/${id}`, { method: "PUT", body: b }),
@@ -270,6 +287,12 @@ export const api = {
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 
+  registrations: (p: RegQuery, signal?: AbortSignal) => {
+    const qs = new URLSearchParams({ from: p.from, to: p.to, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
+    if (p.kind) qs.set("kind", p.kind);
+    if (p.q?.trim()) qs.set("q", p.q.trim());
+    return request<Page<Registration> & { summary: RegSummary }>(`/registrations?${qs}`, { signal });
+  },
   nextMemberNo: () => request<number>("/members/next-no"),
   createMember: (member: MemberInput, period: PeriodInput | null) => request<Saved>("/members", { method: "POST", body: { member, period } }),
   member: (id: string, signal?: AbortSignal) => request<MemberDetail>(`/members/${id}`, { signal }),
@@ -311,6 +334,7 @@ export const api = {
   deleteLoan: (id: string) => request<void>(`/book-loans/${id}`, { method: "DELETE" }),
   backup: () => request<BackupStatus>("/backup"),
   setBackupPlan: (p: BackupPlan) => request<void>("/backup", { method: "PUT", body: p }),
+  prepareUsb: (root: string) => request<void>("/backup/usb", { method: "POST", body: { root } }),
   backupNow: () => request<BackupOutcome>("/backup", { method: "POST" }),
   online: () => request<OnlineStatus>("/online"),
   setOnline: (p: { every_hours: number; url?: string }) => request<void>("/online", { method: "PUT", body: p }),
@@ -379,6 +403,12 @@ export function errorText(e: unknown): string {
     case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";
     case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
     case "bad_online_plan": return "زمان ارسال درست نیست.";
+    case "bad_range": return "بازهٔ تاریخ درست نیست: «تا» نباید پیش از «از» باشد.";
+    case "drive_not_found": return "این درایو دیگر وصل نیست.";
+    case "drive_not_writable": return "روی این درایو نمی‌شود نوشت (شاید قفل است).";
+    case "person_has_login": return "این شخص از قبل حساب ورود دارد.";
+    case "same_person": return "دو نام یکی را انتخاب کرده‌اید.";
+    case "merge_salary_clash": return "هر دو نام برای یک ماه معاش ثبت‌شده دارند؛ اول یکی را حذف کنید.";
     case "folder_required": return "دست‌کم یک پوشه برای پشتیبان بنویسید.";
     case "no_cards": return "تعداد دست‌کم یک کارت را بنویسید.";
     case "bad_card": return "این نوع کارت در فهرست کارت‌ها نیست.";

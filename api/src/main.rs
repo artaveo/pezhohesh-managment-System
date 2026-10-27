@@ -34,6 +34,8 @@ mod import_excel;
 mod lists;
 mod money;
 mod online;
+mod people;
+mod registrations;
 mod reports;
 mod solar;
 
@@ -214,6 +216,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/me/theme", put(auth::set_theme))
         .route("/api/v1/users", get(auth::list_users).post(auth::create_user))
         .route("/api/v1/users/:id", put(auth::update_user))
+        .route("/api/v1/people", get(people::list))
+        .route("/api/v1/people/merge", post(people::merge))
         .route("/api/v1/me/theme-mode", put(auth::set_theme_mode))
         .route("/api/v1/dashboard", get(dashboard::get))
         .route(
@@ -232,6 +236,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/documents/:id", get(documents::file).delete(documents::remove))
         .route("/api/v1/periods/:id", delete(hall::delete_period))
         .route("/api/v1/daily-seats", post(hall::daily_seat))
+        .route("/api/v1/registrations", get(registrations::list))
         .route("/api/v1/bills", get(hall::bills).post(hall::other_bill))
         .route("/api/v1/bills/:id", get(hall::bill))
         .route("/api/v1/bills/:id/printed", post(hall::bill_printed))
@@ -259,6 +264,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/hotspot/buys/:id", delete(hotspot::delete_buy))
         .route("/api/v1/hotspot/sales", get(hotspot::sales).post(hotspot::create_sale))
         .route("/api/v1/backup", get(backup::status).put(backup::set_plan).post(backup::backup_now))
+        .route("/api/v1/backup/usb", post(backup::prepare_usb))
         .route("/api/v1/online", get(online::status).put(online::set_plan).post(online::copy_now))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))

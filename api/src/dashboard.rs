@@ -147,14 +147,17 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
         r#"
         WITH w AS (SELECT $1::date AS cs, $2::date AS ce, $3::date AS ps, $4::date AS pe)
         SELECT
-            (SELECT count(DISTINCT member_id) FROM memberships, w
-              WHERE deleted_at IS NULL AND member_id IS NOT NULL
+            (SELECT count(DISTINCT COALESCE(member_id, id)) FROM memberships, w
+              WHERE deleted_at IS NULL
                 AND start_date < w.ce AND end_date >= w.ce - 1) AS active_members,
-            (SELECT count(DISTINCT member_id) FROM memberships, w
-              WHERE deleted_at IS NULL AND member_id IS NOT NULL
+            (SELECT count(DISTINCT COALESCE(member_id, id)) FROM memberships, w
+              WHERE deleted_at IS NULL
                 AND start_date < w.pe AND end_date >= w.pe - 1) AS active_members_prev,
-            (SELECT count(*) FROM members, w WHERE deleted_at IS NULL AND joined_on >= w.cs AND joined_on < w.ce) AS new_members,
-            (SELECT count(*) FROM members, w WHERE deleted_at IS NULL AND joined_on >= w.ps AND joined_on < w.pe) AS new_members_prev,
+            -- Sign-ups: new monthly members and daily seats (renewals are not new).
+            (SELECT count(*) FROM v_registrations, w
+              WHERE (kind = 'daily' OR (kind = 'monthly' AND first)) AND day >= w.cs AND day < w.ce) AS new_members,
+            (SELECT count(*) FROM v_registrations, w
+              WHERE (kind = 'daily' OR (kind = 'monthly' AND first)) AND day >= w.ps AND day < w.pe) AS new_members_prev,
             (SELECT COALESCE(sum(amount), 0)::float8 FROM receipts, w
               WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
                 AND issued_on >= w.cs AND issued_on < w.ce) AS income,

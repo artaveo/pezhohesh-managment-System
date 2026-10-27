@@ -1,13 +1,15 @@
-import { api, ApiError } from "../../lib/api";
+import { useEffect, useState } from "react";
+import { api, ApiError, type RegKind, type RegSummary, type Registration } from "../../lib/api";
 import { sampleDashboard } from "../../lib/sample";
 import { useLoad } from "../../lib/useLoad";
-import { fa, formatShort, windowFor } from "../../lib/solar";
+import { fa, formatShort, iso, windowFor } from "../../lib/solar";
+import { kindLabel } from "../Registrations";
 import { Icon } from "../../components/Icon";
 import { DaysLeft } from "../../components/DaysLeft";
 import { Failed, Kpi, Loading } from "../../components/Stat";
 import { CategoryBars } from "../../components/charts/CategoryBars";
 
-export type Go = (page: "members" | "books") => void;
+export type Go = (page: "members" | "books" | "registrations", kind?: RegKind) => void;
 
 const VS = "نسبت به دیروز";
 
@@ -32,11 +34,13 @@ export function TodayView({ go }: { go: Go }) {
       </section>
       <section className="kpis three">
         <Kpi icon="users" label="اعضای فعال امروز" value={k.active_members} unit="نفر" compare={[{ prev: k.active_members_prev, vs: VS }]} />
-        <Kpi icon="plus" label="ثبت‌نام جدید امروز" value={k.new_members} unit="نفر" compare={[{ prev: k.new_members_prev, vs: VS }]} />
+        <Kpi icon="plus" label="ثبت‌نام امروز (جدید و روزانه)" value={k.new_members} unit="نفر" compare={[{ prev: k.new_members_prev, vs: VS }]} />
         <Kpi icon="fingerprint" label="حاضری امروز" value={k.attendance} unit="ورود" compare={[{ prev: k.attendance_prev, vs: VS }]} />
       </section>
 
-      <section className="grid-3">
+      <section className="grid-3 today-grid">
+        <TodaySignups go={go} />
+
         <div className="glass">
           <div className="panel-head">
             <h2>عضویت‌های نزدیک به ختم</h2>
@@ -85,5 +89,41 @@ export function TodayView({ go }: { go: Go }) {
         </div>
       </section>
     </>
+  );
+}
+
+/** Today's sign-ups (daily seats, new and renewed members), with the way to all of them. */
+function TodaySignups({ go }: { go: Go }) {
+  const [rows, setRows] = useState<Registration[] | null>(null);
+  const [sum, setSum] = useState<RegSummary | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    const today = iso(new Date());
+    api.registrations({ from: today, to: today, limit: 8 }, ctl.signal)
+      .then((p) => { setRows(p.rows); setSum(p.summary); })
+      .catch(() => { if (!ctl.signal.aborted) setRows([]); });
+    return () => ctl.abort();
+  }, []);
+  return (
+    <div className="glass">
+      <div className="panel-head">
+        <h2>ثبت‌نام‌های امروز</h2>
+        {sum && <span className="muted small">{fa(sum.daily)} روزانه · {fa(sum.monthly_new)} جدید · {fa(sum.monthly_renewed)} تمدید</span>}
+      </div>
+      <ul className="attention">
+        {rows?.map((r) => (
+          <li key={r.id}>
+            <span className="att-icon"><Icon name={r.kind === "daily" ? "clock" : "users"} size={18} /></span>
+            <span className="att-main"><strong>{r.name}</strong> <span className="muted small">{r.member_no ? `آیدی ${r.member_no} · ` : ""}{r.plan_name}</span></span>
+            <span className={`chip kind-${r.kind}${r.kind === "monthly" && r.first ? " new" : ""}`}>{kindLabel(r)}</span>
+          </li>
+        ))}
+        {rows && !rows.length && <li className="muted">امروز هنوز کسی ثبت‌نام نکرده.</li>}
+      </ul>
+      <div className="see-all-row">
+        <button className="btn ghost see-all" onClick={() => go("registrations", "daily")}>عضویت‌های روزانه ({fa(sum?.daily ?? 0)})</button>
+        <button className="btn ghost see-all" onClick={() => go("registrations", "monthly")}>عضویت‌های ماهانه ({fa((sum?.monthly_new ?? 0) + (sum?.monthly_renewed ?? 0))})</button>
+      </div>
+    </div>
   );
 }

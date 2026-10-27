@@ -471,6 +471,9 @@ pub struct CreateUser {
     role: String,
     #[serde(default)]
     can_see_pec_finance: bool,
+    /// A person already in the books (from the Excel book) who gets this account, so the
+    /// same person is not written twice.
+    staff_id: Option<Uuid>,
 }
 
 pub async fn create_user(
@@ -498,19 +501,45 @@ pub async fn create_user(
     if taken {
         return Err(ApiError(StatusCode::CONFLICT, "username_taken"));
     }
-    let staff_id = Uuid::new_v4();
     let id = Uuid::new_v4();
     let department = match b.role.as_str() {
         "manager" => Some("hall"),
         "pec_staff" => Some("pec"),
         _ => None,
     };
-    sqlx::query("INSERT INTO staff (id, full_name, department) VALUES ($1, $2, $3::department)")
-        .bind(staff_id)
-        .bind(full_name)
-        .bind(department)
-        .execute(&mut *tx)
-        .await?;
+    let title = (b.role == "partner").then_some("شریک");
+    let staff_id = match b.staff_id {
+        Some(existing) => {
+            let found: Option<bool> = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM app_users u WHERE u.staff_id = s.id AND u.deleted_at IS NULL) \
+                 FROM staff s WHERE s.id = $1 AND s.deleted_at IS NULL FOR UPDATE",
+            )
+            .bind(existing)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if found.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))? {
+                return Err(ApiError(StatusCode::CONFLICT, "person_has_login"));
+            }
+            sqlx::query("UPDATE staff SET title = COALESCE(title, $2), department = COALESCE(department, $3::department) WHERE id = $1")
+                .bind(existing)
+                .bind(title)
+                .bind(department)
+                .execute(&mut *tx)
+                .await?;
+            existing
+        }
+        None => {
+            let staff_id = Uuid::new_v4();
+            sqlx::query("INSERT INTO staff (id, full_name, title, department) VALUES ($1, $2, $3, $4::department)")
+                .bind(staff_id)
+                .bind(full_name)
+                .bind(title)
+                .bind(department)
+                .execute(&mut *tx)
+                .await?;
+            staff_id
+        }
+    };
     sqlx::query(
         "INSERT INTO app_users (id, staff_id, username, password_hash, role, can_see_pec_finance, must_change_password) \
          VALUES ($1, $2, $3, $4, $5::app_role, $6, true)",

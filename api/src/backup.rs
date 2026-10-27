@@ -18,18 +18,26 @@ use crate::{solar, AppState};
 /// Backups older than this many runs are deleted from each folder.
 const KEEP_DEFAULT: usize = 30;
 
+/// The folder that marks a USB stick (or any other drive) for backups. Whatever letter
+/// Windows gives the stick, a backup finds it by this folder.
+pub const USB_FOLDER: &str = "Pezhohesh-Backup";
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Plan {
-    /// First: on this laptop. Second (optional): a USB stick or a network folder.
+    /// First: on this laptop. Second (optional): a network folder or any other folder.
     folders: Vec<String>,
+    /// Also to the first drive with a `Pezhohesh-Backup` folder (a USB stick).
+    usb: bool,
+    /// Also to Google Drive ("Google Drive for desktop" signed in on this laptop).
+    gdrive: bool,
     every_hours: u32,
     keep: usize,
 }
 
 impl Default for Plan {
     fn default() -> Self {
-        Plan { folders: vec![default_folder()], every_hours: 24, keep: KEEP_DEFAULT }
+        Plan { folders: vec![default_folder()], usb: true, gdrive: true, every_hours: 24, keep: KEEP_DEFAULT }
     }
 }
 
@@ -44,9 +52,73 @@ pub struct Outcome {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FolderOutcome {
+    /// folder | usb | gdrive
+    #[serde(default = "kind_folder")]
+    kind: String,
     folder: String,
     file: Option<String>,
     error: Option<String>,
+}
+
+fn kind_folder() -> String {
+    "folder".into()
+}
+
+/// The drives other than the system drive: D: to Z: on Windows (or PZ_DRIVES, ";"-separated, in tests).
+fn drive_roots() -> Vec<PathBuf> {
+    if let Ok(list) = std::env::var("PZ_DRIVES") {
+        return list.split(';').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+        // An empty card reader must not open a "no disk" message on the desk's screen.
+        unsafe { SetErrorMode(SEM_FAILCRITICALERRORS) };
+        ('D'..='Z')
+            .filter(|c| {
+                let root: Vec<u16> = format!("{c}:\\").encode_utf16().chain([0]).collect();
+                // 2 removable, 3 fixed (USB hard disks say fixed), 4 network
+                matches!(unsafe { GetDriveTypeW(root.as_ptr()) }, 2 | 3 | 4)
+            })
+            .map(|c| PathBuf::from(format!("{c}:\\")))
+            .filter(|p| p.exists())
+            .collect()
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// The backup folder on the first drive that carries one (the USB stick).
+fn usb_dir(roots: &[PathBuf]) -> Option<PathBuf> {
+    roots.iter().map(|r| r.join(USB_FOLDER)).find(|p| p.is_dir())
+}
+
+/// Google Drive's "My Drive" folder, from "Google Drive for desktop" (a drive letter, or a
+/// folder in the user's profile when it mirrors).
+fn gdrive_root(roots: &[PathBuf]) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = roots.iter().map(|r| r.join("My Drive")).collect();
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        candidates.push(Path::new(&home).join("My Drive"));
+        candidates.push(Path::new(&home).join("Google Drive"));
+    }
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+#[derive(Serialize)]
+pub struct Drive {
+    root: String,
+    /// It already has the Pezhohesh-Backup folder.
+    prepared: bool,
+}
+
+fn drives(roots: &[PathBuf], gdrive: Option<&Path>) -> Vec<Drive> {
+    let gdrive = gdrive.and_then(Path::parent);
+    roots
+        .iter()
+        .filter(|r| Some(r.as_path()) != gdrive)
+        .map(|r| Drive { prepared: r.join(USB_FOLDER).is_dir(), root: r.display().to_string() })
+        .collect()
 }
 
 fn default_folder() -> String {
@@ -119,10 +191,33 @@ pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> 
     let plan = plan_of(db).await?;
     let name = file_name(Local::now());
     let mut out = Outcome { at: Some(Utc::now()), ok: false, folders: vec![] };
+    // Where to: the plan's folders, then the USB stick and Google Drive when they are there.
+    let mut targets: Vec<(&str, Result<PathBuf, &str>)> =
+        plan.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).map(|f| ("folder", Ok(PathBuf::from(f)))).collect();
+    let (usb, gdrive) = tokio::task::spawn_blocking(|| {
+        let roots = drive_roots();
+        (usb_dir(&roots), gdrive_root(&roots))
+    })
+    .await
+    .unwrap_or((None, None));
+    if plan.usb {
+        targets.push(("usb", usb.ok_or("usb_not_found")));
+    }
+    if plan.gdrive {
+        targets.push(("gdrive", gdrive.map(|g| g.join(USB_FOLDER)).ok_or("gdrive_not_found")));
+    }
     // One dump, copied to the other folders: every copy is the same moment.
     let mut first: Option<PathBuf> = None;
-    for folder in plan.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
-        let dir = Path::new(folder);
+    for (kind, dir) in targets {
+        let dir = match dir {
+            Ok(d) => d,
+            Err(e) => {
+                out.folders.push(FolderOutcome { kind: kind.into(), folder: String::new(), file: None, error: Some(e.into()) });
+                continue;
+            }
+        };
+        let folder = dir.display().to_string();
+        let dir = dir.as_path();
         let target = dir.join(&name);
         let result = match &first {
             None => dump(url, dir, &target).await,
@@ -144,11 +239,11 @@ pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> 
                     Ok(Err(e)) => Some(format!("files: {e}")),
                     Err(e) => Some(format!("files: {e}")),
                 };
-                out.folders.push(FolderOutcome { folder: folder.into(), file: Some(name.clone()), error });
+                out.folders.push(FolderOutcome { kind: kind.into(), folder, file: Some(name.clone()), error });
             }
             Err(e) => {
                 tracing::error!("backup to {folder} failed: {e}");
-                out.folders.push(FolderOutcome { folder: folder.into(), file: None, error: Some(e) });
+                out.folders.push(FolderOutcome { kind: kind.into(), folder, file: None, error: Some(e) });
             }
         }
     }
@@ -282,6 +377,10 @@ pub struct Status {
     /// Backups in the first folder, newest first.
     files: Vec<BackupFile>,
     pg_dump: String,
+    /// Where a backup would go now.
+    usb: Option<String>,
+    gdrive: Option<String>,
+    drives: Vec<Drive>,
 }
 
 fn partner(user: &CurrentUser) -> Result<(), ApiError> {
@@ -297,7 +396,18 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         None => vec![],
     };
     files.sort_by_key(|f| std::cmp::Reverse(f.modified));
-    Ok(Json(Status { last: setting(&s.db, "backup_last").await?, files, pg_dump: pg_dump().display().to_string(), plan }))
+    let (usb, gdrive, drives) = tokio::task::spawn_blocking(|| {
+        let roots = drive_roots();
+        let gdrive = gdrive_root(&roots);
+        (
+            usb_dir(&roots).map(|p| p.display().to_string()),
+            gdrive.as_ref().map(|p| p.join(USB_FOLDER).display().to_string()),
+            drives(&roots, gdrive.as_deref()),
+        )
+    })
+    .await
+    .unwrap_or((None, None, vec![]));
+    Ok(Json(Status { last: setting(&s.db, "backup_last").await?, files, pg_dump: pg_dump().display().to_string(), plan, usb, gdrive, drives }))
 }
 
 pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Json<Plan>) -> Result<StatusCode, ApiError> {
@@ -309,7 +419,7 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
     if p.every_hours > 24 * 7 || !(1..=365).contains(&p.keep) {
         return Err(ApiError::bad("bad_backup_plan"));
     }
-    let plan = Plan { folders, every_hours: p.every_hours, keep: p.keep };
+    let plan = Plan { folders, usb: p.usb, gdrive: p.gdrive, every_hours: p.every_hours, keep: p.keep };
     let mut tx = begin_as(&s.db, &user).await?;
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES ('backup_plan', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
@@ -318,6 +428,23 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct PrepareUsb {
+    root: String,
+}
+
+/// POST /api/v1/backup/usb: makes the Pezhohesh-Backup folder on a drive, so backups find it.
+pub async fn prepare_usb(user: CurrentUser, Json(p): Json<PrepareUsb>) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    let root = tokio::task::spawn_blocking(move || drive_roots().into_iter().find(|r| r.display().to_string() == p.root))
+        .await
+        .ok()
+        .flatten()
+        .ok_or(ApiError::bad("drive_not_found"))?;
+    tokio::fs::create_dir_all(root.join(USB_FOLDER)).await.map_err(|_| ApiError::bad("drive_not_writable"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 

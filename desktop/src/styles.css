@@ -499,3 +499,19 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
   .print-only.card-print.a4 .member-card { border: .2mm dashed #8a9886; border-radius: 3mm; }
 }
 .member-title .member-photo + div { flex: 1; }
+
+/* Sign-ups */
+.today-grid { grid-template-columns: 1fr 1fr; }
+.see-all-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.see-all-row .see-all { margin-top: 0; }
+.reg-kpis { grid-template-columns: repeat(4, 1fr); }
+.reg-tile { border: 1px solid var(--glass-edge); cursor: pointer; text-align: start; font: inherit; color: var(--fg); padding: 14px 16px; border-radius: 16px; }
+.reg-tile strong { font-size: 1.6rem; }
+.reg-tile.on { box-shadow: 0 0 0 2px var(--accent); }
+.range-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.chip.kind-daily { background: var(--warn-soft); color: var(--warn); }
+.chip.kind-internet { background: color-mix(in srgb, #3a7bd5 14%, transparent); color: #2f64ad; }
+.chip.kind-monthly.new { background: var(--good-soft); color: var(--good); }
+.dest { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--glass-strong); }
+.dest .muted.small { margin: 0; }
+.drive-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }

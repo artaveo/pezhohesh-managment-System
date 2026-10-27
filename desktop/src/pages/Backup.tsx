@@ -15,8 +15,12 @@ const when = (at: string) => {
 };
 const size = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
 
+const KIND_LABEL = { folder: "پوشه", usb: "فلش", gdrive: "گوگل درایو" } as const;
+
 /** Why a folder got no copy, in words the desk can act on. */
 function why(error: string) {
+  if (error === "usb_not_found") return "فلش وصل نبود (فلشی با پوشهٔ Pezhohesh-Backup پیدا نشد).";
+  if (error === "gdrive_not_found") return "گوگل درایو روی این لپ‌تاپ پیدا نشد.";
   if (error.startsWith("files:")) return "دیتابیس پشتیبان شد، ولی کپی عکس‌ها و تذکره‌ها کامل نشد.";
   if (/pg_dump/i.test(error) && /(not found|no such file|cannot find|program not found)/i.test(error)) return "برنامهٔ pg_dump پیدا نشد (بخشی از PostgreSQL است).";
   if (/folder|no such file|cannot find|denied|not ready|path/i.test(error)) return "پوشه پیدا نشد یا قابل نوشتن نیست. اگر USB است، وصل است؟";
@@ -30,6 +34,8 @@ function why(error: string) {
 export function Backup() {
   const [s, setS] = useState<BackupStatus | null>(null);
   const [folders, setFolders] = useState<[string, string]>(["", ""]);
+  const [usb, setUsb] = useState(true);
+  const [gdrive, setGdrive] = useState(true);
   const [every, setEvery] = useState(24);
   const [keep, setKeep] = useState("30");
   const [busy, setBusy] = useState(false);
@@ -41,6 +47,8 @@ export function Backup() {
     api.backup().then((b) => {
       setS(b);
       setFolders([b.plan.folders[0] ?? "", b.plan.folders[1] ?? ""]);
+      setUsb(b.plan.usb);
+      setGdrive(b.plan.gdrive);
       setEvery(b.plan.every_hours);
       setKeep(String(b.plan.keep));
     }).catch((e) => setError(errorText(e)));
@@ -49,12 +57,16 @@ export function Backup() {
   async function save() {
     setError("");
     try {
-      await api.setBackupPlan({ folders: folders.filter((f) => f.trim()), every_hours: every, keep: Number(keep) });
+      await api.setBackupPlan({ folders: folders.filter((f) => f.trim()), usb, gdrive, every_hours: every, keep: Number(keep) });
       setSaved(true);
       setTick((t) => t + 1);
     } catch (e) {
       setError(errorText(e));
     }
+  }
+  async function prepare(root: string) {
+    setError("");
+    try { await api.prepareUsb(root); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); }
   }
   async function now() {
     setBusy(true);
@@ -75,12 +87,40 @@ export function Backup() {
       <section className="panel wide">
         <h2>کجا و هر چند وقت</h2>
         <p className="muted">
-          نسخهٔ اول روی همین لپ‌تاپ می‌ماند. برای وقتی که لپ‌تاپ خراب یا گم شود، پوشهٔ دوم را روی USB یا کمپیوتر دیگر بگذارید
-          (مثلاً <bdi dir="ltr">E:\Pezhohesh</bdi>). اگر USB وصل نباشد، نسخهٔ اول باز هم گرفته می‌شود.
+          نسخهٔ اول روی همین لپ‌تاپ می‌ماند. برای وقتی که لپ‌تاپ خراب یا گم شود، یک نسخه روی فلش و یک نسخه در گوگل درایو هم گرفته می‌شود.
+          اگر فلش وصل نباشد، بقیه باز هم گرفته می‌شوند.
         </p>
         <div className="form-grid">
-          <label className="field wide span-2"><span>پوشهٔ اول (همین لپ‌تاپ) *</span><input dir="ltr" value={folders[0]} onChange={(e) => { setSaved(false); setFolders([e.target.value, folders[1]]); }} /></label>
-          <label className="field wide span-2"><span>پوشهٔ دوم (USB یا شبکه)</span><input dir="ltr" value={folders[1]} onChange={(e) => { setSaved(false); setFolders([folders[0], e.target.value]); }} placeholder="E:\Pezhohesh" /></label>
+          <label className="field wide span-2"><span>پوشهٔ همین لپ‌تاپ *</span><input dir="ltr" value={folders[0]} onChange={(e) => { setSaved(false); setFolders([e.target.value, folders[1]]); }} /></label>
+        </div>
+
+        <div className="dest">
+          <label className="check big"><input type="checkbox" checked={usb} onChange={(e) => { setSaved(false); setUsb(e.target.checked); }} /> روی فلش هم بگیر</label>
+          <p className="muted small">
+            برنامه فلش را از پوشهٔ <bdi dir="ltr">Pezhohesh-Backup</bdi> در آن می‌شناسد، پس حرف درایو (E: یا F:) مهم نیست.
+            {s.usb ? <> الان وصل است: <bdi dir="ltr">{s.usb}</bdi></> : " الان فلشِ آماده‌ای وصل نیست."}
+          </p>
+          {s.drives.some((d) => !d.prepared) && (
+            <div className="drive-list">
+              <span className="muted small">برای آماده کردن یک فلش تازه، درایوش را بزنید:</span>
+              {s.drives.filter((d) => !d.prepared).map((d) => (
+                <button key={d.root} className="btn ghost small" onClick={() => void prepare(d.root)}>آماده کن <bdi dir="ltr">{d.root}</bdi></button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="dest">
+          <label className="check big"><input type="checkbox" checked={gdrive} onChange={(e) => { setSaved(false); setGdrive(e.target.checked); }} /> در گوگل درایو هم بگیر</label>
+          <p className="muted small">
+            {s.gdrive
+              ? <>گوگل درایو پیدا شد: <bdi dir="ltr">{s.gdrive}</bdi>. فایل‌ها خودشان به حساب گوگل شما بالا می‌روند.</>
+              : "برنامهٔ «Google Drive for desktop» روی این لپ‌تاپ پیدا نشد. اول نصبش کنید و با حساب گوگل‌تان وارد شوید."}
+          </p>
+        </div>
+
+        <div className="form-grid">
+          <label className="field wide span-2"><span>پوشهٔ دیگر (اختیاری، مثلاً کمپیوتر دیگری در شبکه)</span><input dir="ltr" value={folders[1]} onChange={(e) => { setSaved(false); setFolders([folders[0], e.target.value]); }} placeholder="\\PC2\Pezhohesh" /></label>
           <label className="field wide">
             <span>پشتیبان خودکار</span>
             <select value={every} onChange={(e) => { setSaved(false); setEvery(Number(e.target.value)); }}>
@@ -127,13 +167,15 @@ function LastOutcome({ last }: { last: BackupOutcome | null }) {
   return (
     <>
       <p className={last.ok ? "form-ok" : "form-error"}>
-        {!last.ok ? "پشتیبان گرفته نشد" : last.folders.some((f) => f.error) ? "پشتیبان فقط در بعضی پوشه‌ها گرفته شد" : "پشتیبان گرفته شد"}: {when(last.at)}
+        {!last.ok ? "پشتیبان گرفته نشد" : last.folders.some((f) => f.error) ? "پشتیبان گرفته شد، ولی نه در همه‌جا" : "پشتیبان گرفته شد"}: {when(last.at)}
       </p>
       <ul className="backup-folders">
         {last.folders.map((f) => (
-          <li key={f.folder}>
-            <bdi dir="ltr">{f.folder}</bdi>
-            {f.error ? <span className="form-error inline"> {why(f.error)} <small dir="ltr">({f.error})</small></span> : <span className="muted"> ✓</span>}
+          <li key={f.kind + f.folder}>
+            <strong>{KIND_LABEL[f.kind ?? "folder"]}</strong>{f.folder && <>: <bdi dir="ltr">{f.folder}</bdi></>}
+            {f.error === "usb_not_found" || f.error === "gdrive_not_found" ? <span className="muted"> {why(f.error)}</span>
+              : f.error ? <span className="form-error inline"> {why(f.error)} <small dir="ltr">({f.error})</small></span>
+              : <span className="muted"> ✓</span>}
           </li>
         ))}
       </ul>

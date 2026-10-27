@@ -1,6 +1,6 @@
 [package]
 name = "pezhohesh-api"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Core API for the Pezhohesh management system (study hall + educational services)"
 
@@ -22,3 +22,6 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 calamine = "0.37"
 office-crypto = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug"] }

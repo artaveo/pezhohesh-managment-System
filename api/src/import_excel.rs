@@ -718,7 +718,9 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     for (key, full_name) in PARTNER_NAMES {
         let surname = full_name.split(' ').last().unwrap_or(full_name);
         let existing: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM staff WHERE deleted_at IS NULL AND full_name LIKE '%' || $1 || '%' ORDER BY created_at LIMIT 1",
+            "SELECT id FROM staff WHERE deleted_at IS NULL \
+               AND (full_name LIKE '%' || $1 || '%' OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a LIKE '%' || $1 || '%')) \
+             ORDER BY created_at LIMIT 1",
         )
         .bind(surname)
         .fetch_optional(&mut *db)

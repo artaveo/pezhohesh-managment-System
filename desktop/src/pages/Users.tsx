@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, errorText, ROLE_LABEL, type Role, type UserRow } from "../lib/api";
+import { api, errorText, ROLE_LABEL, type PersonRow, type Role, type UserRow } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
-import { formatShort } from "../lib/solar";
+import { fa, formatShort } from "../lib/solar";
 
 const ROLE_HELP: Record<Role, string> = {
   partner: "همه چیز، با تنظیمات و ساخت حساب",
@@ -94,12 +94,96 @@ export function Users() {
         </table>
         {!rows && !error && <p className="muted">در حال بارگذاری…</p>}
       </div>
+
+      <People onMerged={(msg) => { setNotice(msg); void load(); }} />
     </div>
+  );
+}
+
+/**
+ * Everyone in the books, and joining two names of one person (a sign-in account typed in
+ * English, and the same partner from the Excel book with the withdrawals).
+ */
+function People({ onMerged }: { onMerged: (msg: string) => void }) {
+  const [rows, setRows] = useState<PersonRow[] | null>(null);
+  const [from, setFrom] = useState("");
+  const [into, setInto] = useState("");
+  const [sure, setSure] = useState(false);
+  const [error, setError] = useState("");
+  const load = () => api.people().then(setRows).catch((e) => setError(errorText(e)));
+  useEffect(() => { void load(); }, []);
+
+  async function merge() {
+    const a = rows?.find((r) => r.id === from);
+    const b = rows?.find((r) => r.id === into);
+    if (!a || !b) return;
+    setError("");
+    try {
+      await api.mergePeople(from, into);
+      setFrom(""); setInto(""); setSure(false);
+      await load();
+      onMerged(`«${a.full_name}» و «${b.full_name}» یکی شدند؛ حالا همه‌جا «${b.full_name}» دیده می‌شود.`);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+
+  const label = (r: PersonRow) => `${r.full_name}${r.title ? ` (${r.title})` : ""}${r.usernames.length ? ` · حساب ${r.usernames.join("، ")}` : ""} · ${fa(r.withdrawals)} برداشت`;
+  return (
+    <section className="panel wide">
+      <h2>اشخاص</h2>
+      <p className="muted">
+        همهٔ کسانی که در حساب‌ها نامشان هست. اگر یک نفر دو بار آمده (مثلاً «Zakir Naseri» از حساب ورود و «ذاکر ناصری» از اکسل)،
+        اینجا یکی‌شان کنید: حساب ورود و برداشت‌های نام اول به نام دوم می‌رود و نام اول دیگر دیده نمی‌شود.
+      </p>
+      <div className="glass table-wrap">
+        <table className="table">
+          <thead><tr><th>نام</th><th>عنوان</th><th>حساب ورود</th><th>برداشت‌ها</th></tr></thead>
+          <tbody>
+            {rows?.map((r) => (
+              <tr key={r.id}>
+                <td><strong>{r.full_name}</strong></td>
+                <td>{r.title ?? "—"}</td>
+                <td>{r.usernames.length ? r.usernames.map((u) => <bdi key={u} dir="ltr">{u} </bdi>) : <span className="muted">ندارد</span>}</td>
+                <td className="num">{fa(r.withdrawals)} · {fa(r.withdrawn)} افغانی</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="form-grid">
+        <label className="field wide span-2">
+          <span>این نام برداشته شود</span>
+          <select value={from} onChange={(e) => { setFrom(e.target.value); setSure(false); }}>
+            <option value="">انتخاب کنید</option>
+            {rows?.map((r) => <option key={r.id} value={r.id}>{label(r)}</option>)}
+          </select>
+        </label>
+        <label className="field wide span-2">
+          <span>و یکی شود با این نام (که می‌ماند)</span>
+          <select value={into} onChange={(e) => { setInto(e.target.value); setSure(false); }}>
+            <option value="">انتخاب کنید</option>
+            {rows?.filter((r) => r.id !== from).map((r) => <option key={r.id} value={r.id}>{label(r)}</option>)}
+          </select>
+        </label>
+      </div>
+      {from && into && (
+        <label className="check">
+          <input type="checkbox" checked={sure} onChange={(e) => setSure(e.target.checked)} />
+          مطمئنم که این دو نام یک نفرند.
+        </label>
+      )}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions"><button className="btn" disabled={!from || !into || !sure} onClick={() => void merge()}>یکی کن</button></div>
+    </section>
   );
 }
 
 function NewUser({ onDone, onCancel }: { onDone: (msg: string) => void; onCancel: () => void }) {
   const [fullName, setFullName] = useState("");
+  const [person, setPerson] = useState("");
+  const [people, setPeople] = useState<PersonRow[]>([]);
+  useEffect(() => { api.people().then((p) => setPeople(p.filter((x) => !x.usernames.length))).catch(() => {}); }, []);
   const [username, setUsername] = useState("");
   const [role, setRole] = useState<Role>("manager");
   const [pecFinance, setPecFinance] = useState(false);
@@ -112,7 +196,7 @@ function NewUser({ onDone, onCancel }: { onDone: (msg: string) => void; onCancel
     setBusy(true);
     setError("");
     try {
-      await api.createUser({ full_name: fullName, username, password, role, can_see_pec_finance: pecFinance });
+      await api.createUser({ full_name: fullName, username, password, role, can_see_pec_finance: pecFinance, staff_id: person || undefined });
       onDone(`حساب ${fullName} ساخته شد. نام کاربری: ${username.trim().toLowerCase()} — رمز موقت: ${password}. در ورود اول، رمز خودش را می‌گذارد.`);
     } catch (err) {
       setError(errorText(err));
@@ -125,7 +209,16 @@ function NewUser({ onDone, onCancel }: { onDone: (msg: string) => void; onCancel
     <form className="glass new-user" onSubmit={submit}>
       <h2>حساب تازه</h2>
       <div className="form-grid">
-        <label className="field wide"><span>نام کامل</span><input value={fullName} onChange={(e) => setFullName(e.target.value)} autoFocus /></label>
+        {people.length > 0 && (
+          <label className="field wide">
+            <span>از اشخاص موجود (اگر نامش در حساب‌ها هست)</span>
+            <select value={person} onChange={(e) => { setPerson(e.target.value); setFullName(people.find((p) => p.id === e.target.value)?.full_name ?? ""); }}>
+              <option value="">شخص تازه</option>
+              {people.map((p) => <option key={p.id} value={p.id}>{p.full_name}{p.title ? ` (${p.title})` : ""}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="field wide"><span>نام کامل</span><input value={fullName} disabled={!!person} onChange={(e) => setFullName(e.target.value)} autoFocus /></label>
         <label className="field wide"><span>نام کاربری (انگلیسی)</span><input dir="ltr" value={username} onChange={(e) => setUsername(e.target.value)} /></label>
       </div>
       <fieldset className="roles">

@@ -7,6 +7,8 @@ import { Books } from "./pages/Books";
 import { Hotspot } from "./pages/Hotspot";
 import { Shares } from "./pages/Shares";
 import { Backup } from "./pages/Backup";
+import { Registrations, type RegFilter } from "./pages/Registrations";
+import type { RegKind } from "./lib/api";
 import { ImportExcel } from "./pages/ImportExcel";
 import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
@@ -29,6 +31,7 @@ const HALL: Role[] = ["partner", "manager"];
 const NAV = [
   { id: "dashboard", icon: "home", label: "داشبورد", roles: ALL },
   { id: "members", icon: "users", label: "اعضا", roles: HALL },
+  { id: "registrations", icon: "plus", label: "ثبت‌نام‌ها", roles: HALL },
   { id: "memberships", icon: "card", label: "پذیرش و تمدید", roles: HALL },
   { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL },
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL },
@@ -62,7 +65,12 @@ function Shell() {
   const [page, setPageId] = useState<PageId>("dashboard");
   // Inside "members": one member's page, or the new-member form (with the bill to show after saving).
   const [member, setMember] = useState<{ id: string | null; bill?: string | null } | null>(null);
-  const setPage = (id: PageId) => { setPageId(id); setMember(null); };
+  const [reg, setReg] = useState<RegFilter | undefined>(undefined);
+  const setPage = (id: PageId) => { setPageId(id); setMember(null); setReg(undefined); };
+  const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) => {
+    setPage(id);
+    if (id === "registrations") setReg({ span: "today", kind });
+  };
   const openMember = (id: string, bill: string | null = null) => { setPageId("members"); setMember({ id, bill }); };
   useEffect(() => {
     if (!nav.some((n) => n.id === page)) setPage("dashboard");
@@ -104,7 +112,7 @@ function Shell() {
       </aside>
       <main className="content">
         {page === "dashboard" ? (
-          user!.role === "pec_staff" ? <PecHome /> : <Dashboard go={setPage} />
+          user!.role === "pec_staff" ? <PecHome /> : <Dashboard go={goFromDashboard} />
         ) : (
           <>
             <h1>{member?.id === null ? "عضو جدید" : current.label}</h1>
@@ -114,6 +122,7 @@ function Shell() {
               : page === "members" && member ? <NewMember onSaved={(id, bill) => openMember(id, bill)} onCancel={() => setMember(null)} />
               : page === "members" ? <MembersList open={(id) => openMember(id)} add={() => setMember({ id: null })} />
               : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => { setPageId("members"); setMember({ id: null }); }} />
+              : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
