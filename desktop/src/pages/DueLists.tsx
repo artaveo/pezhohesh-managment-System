@@ -95,20 +95,21 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
   );
 }
 
-export function LoansList() {
+export function LoansList({ open, action }: { open: (id: string) => void; action?: ReactNode }) {
   return (
     <DueList<LoanRow>
+      action={action}
       tabs={["نزدیک به موعد و دیرکرده", "همه امانت‌های باز"]}
       hint={["کتاب‌هایی که تا 2 روز دیگر باید برگردند یا از موعد گذشته‌اند؛ دیرکرده‌ترین اول.", "همهٔ کتاب‌هایی که الان امانت است."]}
-      searchHint="جستجو: نام کتاب، نام عضو، شماره تماس یا شمارهٔ عضویت"
+      searchHint="جستجو: نام کتاب، نام، شماره تماس، آیدی یا کارت امانت"
       load={api.loans}
       empty="هیچ کتابی نزدیک به موعد یا دیرکرده نیست."
-      head={<tr><th>کتاب</th><th>عضو</th><th>شماره</th><th>شماره تماس</th><th>تاریخ امانت</th><th>موعد برگشت</th><th>وضعیت</th></tr>}
+      head={<tr><th>کتاب</th><th>امانت‌گیرنده</th><th>آیدی / کارت</th><th>شماره تماس</th><th>تاریخ امانت</th><th>موعد برگشت</th><th>وضعیت</th></tr>}
       row={(l) => (
-        <tr key={l.loan_id} className={l.days_left < 0 ? "late" : ""}>
+        <tr key={l.loan_id} className={`clickable${l.days_left < 0 ? " late" : ""}`} onClick={() => open(l.loan_id)}>
           <td><strong>{l.book_title}</strong></td>
           <td>{l.member_name}</td>
-          <td className="num">{l.member_no}</td>
+          <td className="num"><bdi dir="ltr">{l.card_no}</bdi></td>
           <td><bdi dir="ltr">{l.phone ?? "—"}</bdi></td>
           <td>{formatShort(l.loaned_on)}</td>
           <td>{formatShort(l.due_on)}</td>

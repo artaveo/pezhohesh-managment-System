@@ -43,7 +43,7 @@ export type Dashboard = {
   members_attention: { member_no: number; name: string; end_date: string; days_left: number }[];
   members_due_soon: number;
   members_expired: number;
-  books_attention: { book_title: string; member_no: number; member_name: string; due_on: string; days_left: number }[];
+  books_attention: { book_title: string; card_no: string; member_name: string; due_on: string; days_left: number }[];
   books_due_soon: number;
   books_overdue: number;
 };
@@ -84,7 +84,8 @@ export type MemberRow = {
 export type LoanRow = {
   loan_id: string;
   book_title: string;
-  member_no: number;
+  /** Member number, or the lending card (p-105) of a guarantee. */
+  card_no: string;
   member_name: string;
   phone: string | null;
   loaned_on: string;
@@ -112,6 +113,7 @@ export type Bill = {
   id: string; receipt_no: string; issued_on: string; amount: number; currency: string; income_category: string;
   description: string | null; voided: boolean; void_reason: string | null; printed_count: number; issued_by: string | null;
   member_id: string | null; member_no: number | null; customer: string | null; father_name: string | null; phone: string | null;
+  card_no: string | null; book_loan_id: string | null;
   plan_name: string | null; start_date: string | null; end_date: string | null; fee: number | null; discount: number | null;
 };
 export type BillPage = { total: number; sum: number; rows: Bill[] };
@@ -121,6 +123,32 @@ export type Expense = { id: string; spent_on: string; category: string; descript
 export type Person = { id: string; full_name: string; title: string | null };
 export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
+export type BookRules = { loan_days: number; weekly_fee: number; fine_per_day: number };
+export type DepositKind = "cash" | "book" | "person";
+export type Deposit = {
+  id: string; code: string; kind: DepositKind; name: string; father_name: string | null; phone: string | null;
+  member_id: string | null; member_no: number | null; amount: number | null; deposit_book: string | null; guarantor: string | null;
+  note: string | null; received_on: string; returned_on: string | null; open_loans: number; removable: boolean;
+};
+export type DepositPage = { total: number; cash_held: number; rows: Deposit[] };
+export type DepositInput = {
+  kind: DepositKind; code?: string; name: string; father_name?: string; phone?: string;
+  amount?: number; deposit_book?: string; guarantor?: string; note?: string; received_on?: string;
+};
+/** Who may borrow: an open guarantee (its card) or a study-hall member. */
+export type Borrower = {
+  kind: "deposit" | "member"; id: string; card_no: string; name: string; father_name: string | null; phone: string | null;
+  guarantee: string | null; open_loans: number;
+  /** Members: a seat or internet period running today. */
+  active: boolean;
+};
+export type LoanInput = { deposit_id?: string; member_id?: string; book_title: string; loaned_on?: string; due_on?: string; weekly_fee?: number; note?: string };
+export type Charge = { weeks: number; days_late: number; fee: number; fine: number };
+export type Loan = {
+  id: string; book_title: string; card_no: string; borrower: string; phone: string | null;
+  loaned_on: string; due_on: string; returned_on: string | null; weekly_fee: number; fee_paid: number; fine: number;
+  note: string | null; receipt_id: string | null; removable: boolean; charge: Charge | null;
+};
 
 const query = (r: Record<string, string | number | undefined>) =>
   new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
@@ -235,6 +263,20 @@ export const api = {
   withdrawals: (r: Range, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
   createWithdrawal: (w: { staff_id: string; taken_on?: string; amount: number; note?: string }) => request<string>("/withdrawals", { method: "POST", body: w }),
   deleteWithdrawal: (id: string) => request<void>(`/withdrawals/${id}`, { method: "DELETE" }),
+  bookRules: () => request<BookRules>("/book-rules"),
+  setBookRules: (r: BookRules) => request<void>("/book-rules", { method: "PUT", body: r }),
+  bookTitles: () => request<string[]>("/book-titles"),
+  borrowers: (q: string, signal?: AbortSignal) => request<Borrower[]>(`/borrowers?${query({ q })}`, { signal }),
+  deposits: (p: { scope: "open" | "all"; q: string }, signal?: AbortSignal) => request<DepositPage>(`/deposits?${query(p)}`, { signal }),
+  nextDepositCode: (kind: DepositKind) => request<string>(`/deposits/next-code?${query({ kind })}`),
+  createDeposit: (d: DepositInput) => request<{ id: string; code: string }>("/deposits", { method: "POST", body: d }),
+  returnDeposit: (id: string, returned_on?: string) => request<void>(`/deposits/${id}/return`, { method: "POST", body: { returned_on } }),
+  deleteDeposit: (id: string) => request<void>(`/deposits/${id}`, { method: "DELETE" }),
+  lend: (l: LoanInput) => request<string>("/book-loans", { method: "POST", body: l }),
+  loan: (id: string, on?: string, signal?: AbortSignal) => request<Loan>(`/book-loans/${id}?${query({ on })}`, { signal }),
+  returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number }) =>
+    request<{ receipt_id: string | null }>(`/book-loans/${id}/return`, { method: "POST", body: b }),
+  deleteLoan: (id: string) => request<void>(`/book-loans/${id}`, { method: "DELETE" }),
 };
 
 /** Persian message for an API error code. */
@@ -268,6 +310,20 @@ export function errorText(e: unknown): string {
     case "no_device": return "شمارهٔ بل این کمپیوتر تنظیم نشده.";
     case "postgres_down": return "دیتابیس (PostgreSQL) جواب نمی‌دهد. چند لحظه بعد دوباره امتحان کنید.";
     case "starting": return "هستهٔ سیستم هنوز در حال آماده شدن است. چند لحظه بعد دوباره امتحان کنید.";
+    case "code_taken": return "این شمارهٔ کارت قبلاً به کس دیگری داده شده.";
+    case "bad_code": return "شمارهٔ کارت حداکثر 20 حرف باشد.";
+    case "bad_kind": return "نوع ضمانت درست نیست.";
+    case "bad_days": return "تعداد روزها 1 تا 366 باشد.";
+    case "deposit_book_required": return "بنویسید چه کتاب‌هایی ضمانت گذاشته شده (مثلاً 3 جلد).";
+    case "guarantor_required": return "نام ضامن را بنویسید.";
+    case "title_required": return "نام کتاب را بنویسید.";
+    case "borrower_required": return "اول امانت‌گیرنده را انتخاب کنید.";
+    case "deposit_returned": return "ضمانت این کارت پس داده شده؛ برای امانت تازه ضمانت تازه بگیرید.";
+    case "has_open_loans": return "هنوز کتابی از این کارت برنگشته؛ اول کتاب‌ها را برگشت بزنید.";
+    case "has_loans": return "با این کارت کتاب امانت داده شده؛ پاک نمی‌شود. اگر تمام شده، ضمانت را پس بدهید.";
+    case "already_returned": return "این قبلاً برگشت خورده.";
+    case "before_start": return "این تاریخ پیش از تاریخ شروع است.";
+    case "future_date": return "تاریخ آینده قبول نمی‌شود.";
     case "excel_password_needed": return "این فایل اکسل رمز دارد. رمز فایل را بنویسید.";
     case "wrong_excel_password": return "رمز فایل اکسل درست نیست.";
     case "not_excel": return "این فایل اکسل (.xlsx) نیست یا خراب است.";

@@ -37,7 +37,7 @@ export function sampleDashboard(period: string): Dashboard {
     members_due_soon: 3,
     members_expired: 1,
     books_attention: [
-      { book_title: "کتاب نمونه", member_no: 51026, member_name: "علی رحیمی", due_on: iso(new Date(today.getTime() - 6 * 864e5)), days_left: -6 },
+      { book_title: "کتاب نمونه", card_no: "51026", member_name: "علی رحیمی", due_on: iso(new Date(today.getTime() - 6 * 864e5)), days_left: -6 },
     ],
     books_due_soon: 0,
     books_overdue: 1,

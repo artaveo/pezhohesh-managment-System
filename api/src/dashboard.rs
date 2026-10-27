@@ -68,7 +68,7 @@ pub struct MemberDue {
 #[derive(Serialize, FromRow)]
 pub struct LoanDue {
     book_title: String,
-    member_no: i32,
+    card_no: String,
     member_name: String,
     due_on: chrono::NaiveDate,
     days_left: i32,
@@ -245,7 +245,7 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
     .await?;
 
     let books_attention: Vec<LoanDue> = sqlx::query_as(
-        "SELECT book_title, member_no, member_name, due_on, days_left FROM v_open_loans \
+        "SELECT book_title, card_no, member_name, due_on, days_left FROM v_open_loans \
          WHERE days_left <= $1 ORDER BY days_left, due_on LIMIT 3",
     )
     .bind(BOOK_DUE_DAYS)

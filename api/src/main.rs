@@ -24,6 +24,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 mod auth;
+mod books;
 mod dashboard;
 mod hall;
 mod import_excel;
@@ -232,6 +233,16 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/staff", get(money::staff))
         .route("/api/v1/withdrawals", get(money::withdrawals).post(money::create_withdrawal))
         .route("/api/v1/withdrawals/:id", delete(money::delete_withdrawal))
+        .route("/api/v1/book-rules", get(books::rules).put(books::set_rules))
+        .route("/api/v1/book-titles", get(books::titles))
+        .route("/api/v1/borrowers", get(books::borrowers))
+        .route("/api/v1/deposits", get(books::deposits).post(books::create_deposit))
+        .route("/api/v1/deposits/next-code", get(books::next_code))
+        .route("/api/v1/deposits/:id", delete(books::delete_deposit))
+        .route("/api/v1/deposits/:id/return", post(books::return_deposit))
+        .route("/api/v1/book-loans", post(books::lend))
+        .route("/api/v1/book-loans/:id", get(books::loan).delete(books::delete_loan))
+        .route("/api/v1/book-loans/:id/return", post(books::return_loan))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

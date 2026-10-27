@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Dashboard } from "./pages/Dashboard";
 import { Settings } from "./pages/Settings";
 import { Users } from "./pages/Users";
-import { LoansList, MembersList } from "./pages/DueLists";
+import { MembersList } from "./pages/DueLists";
+import { Books } from "./pages/Books";
 import { ImportExcel } from "./pages/ImportExcel";
 import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
@@ -110,7 +111,7 @@ function Shell() {
               : page === "receipts" ? <Bills />
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
-              : page === "books" ? <LoansList />
+              : page === "books" ? <Books />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />
               : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
           </>

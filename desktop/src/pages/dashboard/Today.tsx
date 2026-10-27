@@ -66,7 +66,7 @@ export function TodayView({ go }: { go: Go }) {
             {data.books_attention.map((b, i) => (
               <li key={i} className={b.days_left < 0 ? "late" : ""}>
                 <span className="att-icon"><Icon name="book" size={18} /></span>
-                <span className="att-main"><strong>{b.book_title}</strong> <span className="muted small">{b.member_name} · شمارهٔ {b.member_no}</span></span>
+                <span className="att-main"><strong>{b.book_title}</strong> <span className="muted small">{b.member_name} · <bdi dir="ltr">{b.card_no}</bdi></span></span>
                 <DaysLeft days={b.days_left} soon={2} />
               </li>
             ))}

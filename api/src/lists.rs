@@ -38,7 +38,7 @@ pub struct MemberRow {
     days_left: Option<i32>,
 }
 
-fn pattern(q: &Option<String>) -> Option<String> {
+pub fn pattern(q: &Option<String>) -> Option<String> {
     q.as_deref()
         .map(str::trim)
         .filter(|q| !q.is_empty())
@@ -89,7 +89,8 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
 pub struct LoanRow {
     loan_id: uuid::Uuid,
     book_title: String,
-    member_no: i32,
+    /// Member number, or the lending card (p-105) of a guarantee.
+    card_no: String,
     member_name: String,
     phone: Option<String>,
     loaned_on: chrono::NaiveDate,
@@ -105,7 +106,7 @@ pub async fn loans(State(s): State<AppState>, user: CurrentUser, Query(p): Query
     let q = pattern(&p.q);
     let (limit, offset) = paging(&p);
     let filter = "($1 = false OR days_left <= $3) \
-        AND ($2::text IS NULL OR book_title ILIKE $2 OR member_name ILIKE $2 OR phone ILIKE $2 OR member_no::text LIKE $2)";
+        AND ($2::text IS NULL OR book_title ILIKE $2 OR member_name ILIKE $2 OR phone ILIKE $2 OR card_no ILIKE $2)";
 
     let mut tx = begin_as(&s.db, &user).await?;
     let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM v_open_loans WHERE {filter}"))
@@ -115,7 +116,7 @@ pub async fn loans(State(s): State<AppState>, user: CurrentUser, Query(p): Query
         .fetch_one(&mut *tx)
         .await?;
     let rows: Vec<LoanRow> = sqlx::query_as(&format!(
-        "SELECT loan_id, book_title, member_no, member_name, phone, loaned_on, due_on, days_left \
+        "SELECT loan_id, book_title, card_no, member_name, phone, loaned_on, due_on, days_left \
          FROM v_open_loans WHERE {filter} ORDER BY days_left, due_on LIMIT $4 OFFSET $5"
     ))
     .bind(attention)

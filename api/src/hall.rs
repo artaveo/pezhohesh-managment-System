@@ -14,11 +14,11 @@ use crate::{solar, AppState};
 
 const NOT_FOUND: ApiError = ApiError(StatusCode::NOT_FOUND, "not_found");
 
-fn hall_only(user: &CurrentUser) -> Result<(), ApiError> {
+pub fn hall_only(user: &CurrentUser) -> Result<(), ApiError> {
     if user.sees_hall() { Ok(()) } else { Err(ApiError::FORBIDDEN) }
 }
 
-fn today() -> NaiveDate {
+pub fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
@@ -27,7 +27,7 @@ pub fn typed_today(created: chrono::DateTime<chrono::Utc>) -> bool {
     created.with_timezone(&chrono::Local).date_naive() == today()
 }
 
-fn clean(s: &Option<String>) -> Option<String> {
+pub fn clean(s: &Option<String>) -> Option<String> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
 }
 
@@ -384,19 +384,20 @@ async fn add_period(
             .await?,
         None => guest.unwrap_or_default(),
     };
-    let receipt = issue(tx, user, plan.kind.as_str(), fee - discount, &format!("{} · {who}", plan.name), Some(membership)).await?;
+    let receipt = issue(tx, user, plan.kind.as_str(), fee - discount, &format!("{} · {who}", plan.name), Some(membership), None).await?;
     Ok((membership, Some(receipt)))
 }
 
 /// Issues a bill dated today, numbered with this computer's next number for the Solar
 /// year, e.g. H-1405-000124.
-async fn issue(
+pub async fn issue(
     tx: &mut PgConnection,
     user: &CurrentUser,
     category: &str,
     amount: f64,
     description: &str,
     membership: Option<Uuid>,
+    book_loan: Option<Uuid>,
 ) -> Result<Uuid, ApiError> {
     let day = today();
     let device: Uuid = sqlx::query_scalar("SELECT (value #>> '{}')::uuid FROM settings WHERE key = 'this_device_id'")
@@ -405,8 +406,8 @@ async fn issue(
         .ok_or(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "no_device"))?;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO receipts (id, receipt_no, department, issued_on, amount, membership_id, income_category, description, issued_by, device_id) \
-         VALUES ($1, next_receipt_no($2, $3), 'hall', $4, $5, $6, $7, $8, $9, $2)",
+        "INSERT INTO receipts (id, receipt_no, department, issued_on, amount, membership_id, book_loan_id, income_category, description, issued_by, device_id) \
+         VALUES ($1, next_receipt_no($2, $3), 'hall', $4, $5, $6, $10, $7, $8, $9, $2)",
     )
     .bind(id)
     .bind(device)
@@ -417,6 +418,7 @@ async fn issue(
     .bind(category)
     .bind(description)
     .bind(user.id)
+    .bind(book_loan)
     .execute(&mut *tx)
     .await?;
     Ok(id)
@@ -444,7 +446,7 @@ pub async fn other_bill(State(s): State<AppState>, user: CurrentUser, Json(b): J
         return Err(ApiError::bad("bad_amount"));
     }
     let mut tx = begin_as(&s.db, &user).await?;
-    let id = issue(&mut tx, &user, &b.income_category, b.amount, clean(&b.description).as_deref().unwrap_or(""), None).await?;
+    let id = issue(&mut tx, &user, &b.income_category, b.amount, clean(&b.description).as_deref().unwrap_or(""), None, None).await?;
     tx.commit().await?;
     Ok(Json(Saved { member_id: None, member_no: None, membership_id: None, receipt_id: Some(id) }))
 }
@@ -479,6 +481,10 @@ pub struct Bill {
     customer: Option<String>,
     father_name: Option<String>,
     phone: Option<String>,
+    /// Lending card of a book bill (p-105).
+    card_no: Option<String>,
+    /// A book bill: start and end are the days the book went out and came back.
+    book_loan_id: Option<Uuid>,
     plan_name: Option<String>,
     start_date: Option<NaiveDate>,
     end_date: Option<NaiveDate>,
@@ -488,13 +494,18 @@ pub struct Bill {
 
 const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::float8 AS amount, r.currency::text AS currency, \
         r.income_category, r.description, r.voided, r.void_reason, r.printed_count, s.full_name AS issued_by, \
-        m.id AS member_id, m.member_no, COALESCE(trim(m.first_name || ' ' || COALESCE(m.last_name, '')), ms.guest_name) AS customer, \
-        m.father_name, m.phone, p.name AS plan_name, ms.start_date, ms.end_date, \
+        m.id AS member_id, m.member_no, \
+        COALESCE(trim(m.first_name || ' ' || COALESCE(m.last_name, '')), ms.guest_name, d.name) AS customer, \
+        COALESCE(m.father_name, d.father_name) AS father_name, COALESCE(m.phone, d.phone) AS phone, d.code AS card_no, \
+        p.name AS plan_name, r.book_loan_id, \
+        COALESCE(ms.start_date, bl.loaned_on) AS start_date, COALESCE(ms.end_date, bl.returned_on) AS end_date, \
         ms.fee::float8 AS fee, ms.discount::float8 AS discount \
     FROM receipts r \
     LEFT JOIN app_users u ON u.id = r.issued_by LEFT JOIN staff s ON s.id = u.staff_id \
     LEFT JOIN memberships ms ON ms.id = r.membership_id \
-    LEFT JOIN members m ON m.id = ms.member_id \
+    LEFT JOIN book_loans bl ON bl.id = r.book_loan_id \
+    LEFT JOIN loan_deposits d ON d.id = bl.deposit_id \
+    LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id) \
     LEFT JOIN plans p ON p.id = ms.plan_id";
 
 #[derive(Serialize)]
@@ -511,8 +522,10 @@ pub async fn bills(State(s): State<AppState>, user: CurrentUser, Query(p): Query
     let filter = "r.deleted_at IS NULL AND r.department = 'hall' AND r.import_batch_id IS NULL \
         AND ($1::date IS NULL OR r.issued_on >= $1) AND ($2::date IS NULL OR r.issued_on <= $2) \
         AND ($3::text IS NULL OR r.receipt_no ILIKE $3 OR r.description ILIKE $3 OR m.phone ILIKE $3 \
-             OR m.member_no::text LIKE $3 OR ms.guest_name ILIKE $3)";
-    let joins = "FROM receipts r LEFT JOIN memberships ms ON ms.id = r.membership_id LEFT JOIN members m ON m.id = ms.member_id";
+             OR m.member_no::text LIKE $3 OR ms.guest_name ILIKE $3 OR d.name ILIKE $3 OR d.code ILIKE $3)";
+    let joins = "FROM receipts r LEFT JOIN memberships ms ON ms.id = r.membership_id \
+        LEFT JOIN book_loans bl ON bl.id = r.book_loan_id LEFT JOIN loan_deposits d ON d.id = bl.deposit_id \
+        LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id)";
     let mut tx = begin_as(&s.db, &user).await?;
     let (total, sum): (i64, f64) = sqlx::query_as(&format!(
         "SELECT count(*), COALESCE(sum(r.amount) FILTER (WHERE NOT r.voided), 0)::float8 {joins} WHERE {filter}"
@@ -576,12 +589,13 @@ pub async fn void_bill(
         return Err(ApiError::bad("reason_required"));
     }
     let mut tx = begin_as(&s.db, &user).await?;
-    let row: Option<(NaiveDate, bool, Option<Uuid>)> =
-        sqlx::query_as("SELECT issued_on, voided, membership_id FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
+    let row: Option<(NaiveDate, bool, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT issued_on, voided, membership_id, book_loan_id FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
-    let (issued_on, voided, membership) = row.ok_or(NOT_FOUND)?;
+    let (issued_on, voided, membership, loan) = row.ok_or(NOT_FOUND)?;
     if voided {
         return Err(ApiError::bad("already_voided"));
     }
@@ -596,6 +610,17 @@ pub async fn void_bill(
         .await?;
     if let Some(m) = membership {
         sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = $1").bind(m).execute(&mut *tx).await?;
+    }
+    // A wrong return bill puts the book back out, so it can be returned again with the right
+    // amount; not when its guarantee has been given back meanwhile (nothing is held for it).
+    if let Some(l) = loan {
+        sqlx::query(
+            "UPDATE book_loans l SET returned_on = NULL, returned_by = NULL, fee_paid = 0, fine = 0 \
+             WHERE l.id = $1 AND NOT EXISTS (SELECT 1 FROM loan_deposits d WHERE d.id = l.deposit_id AND d.returned_on IS NOT NULL)",
+        )
+        .bind(l)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)

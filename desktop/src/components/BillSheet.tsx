@@ -31,6 +31,7 @@ export function BillSheet({ bill }: { bill: Bill }) {
         {bill.customer && <div><dt>نام</dt><dd>{bill.customer}</dd></div>}
         {bill.father_name && <div><dt>نام پدر</dt><dd>{bill.father_name}</dd></div>}
         {bill.member_no !== null && <div><dt>آیدی</dt><dd dir="ltr">{bill.member_no}</dd></div>}
+        {bill.card_no && <div><dt>کارت امانت</dt><dd dir="ltr">{bill.card_no}</dd></div>}
         {bill.phone && <div><dt>شماره تماس</dt><dd dir="ltr">{bill.phone}</dd></div>}
       </dl>
       <table className="bill-lines">
