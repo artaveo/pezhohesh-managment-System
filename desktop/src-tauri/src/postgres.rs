@@ -32,7 +32,7 @@ pub async fn fix_postgres() -> Result<(), String> {
     #[cfg(windows)]
     {
         let name = win::find().ok_or("not_installed")?.name;
-        tauri::async_runtime::spawn_blocking(move || win::run_elevated(&name))
+        tauri::async_runtime::spawn_blocking(move || win::run_elevated(&format!("--fix-postgres {name}")))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -64,7 +64,7 @@ pub fn helper(args: &[String]) -> Option<i32> {
 }
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use super::Service;
     use std::os::windows::process::CommandExt;
     use std::process::Command;
@@ -140,11 +140,11 @@ mod win {
         }
     }
 
-    /// Runs `<this exe> --fix-postgres <name>` as administrator and waits for it.
-    pub fn run_elevated(name: &str) -> Result<(), String> {
+    /// Runs `<this exe> <params>` (`--fix-postgres <name>`, `--open-firewall`) as administrator and waits for it.
+    pub fn run_elevated(params: &str) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let file = wide(&exe.to_string_lossy());
-        let params = wide(&format!("--fix-postgres {name}"));
+        let params = wide(params);
         let verb = wide("runas");
         // SAFETY: the info struct and the strings it points to outlive the call; the
         // process handle it returns is closed below.

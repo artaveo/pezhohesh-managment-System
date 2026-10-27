@@ -589,3 +589,56 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .btn.ghost.danger-text { color: var(--bad); }
 .table tr.clickable:focus-visible, .table tr.row-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .chip { white-space: nowrap; }
+
+/* Sent from phones («رسیده از موبایل») */
+.side nav .badge { margin-inline-start: auto; min-width: 20px; text-align: center; font-size: .72rem; font-weight: 800; padding: 1px 7px; border-radius: 99px; background: var(--warn); color: #fff; }
+.side nav button.active .badge { background: var(--accent-ink); color: var(--accent); }
+.arrived { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.arrived-head { display: flex; flex-direction: column; gap: 8px; }
+.arrived-who { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.arrived-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
+.arrived-file { display: flex; flex-direction: column; gap: 6px; }
+.arrived-file .doc-thumb { aspect-ratio: 3 / 4; }
+.member-picker { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 260px; }
+.member-picker p { margin: 0; }
+.member-picker input { flex: 1; }
+.pick-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 220px; overflow: auto; }
+.pick-list li { padding: 4px 8px; border-radius: 8px; }
+.pick-list li:hover { background: var(--glass-strong); }
+.pick-list .link { text-decoration: none; text-align: start; background: none; border: 0; font: inherit; color: var(--fg); }
+
+/* The QR sticker for the back of the laptop: fixed colors because it is printed. */
+.modal-body.sticker-modal { width: min(720px, 100%); }
+.sticker-settings { display: flex; flex-direction: column; gap: 8px; }
+.sticker-settings p { margin: 0; }
+.sticker-settings .form-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.sticker-settings .form-row .field { flex: 1; min-width: 200px; }
+.sticker-stage { display: grid; place-items: center; padding: 18px; background: #e9ece6; border-radius: 12px; margin-top: 10px; }
+.sticker {
+  width: 120mm; box-sizing: border-box; padding: 5mm; border-radius: 4mm; background: #fff; color: #1c241d; font-family: var(--font);
+  border: .4mm solid #76b82a; display: flex; flex-direction: column; gap: 4mm;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.sticker header { display: flex; align-items: center; gap: 3mm; }
+.sticker header img { width: 11mm; height: 11mm; border-radius: 50%; }
+.sticker header div { display: flex; flex-direction: column; line-height: 1.35; }
+.sticker header strong { font-size: 12pt; font-weight: 800; }
+.sticker header span { font-size: 8pt; color: #5d6b5d; }
+.sticker-codes { display: flex; justify-content: center; gap: 8mm; }
+.sticker figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2mm; }
+.sticker figure img, .sticker .qr-wait { width: 42mm; height: 42mm; }
+.sticker .qr-wait { background: #eef2ea; border-radius: 2mm; }
+.sticker figcaption { font-size: 9pt; text-align: center; line-height: 1.5; }
+.sticker figcaption bdi { font-size: 8pt; color: #3d6b12; font-weight: 700; }
+@media print {
+  .print-only.sticker-print { padding: 10mm; }
+}
+
+/* Which sections each role sees (users page) */
+.role-sections { display: flex; flex-direction: column; gap: 8px; padding: 16px 18px; }
+.role-sections h2 { margin: 0; font-size: 1.05rem; }
+.role-sections p { margin: 0; }
+.role-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.role-grid fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+.role-grid legend { font-weight: 700; padding: 0 6px; }
+.role-grid .check { margin-inline-start: 0; }

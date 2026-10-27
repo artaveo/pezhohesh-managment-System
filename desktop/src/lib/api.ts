@@ -13,7 +13,30 @@ export type User = {
   theme_color: string | null;
   theme_mode: ThemeMode;
   must_change_password: boolean;
+  /** The sections of the app this person sees; partners see all. */
+  sections: Section[];
 };
+
+/** Sections a partner can give the manager or the education staff (see the users page). */
+export type Section =
+  | "dashboard" | "memberships" | "members" | "registrations" | "books" | "hotspot" | "inbox"
+  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "pec";
+export const SECTION_LABEL: Record<Section, string> = {
+  dashboard: "داشبورد (درآمد و مصرف)", memberships: "پذیرش و تمدید", members: "اعضا", registrations: "ثبت‌نام‌ها",
+  books: "امانت کتاب", hotspot: "کارت هاتسپات", inbox: "رسیده از موبایل", receipts: "بل‌ها",
+  expenses: "مصارف و برداشت‌ها", salaries: "معاش کارمندان", shares: "سهم شرکا", reports: "گزارش مالی", pec: "خدمات تحصیلی",
+};
+export type RoleAccess = { roles: { role: Role; possible: Section[]; sections: Section[] }[] };
+
+/** A photo or tazkira a member sent from their phone, waiting at the desk. */
+export type Arrived = {
+  id: string; received_at: string; member_no: number | null; phone: string | null; kind: DocKind;
+  mime_type: string; size_bytes: number;
+  member_id: string | null; member_name: string | null; member_phone: string | null; phone_matches: boolean;
+  by_phone_id: string | null; by_phone_name: string | null; by_phone_no: number | null;
+};
+export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
+export type RestorePoint = { path: string; name: string; kind: "folder" | "usb" | "gdrive"; folder: string; size: number; modified: string | null };
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -390,6 +413,19 @@ export const api = {
   setBackupPlan: (p: BackupPlan) => request<void>("/backup", { method: "PUT", body: p }),
   prepareUsb: (root: string) => request<void>("/backup/usb", { method: "POST", body: { root } }),
   backupNow: () => request<BackupOutcome>("/backup", { method: "POST" }),
+  restorePoints: () => request<RestorePoint[]>("/backup/restore"),
+  restore: (path: string) => request<{ before: string | null; files: number }>("/backup/restore", { method: "POST", body: { path, confirm: true } }),
+  roleAccess: () => request<RoleAccess>("/role-access"),
+  setRoleAccess: (role: Role, sections: Section[]) => request<void>("/role-access", { method: "PUT", body: { role, sections } }),
+  inbox: (signal?: AbortSignal) => request<Arrived[]>("/inbox", { signal }),
+  inboxCount: () => request<number>("/inbox/count"),
+  inboxFile: (id: string) => request<Blob>(`/inbox/${id}/file`, { blob: true }),
+  acceptArrived: (id: string, member_id: string, kind?: DocKind) => request<void>(`/inbox/${id}/accept`, { method: "POST", body: { member_id, kind } }),
+  rejectArrived: (id: string) => request<void>(`/inbox/${id}/reject`, { method: "POST" }),
+  phoneUpload: () => request<PhoneUpload>("/phone-upload"),
+  setPhoneUpload: (enabled: boolean) => request<void>("/phone-upload", { method: "PUT", body: { enabled } }),
+  /** A QR code (SVG) for the sticker. */
+  qr: (text: string) => request<Blob>(`/qr?${new URLSearchParams({ text })}`, { blob: true }),
   online: () => request<OnlineStatus>("/online"),
   setOnline: (p: { every_hours: number; url?: string }) => request<void>("/online", { method: "PUT", body: p }),
   onlineNow: () => request<OnlineOutcome>("/online", { method: "POST" }),
@@ -422,6 +458,10 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "section_closed": return "این بخش برای نقش شما بسته است. یکی از شرکا می‌تواند آن را در «کاربران» باز کند.";
+    case "safety_backup_failed": return "اول یک پشتیبان تازه از وضع فعلی گرفته می‌شود، ولی نشد؛ پس چیزی برگردانده نشد. پوشه‌های پشتیبان را ببینید.";
+    case "restore_failed": return "برگرداندن نشد و دیتابیس همان‌طور که بود ماند. جزئیات در api.log است.";
+    case "restoring": return "دیتابیس در حال برگرداندن از پشتیبان است. چند لحظه صبر کنید.";
     case "member_no_taken": return "این شمارهٔ عضویت قبلاً به عضو دیگری داده شده.";
     case "bad_member_no": return "شمارهٔ عضویت باید یک عدد مثبت باشد.";
     case "bad_plan": return "این نوع عضویت پیدا نشد یا غیرفعال است.";
@@ -453,7 +493,8 @@ export function errorText(e: unknown): string {
     case "before_start": return "این تاریخ پیش از تاریخ شروع است.";
     case "future_date": return "تاریخ آینده قبول نمی‌شود.";
     case "bad_backup_plan": return "تعداد نسخه‌ها باید بین 1 و 365 باشد.";
-    case "bad_file_type": return "این فایل عکس (JPG یا PNG) یا PDF نیست. عکس عضو باید عکس باشد.";
+    case "bad_file_type": return "این فایل عکس (JPG، PNG یا WebP) یا PDF نیست. عکس عضو باید عکس باشد.";
+    case "bad_doc_kind": return "فایل PDF را نمی‌شود عکس عضو گذاشت؛ آن را تذکره بگذارید.";
     case "file_too_large": return "فایل بیش از 10 MB است.";
     case "file_not_saved": return "فایل روی این کمپیوتر ذخیره نشد. جای خالی دیسک را ببینید.";
     case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";

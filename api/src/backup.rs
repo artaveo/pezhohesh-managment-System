@@ -52,7 +52,7 @@ impl Default for Plan {
 pub struct Outcome {
     at: Option<DateTime<Utc>>,
     /// At least one folder got the backup (a USB stick that is not plugged in is not a failed backup).
-    ok: bool,
+    pub ok: bool,
     /// Per folder: the file written, or why not.
     folders: Vec<FolderOutcome>,
 }
@@ -222,8 +222,26 @@ async fn plan_of(db: &PgPool) -> Result<Plan, sqlx::Error> {
     Ok(setting(db, "backup_plan").await?.unwrap_or_default())
 }
 
+/// Every folder backups go to now (the plan's folders, the USB drive and Google Drive when
+/// they are there), for finding a backup to restore.
+pub(crate) async fn backup_dirs(db: &PgPool) -> Result<Vec<(&'static str, PathBuf)>, sqlx::Error> {
+    let plan = plan_of(db).await?;
+    let mut dirs: Vec<(&'static str, PathBuf)> =
+        plan.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).map(|f| ("folder", PathBuf::from(f))).collect();
+    let chosen = plan.usb_id.clone();
+    let (usb, gdrive) = tokio::task::spawn_blocking(move || {
+        let roots = drive_roots();
+        (usb_dir(&roots, chosen.as_deref()), gdrive_root(&roots))
+    })
+    .await
+    .unwrap_or((None, None));
+    dirs.extend(usb.map(|d| ("usb", d)));
+    dirs.extend(gdrive.map(|g| ("gdrive", g.join(USB_FOLDER))));
+    Ok(dirs)
+}
+
 /// The files this app wrote: other .backup files in the same folder are never touched.
-fn is_ours(name: &str) -> bool {
+pub(crate) fn is_ours(name: &str) -> bool {
     name.starts_with("pezhohesh_") && name.ends_with(".backup")
 }
 
@@ -267,7 +285,7 @@ fn file_name(now: DateTime<Local>) -> String {
 }
 
 /// One backup at a time: the scheduler and the button never write the same file together.
-static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Runs one backup into every folder of the plan and keeps the outcome in settings.
 pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> {
@@ -409,12 +427,12 @@ fn prune(dir: &Path, keep: usize) {
 
 #[derive(Serialize)]
 pub struct BackupFile {
-    name: String,
-    size: u64,
-    modified: Option<DateTime<Utc>>,
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    pub(crate) modified: Option<DateTime<Utc>>,
 }
 
-fn backups_in(dir: &Path) -> Vec<BackupFile> {
+pub(crate) fn backups_in(dir: &Path) -> Vec<BackupFile> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()

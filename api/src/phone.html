@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ارسال عکس و مدارک · پژوهش</title>
+<style>
+  :root { --fg: #1d2a14; --muted: #5f6b56; --line: #dfe6d6; --accent: #5a9a16; --accent-soft: #eef6e3; --bad: #b3362b; --bg: #f6f8f2; --surface: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eee2; --muted: #a7b29d; --line: #34402c; --accent: #8fd14f; --accent-soft: #24301b; --bad: #f08a7e; --bg: #141a10; --surface: #1c2416; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Vazirmatn, Tahoma, system-ui, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; }
+  main { max-width: 520px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  .muted { color: var(--muted); font-size: .92rem; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 14px; }
+  label.field { display: block; margin-bottom: 12px; }
+  label.field span { display: block; font-weight: 600; margin-bottom: 4px; }
+  input[type=text], input[type=tel] { width: 100%; font: inherit; font-size: 1.05rem; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); direction: ltr; text-align: right; }
+  .slot { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .slot:first-of-type { border-top: 0; }
+  .slot .thumb { width: 64px; height: 64px; border-radius: 10px; background: var(--accent-soft); object-fit: cover; flex: none; display: grid; place-items: center; font-size: .75rem; color: var(--muted); overflow: hidden; }
+  .slot .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .slot .text { flex: 1; min-width: 0; }
+  .slot .text b { display: block; }
+  .pick { display: inline-block; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); font-weight: 600; cursor: pointer; }
+  .pick input { display: none; }
+  .state { font-size: .85rem; }
+  .state.ok { color: var(--accent); }
+  .state.bad { color: var(--bad); }
+  button.send { width: 100%; margin-top: 16px; padding: 14px; font: inherit; font-size: 1.1rem; font-weight: 700; border: 0; border-radius: 12px; background: var(--accent); color: #fff; }
+  button.send:disabled { opacity: .55; }
+  .error { color: var(--bad); font-weight: 600; margin-top: 10px; }
+  .done { text-align: center; padding: 30px 10px; }
+  .done .big { font-size: 3rem; color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ارسال عکس و مدارک</h1>
+  <p class="muted">سالن مطالعه پژوهش. عکس خودتان و تذکره را از همین موبایل بفرستید. بعد از دیدن در دفتر، روی پرونده‌تان گذاشته می‌شود.</p>
+
+  <div id="closed" class="card" hidden><p class="error">ارسال از موبایل الان بسته است. لطفاً به دفتر مراجعه کنید.</p></div>
+
+  <form id="form" class="card" hidden>
+    <label class="field"><span>آیدی عضویت</span><input id="no" type="text" inputmode="numeric" autocomplete="off" placeholder="مثلاً 1024"></label>
+    <label class="field"><span>شماره تماس</span><input id="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xx xxx xxx"></label>
+
+    <div class="slot" data-kind="photo" data-side="800">
+      <div class="thumb">عکس</div>
+      <div class="text"><b>عکس خودتان</b><span class="state muted">برای کارت عضویت؛ رو به روبرو، زمینهٔ روشن</span></div>
+      <label class="pick">انتخاب<input type="file" accept="image/*" capture="user"></label>
+    </div>
+    <div class="slot" data-kind="tazkira_front" data-side="1600">
+      <div class="thumb">تذکره</div>
+      <div class="text"><b>روی تذکره</b><span class="state muted">همهٔ نوشته‌ها خوانا باشد</span></div>
+      <label class="pick">انتخاب<input type="file" accept="image/*,application/pdf" capture="environment"></label>
+    </div>
+    <div class="slot" data-kind="tazkira_back" data-side="1600">
+      <div class="thumb">پشت</div>
+      <div class="text"><b>پشت تذکره</b><span class="state muted">اختیاری</span></div>
+      <label class="pick">انتخاب<input type="file" accept="image/*,application/pdf" capture="environment"></label>
+    </div>
+
+    <p id="error" class="error" role="alert" hidden></p>
+    <button id="send" class="send" type="submit">ارسال</button>
+  </form>
+
+  <div id="done" class="card done" hidden>
+    <div class="big">✓</div>
+    <p><b>رسید.</b></p>
+    <p class="muted">مدارک شما به دفتر رسید و بعد از دیدن روی پرونده‌تان گذاشته می‌شود.</p>
+    <p><a href="./" style="color: var(--accent)">ارسال برای شخص دیگر</a></p>
+  </div>
+</main>
+<script>
+(function () {
+  var OPEN = __OPEN__;
+  if (!OPEN) { document.getElementById("closed").hidden = false; return; }
+  var form = document.getElementById("form");
+  form.hidden = false;
+  var chosen = {};
+  var errors = {
+    rate_limited: "چند بار پشت سر هم فرستاده شد. چند دقیقه بعد دوباره امتحان کنید.",
+    closed: "ارسال از موبایل الان بسته است.",
+    bad_file_type: "این فایل عکس یا PDF نیست.",
+    file_too_large: "فایل خیلی بزرگ است (بیشتر از 10 MB).",
+    who_required: "آیدی عضویت یا شماره تماس را بنویسید.",
+    starting: "سیستم دفتر هنوز آماده نیست. چند لحظه بعد دوباره امتحان کنید."
+  };
+  function digits(s) {
+    return (s || "").replace(/[۰-۹]/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹".indexOf(d); })
+      .replace(/[٠-٩]/g, function (d) { return "٠١٢٣٤٥٦٧٨٩".indexOf(d); }).replace(/[^0-9]/g, "");
+  }
+  // A smaller picture: at most `side` pixels, WebP where the phone can make it, else JPEG.
+  function shrink(file, side) {
+    if (file.type === "application/pdf") return Promise.resolve(file);
+    var load = window.createImageBitmap
+      ? createImageBitmap(file, { imageOrientation: "from-image" }).catch(function () { return createImageBitmap(file); })
+      : new Promise(function (ok, fail) { var i = new Image(); i.onload = function () { ok(i); }; i.onerror = fail; i.src = URL.createObjectURL(file); });
+    return load.then(function (img) {
+      var scale = Math.min(1, side / Math.max(img.width, img.height));
+      var c = document.createElement("canvas");
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      var ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      return new Promise(function (ok) {
+        c.toBlob(function (b) {
+          if (b && b.type === "image/webp") return ok(b);
+          c.toBlob(function (j) { ok(j || file); }, "image/jpeg", 0.82);
+        }, "image/webp", 0.8);
+      });
+    }).catch(function () { return file; });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".slot"), function (slot) {
+    var input = slot.querySelector("input");
+    input.addEventListener("change", function () {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      var state = slot.querySelector(".state");
+      state.className = "state muted"; state.textContent = "در حال آماده کردن…";
+      shrink(f, Number(slot.dataset.side)).then(function (b) {
+        chosen[slot.dataset.kind] = b;
+        var thumb = slot.querySelector(".thumb");
+        if (b.type.indexOf("image/") === 0) { thumb.innerHTML = ""; var im = document.createElement("img"); im.src = URL.createObjectURL(b); thumb.appendChild(im); }
+        else thumb.textContent = "PDF";
+        state.className = "state ok"; state.textContent = "آماده · " + Math.max(1, Math.round(b.size / 1024)) + " KB";
+      });
+    });
+  });
+  function fail(text) { var e = document.getElementById("error"); e.textContent = text; e.hidden = false; }
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    document.getElementById("error").hidden = true;
+    var no = digits(document.getElementById("no").value), phone = digits(document.getElementById("phone").value);
+    if (!no && !phone) return fail(errors.who_required);
+    var kinds = Object.keys(chosen);
+    if (!kinds.length) return fail("دست‌کم یک عکس انتخاب کنید.");
+    var btn = document.getElementById("send");
+    btn.disabled = true; btn.textContent = "در حال ارسال…";
+    var chain = Promise.resolve();
+    kinds.forEach(function (kind) {
+      chain = chain.then(function () {
+        var q = "send?kind=" + kind + "&member_no=" + encodeURIComponent(no) + "&phone=" + encodeURIComponent(phone);
+        return fetch(q, { method: "POST", body: chosen[kind], headers: { "Content-Type": chosen[kind].type || "application/octet-stream" } })
+          .then(function (r) {
+            if (r.ok) return;
+            return r.json().catch(function () { return {}; }).then(function (b) { throw new Error(b.error || "failed"); });
+          });
+      });
+    });
+    chain.then(function () {
+      form.hidden = true; document.getElementById("done").hidden = false;
+    }).catch(function (e) {
+      fail(errors[e.message] || "ارسال نشد. وای‌فای وصل است؟ دوباره امتحان کنید.");
+      btn.disabled = false; btn.textContent = "ارسال";
+    });
+  });
+})();
+</script>
+</body>
+</html>

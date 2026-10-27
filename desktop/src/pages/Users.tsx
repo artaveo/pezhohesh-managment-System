@@ -1,11 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, errorText, ROLE_LABEL, type PersonRow, type Role, type UserRow } from "../lib/api";
+import { api, errorText, ROLE_LABEL, SECTION_LABEL, type PersonRow, type Role, type RoleAccess, type Section, type UserRow } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { fa, formatShort } from "../lib/solar";
 
 const ROLE_HELP: Record<Role, string> = {
   partner: "همه چیز، با تنظیمات و ساخت حساب",
-  manager: "همهٔ کارهای قرائت‌خانه و حساب‌ها؛ بدون تنظیمات و حساب‌ها",
+  manager: "کارهای قرائت‌خانه که پایین‌تر برایش تیک زده‌اید؛ بدون تنظیمات و حساب‌ها",
   pec_staff: "فقط پرونده‌ها، بل‌ها و مصارف خدمات تحصیلی",
 };
 
@@ -95,8 +95,68 @@ export function Users() {
         {!rows && !error && <p className="muted">در حال بارگذاری…</p>}
       </div>
 
+      <RoleSections />
       <People onMerged={(msg) => { setNotice(msg); void load(); }} />
     </div>
+  );
+}
+
+/**
+ * Which sections the manager and the education staff see: tick and it is saved. Partners
+ * always see everything. Someone already signed in gets the new menu when the app next
+ * checks who they are (at the latest when they sign in again); the API refuses closed
+ * sections at once.
+ */
+function RoleSections() {
+  const [data, setData] = useState<RoleAccess | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  useEffect(() => { api.roleAccess().then(setData, (e) => setError(errorText(e))); }, []);
+
+  async function toggle(role: Role, section: Section, on: boolean) {
+    if (!data) return;
+    const row = data.roles.find((r) => r.role === role)!;
+    const sections = on ? [...row.sections, section] : row.sections.filter((x) => x !== section);
+    setData({ roles: data.roles.map((r) => (r.role === role ? { ...r, sections } : r)) });
+    setError("");
+    setSaved("");
+    try {
+      await api.setRoleAccess(role, sections);
+      setSaved(`ذخیره شد: ${ROLE_LABEL[role]}`);
+    } catch (e) {
+      setError(errorText(e));
+      setData(await api.roleAccess().catch(() => data));
+    }
+  }
+
+  return (
+    <section className="glass role-sections">
+      <h2>هر نقش چه بخش‌هایی را ببیند</h2>
+      <p className="muted small">
+        شرکا همیشه همه چیز را می‌بینند. برای مدیر و کارمند خدمات تحصیلی تیک بزنید؛ همان لحظه ذخیره می‌شود.
+        کاربرانی که الان وارد هستند فهرست تازه را با ورود بعدی می‌بینند، ولی بخش بسته از همین حالا برایشان باز نمی‌شود.
+      </p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {saved && <p className="muted small" role="status">{saved}</p>}
+      {data && (
+        <div className="role-grid">
+          {data.roles.map((r) => (
+            <fieldset key={r.role}>
+              <legend>{ROLE_LABEL[r.role]}</legend>
+              {r.possible.map((sec) => (
+                <label key={sec} className="check big">
+                  <input type="checkbox" checked={r.sections.includes(sec)} onChange={(e) => void toggle(r.role, sec, e.target.checked)} />
+                  {SECTION_LABEL[sec]}
+                </label>
+              ))}
+              {r.role === "pec_staff" && (
+                <p className="muted small">بخش‌های قرائت‌خانه به حساب‌های خدمات تحصیلی داده نمی‌شود؛ دیتابیس هم به این نقش اجازهٔ دیدن آن‌ها را نمی‌دهد. برای کسی که هر دو کار را می‌کند، نقش «مدیر» بدهید.</p>
+              )}
+            </fieldset>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

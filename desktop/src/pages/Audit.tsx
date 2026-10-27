@@ -10,6 +10,7 @@ export const TABLES: Record<string, string> = {
   members: "عضو",
   memberships: "دورهٔ عضویت",
   member_documents: "عکس و تذکره",
+  document_inbox: "رسیده از موبایل",
   receipts: "بل",
   expenses: "مصرف",
   expense_categories: "سطر مصارف",

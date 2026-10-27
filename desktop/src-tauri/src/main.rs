@@ -1,6 +1,7 @@
 // Hide the extra console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod firewall;
 mod postgres;
 mod saved_login;
 
@@ -142,7 +143,7 @@ fn kill_with_app(child: &Child) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = postgres::helper(&args) {
+    if let Some(code) = postgres::helper(&args).or_else(|| firewall::helper(&args)) {
         std::process::exit(code);
     }
     tauri::Builder::default()
@@ -154,7 +155,9 @@ fn main() {
             postgres::fix_postgres,
             restart_api,
             api_log,
-            pick_folder
+            pick_folder,
+            firewall::firewall_open,
+            firewall::open_firewall
         ])
         .setup(|app| {
             postgres::start_if_stopped();

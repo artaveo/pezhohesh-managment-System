@@ -23,6 +23,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
+mod access;
 mod audit;
 mod auth;
 mod backup;
@@ -36,8 +37,10 @@ mod lists;
 mod money;
 mod online;
 mod people;
+mod phone;
 mod registrations;
 mod reports;
+mod restore;
 mod salaries;
 mod solar;
 
@@ -45,6 +48,20 @@ mod solar;
 pub struct AppState {
     pub db: PgPool,
     core: Arc<RwLock<Core>>,
+}
+
+impl AppState {
+    /// The database is there and its tables are up to date.
+    pub fn ready(&self) -> bool {
+        self.core.read().unwrap().ready
+    }
+    /// Every request waits with this reason (a restore is replacing the database).
+    pub fn pause(&self, problem: &'static str) {
+        *self.core.write().unwrap() = Core { ready: false, problem: Some(problem), detail: None };
+    }
+    pub fn resume(&self) {
+        *self.core.write().unwrap() = Core { ready: true, ..Default::default() };
+    }
 }
 
 /// Where getting the database ready stands. Until it is ready, /health says why and every
@@ -98,7 +115,9 @@ async fn run() -> anyhow::Result<()> {
     let core = Arc::new(RwLock::new(Core { problem: Some("starting"), ..Default::default() }));
     tokio::spawn(prepare_database(database_url, db.clone(), core.clone()));
 
-    let app = router(AppState { db, core });
+    let state = AppState { db, core };
+    tokio::spawn(phone::serve(state.clone()));
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("pezhohesh-api {} listening on {bind}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, app)
@@ -219,6 +238,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/me/theme", put(auth::set_theme))
         .route("/api/v1/users", get(auth::list_users).post(auth::create_user))
         .route("/api/v1/users/:id", put(auth::update_user))
+        .route("/api/v1/role-access", get(access::get).put(access::set))
         .route("/api/v1/people", get(people::list))
         .route("/api/v1/people/merge", post(people::merge))
         .route("/api/v1/me/theme-mode", put(auth::set_theme_mode))
@@ -277,8 +297,16 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/hotspot/sales", get(hotspot::sales).post(hotspot::create_sale))
         .route("/api/v1/backup", get(backup::status).put(backup::set_plan).post(backup::backup_now))
         .route("/api/v1/backup/usb", post(backup::prepare_usb))
+        .route("/api/v1/backup/restore", get(restore::list).post(restore::restore))
         .route("/api/v1/online", get(online::status).put(online::set_plan).post(online::copy_now))
         .route("/api/v1/loans", get(lists::loans))
+        .route("/api/v1/inbox", get(phone::inbox))
+        .route("/api/v1/inbox/count", get(phone::count))
+        .route("/api/v1/inbox/:id/file", get(phone::file))
+        .route("/api/v1/inbox/:id/accept", post(phone::accept))
+        .route("/api/v1/inbox/:id/reject", post(phone::reject))
+        .route("/api/v1/phone-upload", get(phone::status).put(phone::set_status))
+        .route("/api/v1/qr", get(phone::qr))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

@@ -1,6 +1,6 @@
 [package]
 name = "pezhohesh-api"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2021"
 description = "Core API for the Pezhohesh management system (study hall + educational services)"
 
@@ -22,6 +22,8 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 calamine = "0.37"
 office-crypto = "0.4"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+if-addrs = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_System_Ioctl"] }

@@ -9,8 +9,8 @@ const MAX_BYTES = 10 * 1024 * 1024;
 
 const SLOTS: { kind: DocKind; label: string; side: number }[] = [
   { kind: "photo", label: "عکس عضو (برای کارت)", side: 800 },
-  { kind: "tazkira_front", label: "تذکره، روی اول", side: 1800 },
-  { kind: "tazkira_back", label: "تذکره، روی دوم", side: 1800 },
+  { kind: "tazkira_front", label: "تذکره، روی اول", side: 1600 },
+  { kind: "tazkira_back", label: "تذکره، روی دوم", side: 1600 },
 ];
 
 /** The member's photo and tazkira scans: add from a file or the camera, view, remove. */

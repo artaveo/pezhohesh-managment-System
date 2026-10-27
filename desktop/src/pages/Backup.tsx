@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus } from "../lib/api";
+import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint } from "../lib/api";
+import { useAuth } from "../auth/AuthProvider";
+import { Modal } from "../components/Modal";
 import { formatDay } from "../lib/solar";
 import { canPickFolder, pickFolder } from "../lib/savedLogin";
 import { useToast } from "../components/Toast";
@@ -169,25 +171,7 @@ export function Backup() {
 
       <Online />
 
-      <h2>پشتیبان‌های پوشهٔ اول</h2>
-      <div className="glass table-wrap">
-        <table className="table">
-          <thead><tr><th>فایل</th><th>زمان</th><th>اندازه</th></tr></thead>
-          <tbody>
-            {s.files.map((f) => (
-              <tr key={f.name}>
-                <td><bdi dir="ltr">{f.name}</bdi></td>
-                <td>{f.modified ? when(f.modified) : "—"}</td>
-                <td className="num"><bdi dir="ltr">{size(f.size)}</bdi></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!s.files.length && <p className="muted empty">هنوز پشتیبانی در این پوشه نیست.</p>}
-      </div>
-      <p className="muted small">
-        برای برگرداندن یک پشتیبان (مثلاً بعد از خرابی لپ‌تاپ) به من خبر بدهید؛ برگرداندن همهٔ اطلاعات فعلی را جایگزین می‌کند، پس با هم انجامش می‌دهیم.
-      </p>
+      <Restore refresh={tick} />
     </div>
   );
 }
@@ -313,5 +297,97 @@ function Online() {
         <button className="btn ghost" disabled={busy || !s.host} onClick={() => void now()}>{busy ? "در حال فرستادن…" : "همین حالا بفرست"}</button>
       </div>
     </section>
+  );
+}
+
+const WORD = "برگرداندن";
+
+/**
+ * Bringing everything back from a backup: the database, and the photos and scans in the
+ * backup's files folder. A fresh backup of things as they are now is taken first, so a
+ * restore of the wrong file can itself be undone.
+ */
+function Restore({ refresh }: { refresh: number }) {
+  const { signOut } = useAuth();
+  const [points, setPoints] = useState<RestorePoint[] | null>(null);
+  const [all, setAll] = useState(false);
+  const [chosen, setChosen] = useState<RestorePoint | null>(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState<string | null>(null);
+  useEffect(() => { api.restorePoints().then(setPoints, () => setPoints([])); }, [refresh]);
+
+  async function restore() {
+    if (!chosen) return;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.restore(chosen.path);
+      setDone(r.before);
+      // The core restarts with the restored database; everyone signs in again.
+      window.setTimeout(() => void signOut(), 6000);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const shown = all ? points ?? [] : (points ?? []).slice(0, 8);
+  return (
+    <>
+      <h2>برگرداندن از پشتیبان</h2>
+      <p className="muted small">
+        همهٔ پشتیبان‌های پوشه‌ها، فلش و گوگل درایو، تازه‌ترین بالا. برگرداندن، دیتابیس و عکس‌ها را همان‌طور می‌کند که در آن پشتیبان بود؛
+        هر چه بعد از آن ثبت شده از برنامه برداشته می‌شود. پیش از برگرداندن، خود برنامه یک پشتیبان تازه از وضع فعلی می‌گیرد تا اگر اشتباه شد، آن هم برگردد.
+      </p>
+      <div className="glass table-wrap">
+        <table className="table">
+          <thead><tr><th>زمان</th><th>کجا</th><th>اندازه</th><th><span className="sr-only">کارها</span></th></tr></thead>
+          <tbody>
+            {shown.map((p) => (
+              <tr key={p.path}>
+                <td>{p.modified ? when(p.modified) : "—"}<div className="muted small"><bdi dir="ltr">{p.name}</bdi></div></td>
+                <td>{KIND_LABEL[p.kind]}<div className="muted small"><bdi dir="ltr">{p.folder}</bdi></div></td>
+                <td className="num"><bdi dir="ltr">{size(p.size)}</bdi></td>
+                <td><button className="btn ghost small" onClick={() => { setChosen(p); setTyped(""); setError(""); }}>برگرداندن…</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {points && !points.length && <p className="muted empty">هنوز پشتیبانی پیدا نشد.</p>}
+        {!points && <p className="muted empty">در حال خواندن…</p>}
+      </div>
+      {!all && (points?.length ?? 0) > 8 && <div className="actions"><button className="btn ghost small" onClick={() => setAll(true)}>همه ({points!.length})</button></div>}
+
+      {chosen && (
+        <Modal label="برگرداندن از پشتیبان" onClose={() => !busy && !done && setChosen(null)}>
+          {done !== null ? (
+            <div className="restore-done">
+              <h2>برگردانده شد</h2>
+              <p>اطلاعات حالا همان است که در پشتیبان {chosen.modified ? when(chosen.modified) : chosen.name} بود. برنامه چند لحظه دوباره وصل می‌شود؛ بعد دوباره وارد شوید.</p>
+              {done && <p className="muted small">وضع پیش از برگرداندن هم در این پشتیبان ماند: <bdi dir="ltr">{done}</bdi></p>}
+            </div>
+          ) : (
+            <>
+              <h2>برگرداندن پشتیبان {chosen.modified ? when(chosen.modified) : ""}</h2>
+              <p>هر چه بعد از این زمان در برنامه ثبت شده (بل، عضو، مصرف…) از برنامه برداشته می‌شود. اول یک پشتیبان از وضع فعلی گرفته می‌شود.</p>
+              <label className="field">
+                <span>برای اطمینان بنویسید: <b>{WORD}</b></span>
+                <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+              </label>
+              {error && <p className="form-error" role="alert">{error}</p>}
+              <div className="actions">
+                <button className="btn danger" disabled={busy || typed.trim() !== WORD} onClick={() => void restore()}>
+                  {busy ? "در حال برگرداندن…" : "برگردان"}
+                </button>
+                <button className="btn ghost" disabled={busy} onClick={() => setChosen(null)}>لغو</button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+    </>
   );
 }

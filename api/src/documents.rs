@@ -98,33 +98,41 @@ pub struct Added {
     id: Uuid,
 }
 
-/// POST /api/v1/members/:id/documents/:kind with the file as the body. A new photo or
-/// tazkira side takes the place of the old one.
-pub async fn add(
-    State(s): State<AppState>,
-    user: CurrentUser,
-    Path((member, kind)): Path<(Uuid, String)>,
-    body: Bytes,
-) -> Result<(StatusCode, Json<Added>), ApiError> {
-    hall_only(&user)?;
-    if !KINDS.contains(&kind.as_str()) {
+/// A file checked and stored in the files folder, not yet on anyone's record.
+pub struct Stored {
+    pub rel: String,
+    pub sha: String,
+    pub mime: &'static str,
+    pub size: i32,
+}
+
+pub fn kind_ok(kind: &str) -> bool {
+    KINDS.contains(&kind)
+}
+
+/// Checks a file (its real type from its bytes, its size) and keeps it in the files folder.
+pub async fn store_upload(kind: &str, body: &[u8]) -> Result<Stored, ApiError> {
+    if !kind_ok(kind) {
         return Err(ApiError::bad("bad_kind"));
     }
     if body.is_empty() || body.len() > MAX_BYTES {
         return Err(ApiError::bad("file_too_large"));
     }
-    let (mime, ext) = sniff(&body).ok_or(ApiError::bad("bad_file_type"))?;
+    let (mime, ext) = sniff(body).ok_or(ApiError::bad("bad_file_type"))?;
     if kind == "photo" && mime == "application/pdf" {
         return Err(ApiError::bad("bad_file_type"));
     }
-    let sha = hex(&Sha256::digest(&body));
+    let sha = hex(&Sha256::digest(body));
     let rel = relative(&sha, ext);
-    store(&rel, &body).await.map_err(|e| {
+    store(&rel, body).await.map_err(|e| {
         tracing::error!("saving {rel} failed: {e}");
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, "file_not_saved")
     })?;
+    Ok(Stored { rel, sha, mime, size: body.len() as i32 })
+}
 
-    let mut tx = begin_as(&s.db, &user).await?;
+/// Puts a stored file on a member's record. A new photo or tazkira side takes the place of the old one.
+pub async fn attach(tx: &mut PgConnection, member: Uuid, kind: &str, f: &Stored, by: Uuid) -> Result<Uuid, ApiError> {
     let known: Option<Uuid> = sqlx::query_scalar("SELECT id FROM members WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
         .bind(member)
         .fetch_optional(&mut *tx)
@@ -133,7 +141,7 @@ pub async fn add(
     if kind != "other" {
         sqlx::query("UPDATE member_documents SET deleted_at = now() WHERE member_id = $1 AND kind = $2::doc_kind AND deleted_at IS NULL")
             .bind(member)
-            .bind(&kind)
+            .bind(kind)
             .execute(&mut *tx)
             .await?;
     }
@@ -144,16 +152,38 @@ pub async fn add(
     )
     .bind(id)
     .bind(member)
-    .bind(&kind)
-    .bind(&rel)
-    .bind(&sha)
-    .bind(mime)
-    .bind(body.len() as i32)
-    .bind(user.id)
+    .bind(kind)
+    .bind(&f.rel)
+    .bind(&f.sha)
+    .bind(f.mime)
+    .bind(f.size)
+    .bind(by)
     .execute(&mut *tx)
     .await?;
+    Ok(id)
+}
+
+/// POST /api/v1/members/:id/documents/:kind with the file as the body.
+pub async fn add(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path((member, kind)): Path<(Uuid, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<Added>), ApiError> {
+    hall_only(&user)?;
+    let f = store_upload(&kind, &body).await?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let id = attach(&mut tx, member, &kind, &f, user.id).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(Added { id })))
+}
+
+/// The bytes and type of a stored file.
+pub async fn read_file(rel: &str) -> Result<Vec<u8>, ApiError> {
+    tokio::fs::read(files_dir().join(rel)).await.map_err(|e| {
+        tracing::error!("reading {rel} failed: {e}");
+        ApiError(StatusCode::NOT_FOUND, "file_missing")
+    })
 }
 
 /// GET /api/v1/documents/:id: the file itself.

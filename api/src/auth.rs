@@ -75,6 +75,9 @@ pub struct CurrentUser {
     pub theme_color: Option<String>,
     pub theme_mode: String,
     pub must_change_password: bool,
+    /// The sections of the app this person sees (see `access`).
+    #[sqlx(skip)]
+    pub sections: Vec<String>,
 }
 
 const USER_COLUMNS: &str = "u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, \
@@ -112,7 +115,10 @@ impl FromRequestParts<AppState> for CurrentUser {
         .bind(&hash)
         .fetch_optional(&state.db)
         .await?;
-        user.ok_or(ApiError::UNAUTHORIZED)
+        let mut user = user.ok_or(ApiError::UNAUTHORIZED)?;
+        user.sections = crate::access::sections_for(&state.db, &user.role).await;
+        crate::access::check(parts.uri.path(), &user)?;
+        Ok(user)
     }
 }
 
@@ -180,13 +186,15 @@ fn check_role(role: &str) -> Result<(), ApiError> {
     }
 }
 
-async fn load_user(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> Result<CurrentUser, ApiError> {
-    Ok(sqlx::query_as(&format!(
+async fn load_user(db: &PgPool, id: Uuid) -> Result<CurrentUser, ApiError> {
+    let mut user: CurrentUser = sqlx::query_as(&format!(
         "SELECT {USER_COLUMNS} FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.id = $1"
     ))
     .bind(id)
     .fetch_one(db)
-    .await?)
+    .await?;
+    user.sections = crate::access::sections_for(db, &user.role).await;
+    Ok(user)
 }
 
 async fn open_session(db: &PgPool, user_id: Uuid) -> Result<String, ApiError> {

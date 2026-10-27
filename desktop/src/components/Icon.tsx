@@ -36,6 +36,8 @@ const PATHS: Record<string, string> = {
   edit: "M4 20h4L19 9l-4-4L4 16zM14 6l4 4",
   undo: "M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
   wifi: "M2 8.8a15 15 0 0 1 20 0M5 12.6a10 10 0 0 1 14 0M8.5 16.3a5 5 0 0 1 7 0M12 20h.01",
+  phone: "M7 2h10a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1M11 18h2",
+  qr: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3M6 6h1M17 6h1M6 17h1",
 };
 
 export function Icon({ name, size = 20 }: { name: keyof typeof PATHS | string; size?: number }) {

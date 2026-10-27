@@ -5,7 +5,7 @@ import { API_BASE } from "./api";
 // and from the desktop shell the PostgreSQL service and the API's log.
 
 /** Why the database is not ready (see Core in api/src/main.rs). */
-export type Problem = "starting" | "postgres_down" | "db_login" | "migration" | "db_error";
+export type Problem = "starting" | "postgres_down" | "db_login" | "migration" | "db_error" | "restoring";
 export type Health = { database: boolean; problem: Problem | null; detail: string | null; version: string };
 export type PgService = { name: string; running: boolean; pending: boolean; auto_start: boolean };
 
@@ -37,3 +37,12 @@ export async function apiLog(): Promise<string> {
 }
 
 export const canFixPostgres = isTauri;
+
+/** Whether Windows Firewall lets phones reach the phone page; null outside the desktop app. */
+export async function firewallOpen(): Promise<boolean | null> {
+  if (!isTauri()) return null;
+  try { return await invoke<boolean | null>("firewall_open"); } catch { return null; }
+}
+
+/** Opens the phone page's port in Windows Firewall as administrator (Windows asks first). */
+export const openFirewall = () => invoke<void>("open_firewall");
