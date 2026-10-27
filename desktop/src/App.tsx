@@ -4,6 +4,12 @@ import { Settings } from "./pages/Settings";
 import { Users } from "./pages/Users";
 import { LoansList, MembersList } from "./pages/DueLists";
 import { ImportExcel } from "./pages/ImportExcel";
+import { Desk } from "./pages/members/Desk";
+import { MemberPage } from "./pages/members/MemberPage";
+import { NewMember } from "./pages/members/NewMember";
+import { Bills } from "./pages/Bills";
+import { Money } from "./pages/Money";
+import { Prices } from "./pages/Prices";
 import { FirstSetup, ForcePasswordChange, Login } from "./pages/Login";
 import { Offline } from "./pages/Offline";
 import { Icon } from "./components/Icon";
@@ -19,13 +25,14 @@ const HALL: Role[] = ["partner", "manager"];
 const NAV = [
   { id: "dashboard", icon: "home", label: "داشبورد", roles: ALL },
   { id: "members", icon: "users", label: "اعضا", roles: HALL },
-  { id: "memberships", icon: "card", label: "عضویت و تمدید", roles: HALL },
-  { id: "receipts", icon: "receipt", label: "بل‌ها و رسیدها", roles: ALL },
-  { id: "expenses", icon: "wallet", label: "مصارف", roles: ALL },
+  { id: "memberships", icon: "card", label: "پذیرش و تمدید", roles: HALL },
+  { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL },
+  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL },
   { id: "books", icon: "book", label: "امانت کتاب", roles: HALL },
   { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL },
   { id: "pec", icon: "briefcase", label: "خدمات تحصیلی", roles: ["partner", "pec_staff"] as Role[] },
   { id: "users", icon: "shield", label: "کاربران", roles: ["partner"] as Role[] },
+  { id: "prices", icon: "settings", label: "قیمت‌ها", roles: ["partner"] as Role[] },
   { id: "import", icon: "upload", label: "ورود از اکسل", roles: ["partner"] as Role[] },
   { id: "settings", icon: "settings", label: "تنظیمات من", roles: ALL },
 ] as const;
@@ -45,7 +52,11 @@ function Shell() {
   const { user, signOut } = useAuth();
   const { dark, setMode } = useTheme();
   const nav = NAV.filter((n) => (n.roles as readonly Role[]).includes(user!.role));
-  const [page, setPage] = useState<PageId>("dashboard");
+  const [page, setPageId] = useState<PageId>("dashboard");
+  // Inside "members": one member's page, or the new-member form (with the bill to show after saving).
+  const [member, setMember] = useState<{ id: string | null; bill?: string | null } | null>(null);
+  const setPage = (id: PageId) => { setPageId(id); setMember(null); };
+  const openMember = (id: string, bill: string | null = null) => { setPageId("members"); setMember({ id, bill }); };
   useEffect(() => {
     if (!nav.some((n) => n.id === page)) setPage("dashboard");
   }, [user, nav, page]);
@@ -89,10 +100,16 @@ function Shell() {
           user!.role === "pec_staff" ? <PecHome /> : <Dashboard go={setPage} />
         ) : (
           <>
-            <h1>{current.label}</h1>
+            <h1>{member?.id === null ? "عضو جدید" : current.label}</h1>
             {page === "settings" ? <Settings />
               : page === "users" ? <Users />
-              : page === "members" ? <MembersList />
+              : page === "members" && member?.id ? <MemberPage key={member.id} id={member.id} openBill={member.bill} onBack={() => setMember(null)} />
+              : page === "members" && member ? <NewMember onSaved={(id, bill) => openMember(id, bill)} onCancel={() => setMember(null)} />
+              : page === "members" ? <MembersList open={(id) => openMember(id)} add={() => setMember({ id: null })} />
+              : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => { setPageId("members"); setMember({ id: null }); }} />
+              : page === "receipts" ? <Bills />
+              : page === "expenses" ? <Money />
+              : page === "prices" ? <Prices />
               : page === "books" ? <LoansList />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />
               : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}

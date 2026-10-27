@@ -344,3 +344,96 @@ button, input { font: inherit; color: inherit; }
   background: color-mix(in srgb, var(--fg) 6%, transparent); font-size: .72rem; line-height: 1.5;
   white-space: pre-wrap; word-break: break-word; text-align: left;
 }
+
+/* Desk work: forms, member page, bills */
+.field select { border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px; }
+.span-2 { grid-column: span 2; }
+.check.big { font-size: .92rem; margin: 2px 0; }
+.solar-date { display: grid; grid-template-columns: 64px 1fr 84px; gap: 6px; }
+.solar-date input, .solar-date select {
+  width: 100%; padding: 9px 10px; border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px;
+  font: inherit; font-size: 1rem; color: var(--fg); text-align: center;
+}
+.form-error.inline { background: none; padding: 0; font-size: .78rem; }
+.period-form { display: flex; flex-direction: column; gap: 10px; }
+.period-sum { margin: 0; padding: 10px 14px; border-radius: 12px; background: var(--accent-soft); color: var(--fg); }
+.notice.warn { color: var(--warn); background: var(--warn-soft); padding: 8px 12px; border-radius: 10px; font-size: .9rem; }
+.btn.danger { background: var(--bad); color: #fff; }
+.btn.ghost.danger { background: none; color: var(--bad); }
+button.link { background: none; border: 0; padding: 0; font: inherit; }
+.row-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; white-space: nowrap; }
+.table tr.clickable { cursor: pointer; }
+.table tr.clickable:hover td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.table.prices input:not([type="checkbox"]), .table.prices select {
+  font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); width: 100%;
+}
+.table.prices td:nth-child(3) input, .table.prices td:nth-child(4) input { max-width: 110px; }
+
+.member-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.member-title h2 { font-size: 1.35rem; }
+.member-status { display: flex; gap: 18px; }
+.member-status > div { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+
+.desk-tasks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.desk-tasks button {
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px 12px; border-radius: 16px; cursor: pointer;
+  font: inherit; font-size: 1rem; font-weight: 600; color: var(--fg);
+  background: var(--glass); border: 1px solid var(--glass-edge); box-shadow: var(--glass-shadow); backdrop-filter: blur(14px);
+}
+.desk-tasks button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); }
+.search.big { font-size: 1.1rem; padding: 13px 16px; }
+.pick-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pick-list button {
+  width: 100%; display: grid; grid-template-columns: 90px 1.4fr 1fr 1fr auto; gap: 12px; align-items: center; text-align: start;
+  padding: 10px 12px; border-radius: 12px; border: 0; background: none; cursor: pointer; font: inherit; color: var(--fg);
+}
+.pick-list button:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+
+.modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(15, 20, 15, .45); overflow: auto; }
+.modal-body { display: flex; flex-direction: column; gap: 12px; align-items: center; max-width: 100%; }
+.modal-body.panel { align-items: stretch; width: min(520px, 100%); background: var(--surface); }
+.modal-tools { display: flex; gap: 8px; }
+
+/* The paper bill: A5 portrait. On screen it is drawn at the same size. */
+.bill-sheet {
+  position: relative; width: 148mm; min-height: 200mm; box-sizing: border-box; padding: 10mm 11mm; overflow: hidden;
+  background: #fff; color: #1c241d; font-size: 11pt; display: flex; flex-direction: column; gap: 5mm;
+  border-radius: 4px; box-shadow: 0 8px 30px rgba(0, 0, 0, .25);
+}
+.bill-sheet header { display: flex; align-items: center; gap: 4mm; border-bottom: 1.2mm solid #74bf1f; padding-bottom: 4mm; }
+.bill-sheet header img { width: 22mm; height: 22mm; object-fit: contain; }
+.bill-sheet header h1 { margin: 0; font-size: 15pt; color: #2f5d12; }
+.bill-sheet header p { margin: 1mm 0 0; letter-spacing: .25em; font-size: 8pt; color: #3d4a3d; }
+.bill-title { margin-inline-start: auto; background: #2f4a1c; color: #fff; padding: 2mm 5mm; border-radius: 99px; font-weight: 700; white-space: nowrap; }
+.bill-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm 6mm; margin: 0; }
+.bill-meta div { display: flex; gap: 2mm; align-items: baseline; border-bottom: .3mm dashed #c9d3c4; padding-bottom: 1mm; }
+.bill-meta dt { color: #5d6b5d; font-size: 9pt; white-space: nowrap; }
+.bill-meta dd { margin: 0; font-weight: 700; }
+.bill-meta small { font-weight: 400; color: #5d6b5d; }
+.bill-lines { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
+.bill-lines th, .bill-lines td { border: .3mm solid #b9c6b3; padding: 2mm 3mm; text-align: start; vertical-align: top; }
+.bill-lines thead th { background: #eef6e3; }
+.bill-lines tfoot th { background: #eef6e3; font-size: 12pt; }
+.bill-lines .num { text-align: end; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bill-lines .small { font-size: 8.5pt; color: #5d6b5d; }
+.bill-words { margin: 0; font-size: 10pt; }
+.bill-sheet footer { margin-top: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 10mm; }
+.bill-sheet footer div { display: flex; flex-direction: column; gap: 2mm; font-size: 9pt; color: #5d6b5d; }
+.bill-sheet footer strong { color: #1c241d; font-size: 10.5pt; min-height: 12mm; border-bottom: .3mm solid #8a9886; }
+.bill-foot { margin: 0; text-align: center; font-size: 7.5pt; color: #8a9886; }
+.bill-stamp {
+  position: absolute; top: 46%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); pointer-events: none;
+  font-size: 34pt; font-weight: 800; padding: 2mm 8mm; border: 1.2mm solid; border-radius: 4mm; opacity: .22;
+}
+.bill-stamp.void { color: #b3362b; }
+.bill-stamp.copy { color: #3d4a3d; font-size: 26pt; }
+
+@page { size: A5 portrait; margin: 0; }
+.print-only { display: none; }
+@media print {
+  #root { display: none !important; }
+  body { background: #fff !important; }
+  .print-only { display: block; }
+  .bill-sheet { box-shadow: none; border-radius: 0; width: 148mm; height: 209mm; min-height: 0; }
+}
+@media (max-width: 1100px) { .desk-tasks { grid-template-columns: repeat(2, 1fr); } }

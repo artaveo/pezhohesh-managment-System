@@ -14,6 +14,7 @@ function DueList<T>(props: {
   head: ReactNode;
   row: (r: T) => ReactNode;
   empty: string;
+  action?: ReactNode;
 }) {
   const [scope, setScope] = useState<"attention" | "all">("attention");
   const [q, setQ] = useState("");
@@ -50,6 +51,7 @@ function DueList<T>(props: {
           ))}
         </div>
         <input ref={search} className="search" type="search" placeholder={props.searchHint} value={q} onChange={(e) => setQ(e.target.value)} />
+        {props.action}
       </div>
       <p className="muted small">{props.hint[scope === "attention" ? 0 : 1]}{page ? ` · ${fa(page.total)} مورد` : ""}</p>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -68,9 +70,10 @@ function DueList<T>(props: {
   );
 }
 
-export function MembersList() {
+export function MembersList({ open, add }: { open: (id: string) => void; add: () => void }) {
   return (
     <DueList<MemberRow>
+      action={<button className="btn" onClick={add}>+ عضو جدید</button>}
       tabs={["نزدیک به ختم و تمام‌شده", "همه اعضا"]}
       hint={["عضویت‌هایی که تا 5 روز دیگر ختم می‌شوند یا در 30 روز گذشته ختم شده‌اند؛ کمترین روز مانده اول.", "همهٔ اعضا با روزهای باقی‌ماندهٔ عضویت؛ کمترین اول."]}
       searchHint="جستجو: نام، نام پدر، شماره تماس یا شمارهٔ عضویت"
@@ -78,7 +81,7 @@ export function MembersList() {
       empty="عضویتی نزدیک به ختم نیست."
       head={<tr><th>شماره</th><th>نام</th><th>نام پدر</th><th>شماره تماس</th><th>نوع عضویت</th><th>ختم عضویت</th><th>وضعیت</th></tr>}
       row={(m) => (
-        <tr key={m.member_id} className={m.days_left !== null && m.days_left < 0 ? "late" : ""}>
+        <tr key={m.member_id} className={`clickable${m.days_left !== null && m.days_left < 0 ? " late" : ""}`} onClick={() => open(m.member_id)}>
           <td className="num">{m.member_no}</td>
           <td><strong>{m.name}</strong></td>
           <td>{m.father_name ?? "—"}</td>

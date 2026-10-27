@@ -92,6 +92,39 @@ export type LoanRow = {
   days_left: number;
 };
 
+export type MemberInput = {
+  member_no?: number | null; first_name: string; last_name?: string | null; father_name?: string | null;
+  phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
+};
+export type PeriodInput = { plan_id: string; start_date?: string | null; fee?: number | null; discount?: number; record_only?: boolean };
+export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
+export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
+export type Period = {
+  id: string; plan_name: string; kind: PlanKind; start_date: string; end_date: string;
+  fee: number; discount: number; note: string | null; receipt_id: string | null; receipt_no: string | null; removable: boolean;
+};
+/** The seat and the internet plan each run on their own; a renewal starts after its own last day. */
+export type Timeline = { kind: "monthly" | "internet"; end_date: string | null; days_left: number | null; next_start: string };
+export type MemberDetail = { member: Member; periods: Period[]; timelines: Timeline[] };
+export type PlanKind = "monthly" | "daily" | "internet";
+export type Plan = { id: string; kind: PlanKind; name: string; price: number; duration_days: number; active: boolean; sort_order: number };
+export type Bill = {
+  id: string; receipt_no: string; issued_on: string; amount: number; currency: string; income_category: string;
+  description: string | null; voided: boolean; void_reason: string | null; printed_count: number; issued_by: string | null;
+  member_id: string | null; member_no: number | null; customer: string | null; father_name: string | null; phone: string | null;
+  plan_name: string | null; start_date: string | null; end_date: string | null; fee: number | null; discount: number | null;
+};
+export type BillPage = { total: number; sum: number; rows: Bill[] };
+export type Category = { id: string; name: string };
+export type Lines<T> = { total: number; sum: number; rows: T[] };
+export type Expense = { id: string; spent_on: string; category: string; description: string | null; amount: number; created_by: string | null; from_excel: boolean; removable: boolean };
+export type Person = { id: string; full_name: string; title: string | null };
+export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
+export type Range = { from?: string; to?: string };
+
+const query = (r: Record<string, string | number | undefined>) =>
+  new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
+
 export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number };
 const listParams = (p: ListQuery) =>
   new URLSearchParams({ scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0) });
@@ -176,6 +209,32 @@ export const api = {
   },
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
+
+  nextMemberNo: () => request<number>("/members/next-no"),
+  createMember: (member: MemberInput, period: PeriodInput | null) => request<Saved>("/members", { method: "POST", body: { member, period } }),
+  member: (id: string, signal?: AbortSignal) => request<MemberDetail>(`/members/${id}`, { signal }),
+  updateMember: (id: string, m: MemberInput) => request<void>(`/members/${id}`, { method: "PUT", body: m }),
+  addPeriod: (id: string, p: PeriodInput) => request<Saved>(`/members/${id}/periods`, { method: "POST", body: p }),
+  deletePeriod: (id: string) => request<void>(`/periods/${id}`, { method: "DELETE" }),
+  dailySeat: (b: { member_id?: string | null; guest_name?: string | null } & PeriodInput) => request<Saved>("/daily-seats", { method: "POST", body: b }),
+  otherBill: (b: { income_category: string; amount: number; description?: string }) => request<Saved>("/bills", { method: "POST", body: b }),
+  bills: (p: Range & { q?: string; limit?: number; offset?: number }, signal?: AbortSignal) =>
+    request<BillPage>(`/bills?${query(p)}`, { signal }),
+  bill: (id: string) => request<Bill>(`/bills/${id}`),
+  billPrinted: (id: string) => request<void>(`/bills/${id}/printed`, { method: "POST" }),
+  voidBill: (id: string, reason: string) => request<void>(`/bills/${id}/void`, { method: "POST", body: { reason } }),
+  plans: () => request<Plan[]>("/plans"),
+  createPlan: (p: Omit<Plan, "id" | "sort_order"> & { sort_order?: number }) => request<string>("/plans", { method: "POST", body: p }),
+  updatePlan: (id: string, p: Omit<Plan, "id">) => request<void>(`/plans/${id}`, { method: "PUT", body: p }),
+  categories: () => request<Category[]>("/expense-categories"),
+  createCategory: (name: string) => request<string>("/expense-categories", { method: "POST", body: { name } }),
+  expenses: (r: Range, signal?: AbortSignal) => request<Lines<Expense>>(`/expenses?${query(r)}`, { signal }),
+  createExpense: (e: { category_id: string; spent_on?: string; amount: number; description?: string }) => request<string>("/expenses", { method: "POST", body: e }),
+  deleteExpense: (id: string) => request<void>(`/expenses/${id}`, { method: "DELETE" }),
+  staff: () => request<Person[]>("/staff"),
+  withdrawals: (r: Range, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
+  createWithdrawal: (w: { staff_id: string; taken_on?: string; amount: number; note?: string }) => request<string>("/withdrawals", { method: "POST", body: w }),
+  deleteWithdrawal: (id: string) => request<void>(`/withdrawals/${id}`, { method: "DELETE" }),
 };
 
 /** Persian message for an API error code. */
@@ -195,6 +254,18 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "member_no_taken": return "این شمارهٔ عضویت قبلاً به عضو دیگری داده شده.";
+    case "bad_member_no": return "شمارهٔ عضویت باید یک عدد مثبت باشد.";
+    case "bad_plan": return "این نوع عضویت پیدا نشد یا غیرفعال است.";
+    case "bad_amount": return "مبلغ درست نیست (تخفیف نباید از مبلغ بیشتر باشد).";
+    case "bad_category": return "نوع درآمد درست نیست.";
+    case "reason_required": return "دلیل باطل کردن را بنویسید.";
+    case "already_voided": return "این بل قبلاً باطل شده.";
+    case "void_today_only": return "مدیر فقط بل‌های امروز را می‌تواند باطل کند. برای بل‌های قبلی از یکی از شرکا بخواهید.";
+    case "remove_today_only": return "مدیر فقط چیزی را که امروز ثبت شده می‌تواند پاک کند.";
+    case "void_the_bill": return "این دوره بل دارد؛ اول بل آن را باطل کنید.";
+    case "not_found": return "پیدا نشد؛ شاید کسی دیگر آن را تغییر داده باشد.";
+    case "no_device": return "شمارهٔ بل این کمپیوتر تنظیم نشده.";
     case "postgres_down": return "دیتابیس (PostgreSQL) جواب نمی‌دهد. چند لحظه بعد دوباره امتحان کنید.";
     case "starting": return "هستهٔ سیستم هنوز در حال آماده شدن است. چند لحظه بعد دوباره امتحان کنید.";
     case "excel_password_needed": return "این فایل اکسل رمز دارد. رمز فایل را بنویسید.";

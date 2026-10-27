@@ -5,6 +5,7 @@ mod postgres;
 mod saved_login;
 
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 
@@ -16,8 +17,21 @@ struct Api(Mutex<Option<Child>>);
 /// Windows allows it), and the API again if it is not running. True when a new API started.
 #[tauri::command]
 fn restart_api(api: tauri::State<'_, Api>) -> bool {
+    keep_running(&api)
+}
+
+/// Set when the app is closing, so the watchdog does not start the API again.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+fn keep_running(api: &Api) -> bool {
+    if CLOSING.load(Ordering::SeqCst) {
+        return false;
+    }
     postgres::start_if_stopped();
     let mut child = api.0.lock().unwrap();
+    if CLOSING.load(Ordering::SeqCst) {
+        return false;
+    }
     if let Some(c) = child.as_mut() {
         if matches!(c.try_wait(), Ok(None)) {
             return false;
@@ -120,12 +134,20 @@ fn main() {
         .setup(|app| {
             postgres::start_if_stopped();
             app.manage(Api(Mutex::new(start_api())));
+            // The API can stop while the app stays open (for example around sleep and
+            // resume); bring it back within seconds instead of waiting for "try again".
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                keep_running(&handle.state::<Api>());
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building Pezhohesh desktop")
         .run(|app, event| {
             if let RunEvent::Exit = event {
+                CLOSING.store(true, Ordering::SeqCst);
                 if let Some(mut child) = app.state::<Api>().0.lock().unwrap().take() {
                     let _ = child.kill();
                 }

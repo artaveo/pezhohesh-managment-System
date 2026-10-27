@@ -30,7 +30,7 @@ const MIN_PASSWORD_LEN: usize = 8;
 // ---------------------------------------------------------------------------
 // Errors
 
-pub struct ApiError(StatusCode, &'static str);
+pub struct ApiError(pub StatusCode, pub &'static str);
 
 impl ApiError {
     pub const UNAUTHORIZED: ApiError = ApiError(StatusCode::UNAUTHORIZED, "unauthorized");

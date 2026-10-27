@@ -1,5 +1,5 @@
-//! Solar Hijri (Afghan) calendar dates, for reading the Excel books whose columns are
-//! Solar months. Arithmetic from the jalaali-js algorithm (Borkowski's 33-year cycles).
+//! Solar Hijri (Afghan) calendar dates: the Excel books' month columns, and bill numbers
+//! that run per Solar year. Arithmetic from the jalaali-js algorithm (Borkowski's 33-year cycles).
 
 use chrono::{Days, NaiveDate};
 
@@ -62,6 +62,16 @@ pub fn to_gregorian(jy: i32, jm: u32, jd: u32) -> Option<NaiveDate> {
     start.checked_add_days(Days::new(offset as u64))
 }
 
+/// Solar year that contains a Gregorian date (bill numbers run per Solar year).
+pub fn year_of(date: NaiveDate) -> i32 {
+    use chrono::Datelike;
+    let jy = date.year() - 621;
+    match to_gregorian(jy, 1, 1) {
+        Some(nowruz) if date < nowruz => jy - 1,
+        _ => jy,
+    }
+}
+
 /// Month number (1-12) of a header such as "حمل " or "عقرب".
 pub fn month_of(header: &str) -> Option<u32> {
     let h = header.trim();
@@ -82,5 +92,8 @@ mod tests {
         assert_eq!(month_len(1404, 12), 29);
         assert_eq!(to_gregorian(1405, 7, 31), None);
         assert_eq!(month_of("سرطان "), Some(4));
+        assert_eq!(year_of(d(2026, 3, 20)), 1404);
+        assert_eq!(year_of(d(2026, 3, 21)), 1405);
+        assert_eq!(year_of(d(2026, 10, 27)), 1405);
     }
 }

@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::Serialize;
@@ -25,8 +25,10 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 mod auth;
 mod dashboard;
-mod lists;
+mod hall;
 mod import_excel;
+mod lists;
+mod money;
 mod reports;
 mod solar;
 
@@ -212,7 +214,24 @@ fn router(state: AppState) -> Router {
             post(import_excel::import).layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024)),
         )
         .route("/api/v1/reports/periods", get(reports::periods))
-        .route("/api/v1/members", get(lists::members))
+        .route("/api/v1/members", get(lists::members).post(hall::create_member))
+        .route("/api/v1/members/next-no", get(hall::next_member_no))
+        .route("/api/v1/members/:id", get(hall::member).put(hall::update_member))
+        .route("/api/v1/members/:id/periods", post(hall::add_member_period))
+        .route("/api/v1/periods/:id", delete(hall::delete_period))
+        .route("/api/v1/daily-seats", post(hall::daily_seat))
+        .route("/api/v1/bills", get(hall::bills).post(hall::other_bill))
+        .route("/api/v1/bills/:id", get(hall::bill))
+        .route("/api/v1/bills/:id/printed", post(hall::bill_printed))
+        .route("/api/v1/bills/:id/void", post(hall::void_bill))
+        .route("/api/v1/plans", get(money::plans).post(money::create_plan))
+        .route("/api/v1/plans/:id", put(money::update_plan))
+        .route("/api/v1/expense-categories", get(money::categories).post(money::create_category))
+        .route("/api/v1/expenses", get(money::expenses).post(money::create_expense))
+        .route("/api/v1/expenses/:id", delete(money::delete_expense))
+        .route("/api/v1/staff", get(money::staff))
+        .route("/api/v1/withdrawals", get(money::withdrawals).post(money::create_withdrawal))
+        .route("/api/v1/withdrawals/:id", delete(money::delete_withdrawal))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

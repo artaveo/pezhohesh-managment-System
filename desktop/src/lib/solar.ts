@@ -69,3 +69,35 @@ export const fa = (n: number) => {
   const s = num.format(Math.round(n));
   return s.startsWith("-") ? `\u2066${s}\u2069` : s;
 };
+
+// ---------------------------------------------------------------------------
+// Solar dates typed and printed by hand (forms and bills).
+
+export const MONTHS = ["حمل", "ثور", "جوزا", "سرطان", "اسد", "سنبله", "میزان", "عقرب", "قوس", "جدی", "دلو", "حوت"];
+export type SolarDay = { y: number; m: number; d: number };
+
+export const toSolar = (d: Date | string): SolarDay => solar(typeof d === "string" ? parseIso(d) : d);
+
+/** Gregorian day of a Solar date, or null when that day does not exist (31 Mizan…). */
+export function fromSolar({ y, m, d }: SolarDay): Date | null {
+  if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y > 1300 && y < 1500)) return null;
+  // 1 Hamal falls on 20, 21 or 22 March; months 1-6 have 31 days, 7-11 have 30.
+  const nowruz = [20, 21, 22].map((day) => new Date(y + 621, 2, day)).find((x) => { const s = solar(x); return s.m === 1 && s.d === 1; });
+  if (!nowruz) return null;
+  const x = addDays(nowruz, (m - 1) * 31 - Math.max(0, m - 7) + d - 1);
+  const s = solar(x);
+  return s.y === y && s.m === m && s.d === d ? x : null;
+}
+
+/** "5 عقرب 1405" */
+export const formatDay = (d: Date | string) => {
+  const s = toSolar(d);
+  return `${s.d} ${MONTHS[s.m - 1]} ${s.y}`;
+};
+/** "1405/08/05", for bills and narrow columns. */
+export const formatNumeric = (d: Date | string) => {
+  const s = toSolar(d);
+  return `${s.y}/${String(s.m).padStart(2, "0")}/${String(s.d).padStart(2, "0")}`;
+};
+const weekday = new Intl.DateTimeFormat("fa-AF", { weekday: "long" });
+export const weekdayName = (d: Date | string) => weekday.format(typeof d === "string" ? parseIso(d) : d);
