@@ -7,7 +7,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Raw UTF-8 bytes both ways, whatever code page the console has (names are Persian).
+# The answer goes out as raw UTF-8 bytes, whatever code page the console has (names are Persian).
 function Answer($o) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 6 -Compress))
     $out = [Console]::OpenStandardOutput()
@@ -16,12 +16,18 @@ function Answer($o) {
     exit 0
 }
 
+# PowerShell hands what was piped in to the script as $input; the request is plain ASCII
+# (the app writes other letters as \u escapes), so no code page can garble it.
 try {
-    $buf = New-Object IO.MemoryStream
-    [Console]::OpenStandardInput().CopyTo($buf)
-    $req = [Text.Encoding]::UTF8.GetString($buf.ToArray()) | ConvertFrom-Json
+    $text = @($input) -join "`n"
+    if (-not $text.Trim()) {
+        $buf = New-Object IO.MemoryStream
+        [Console]::OpenStandardInput().CopyTo($buf)
+        $text = [Text.Encoding]::UTF8.GetString($buf.ToArray())
+    }
+    $req = $text | ConvertFrom-Json
 } catch {
-    Answer @{ ok = $false; error = 'bad_request' }
+    Answer @{ ok = $false; error = 'bad_request'; detail = $_.Exception.Message }
 }
 
 $zk = $null

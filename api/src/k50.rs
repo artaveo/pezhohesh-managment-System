@@ -106,7 +106,7 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
         .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("helper: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(request.to_string().as_bytes()).await.map_err(|e| format!("helper: {e}"))?;
+        stdin.write_all(ascii_json(&request).as_bytes()).await.map_err(|e| format!("helper: {e}"))?;
     }
     let output = tokio::time::timeout(wait, child.wait_with_output()).await.map_err(|_| "timeout".to_string())?.map_err(|e| format!("helper: {e}"))?;
     let answer: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
@@ -130,6 +130,23 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
         return Err("helper: short answer".into());
     }
     Ok(results)
+}
+
+/// JSON with every letter outside ASCII written as a \u escape, so the helper reads it the
+/// same whatever code page Windows gives its input.
+fn ascii_json(v: &Value) -> String {
+    let mut out = String::new();
+    for c in v.to_string().chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for u in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{u:04x}"));
+            }
+        }
+    }
+    out
 }
 
 /// 32-bit PowerShell (the SDK is 32-bit), with the script written next to the app's temp
@@ -767,6 +784,14 @@ mod tests {
         assert_eq!(short_name("Ali Ahmadi"), "Ali Ahmadi");
         let long = short_name("محمد عبدالرحمن احمدزی نصیری");
         assert!(long.len() <= 24 && long.chars().count() == 12);
+    }
+
+    #[test]
+    fn requests_are_ascii() {
+        let v = json!({ "name": "علی 😀", "n": 1 });
+        let text = ascii_json(&v);
+        assert!(text.is_ascii());
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
     }
 
     #[test]
