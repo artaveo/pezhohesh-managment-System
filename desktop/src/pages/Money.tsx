@@ -18,7 +18,9 @@ type Period = Range & { label: string };
 type View =
   | { tab: "expenses" }
   | { tab: "staff" }
-  | { tab: "partners"; part: "new" | "shares" | { person: string } };
+  | { tab: "partners"; part: PartnerPart };
+/** «menu»: the list of what there is for the partners; the rest open one of them. */
+type PartnerPart = "menu" | "new" | "shares" | { person: string };
 
 const VIEW_KEY = "pz.moneyView";
 
@@ -64,7 +66,7 @@ export function Money() {
     view.tab === "expenses" && may.expenses ? view
       : view.tab === "staff" && may.staff ? view
       : view.tab === "partners" && may.partners ? (partner || view.part === "shares" ? view : { tab: "partners", part: "shares" })
-      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" };
+      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" };
   const top = shown.tab === "expenses" ? "expenses" : "withdrawals";
   const who = shown.tab === "partners" ? "partners" : "staff";
 
@@ -73,11 +75,11 @@ export function Money() {
       <div className="money-nav">
         <Tabs label="بخش" value={top}
           items={[...(may.expenses ? [{ id: "expenses" as const, label: "مصارف" }] : []), ...(may.staff || may.partners ? [{ id: "withdrawals" as const, label: "برداشت‌ها" }] : [])]}
-          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" })} />
+          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" })} />
         {top === "withdrawals" && (
           <Tabs sub label="برداشت‌های چه کسانی" value={who}
             items={[...(may.staff ? [{ id: "staff" as const, label: "کارمندان" }] : []), ...(may.partners ? [{ id: "partners" as const, label: "شرکا" }] : [])]}
-            onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: partner ? "new" : "shares" })} />
+            onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" })} />
         )}
       </div>
       {shown.tab === "expenses" && <ExpensesView />}
@@ -97,33 +99,57 @@ function ExpensesView() {
   );
 }
 
-/** The partners: a new withdrawal, their shares of the profit, and each one's withdrawals. */
-function PartnersView({ part, partner, onPart }: {
-  part: "new" | "shares" | { person: string }; partner: boolean; onPart: (p: "new" | "shares" | { person: string }) => void;
-}) {
+/**
+ * The partners: first the list of what there is (a new withdrawal, the shares of the
+ * profit, each partner's withdrawals), then the one picked, with a way back to the list.
+ */
+function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: boolean; onPart: (p: PartnerPart) => void }) {
   const [people, setPeople] = useState<Person[] | null>(null);
+  // One period for both partners' lists, so switching between them compares like with like.
+  const period = usePeriod("month");
   useEffect(() => { if (partner) api.staff().then(setPeople).catch(() => setPeople([])); }, [partner]);
-  // The partners as the statement names them; their withdrawals are under these staff names.
+  // The partners as the statement names them (Rahimi first); their withdrawals are under these staff names.
   const partners = PARTNERS.map((p) => ({ ...p, id: people?.find((x) => x.full_name === p.name)?.id ?? null }))
-    .sort((a, b) => (a.paysManager === b.paysManager ? 0 : a.paysManager ? -1 : 1));
-  const key = typeof part === "string" ? part : `of:${part.person}`;
-  const items = [
-    ...(partner ? [{ id: "new", label: "برداشت جدید" }] : []),
-    { id: "shares", label: "سهم شرکا" },
-    ...(partner ? partners.map((p) => ({ id: `of:${p.name}`, label: `ریز برداشت ${p.short}` })) : []),
-  ];
-  const person = typeof part === "string" ? null : partners.find((p) => p.name === part.person) ?? null;
+    .sort((a, b) => Number(b.paysManager) - Number(a.paysManager));
   const takers = people?.filter((x) => partners.some((p) => p.id === x.id)) ?? [];
   const choices = takers.length ? takers : people ?? [];
+
+  if (part === "menu" && partner) {
+    const items: { part: PartnerPart; icon: string; title: string; hint: string }[] = [
+      { part: "new", icon: "plus", title: "برداشت جدید", hint: "ثبت پولی که یکی از شرکا از صندوق می‌برد" },
+      { part: "shares", icon: "pie", title: "سهم شرکا", hint: "سهم هر شریک از سود، ماه به ماه، و تسویهٔ سال" },
+      ...partners.map((p) => ({ part: { person: p.name }, icon: "receipt", title: `ریز برداشت‌های ${p.short}`, hint: `همهٔ برداشت‌های ${p.name}، امروز، ماه، سال یا هر بازه` })),
+    ];
+    return (
+      <div className="choice-grid">
+        {items.map((i) => (
+          <button key={i.title} className="glass choice" onClick={() => onPart(i.part)}>
+            <Icon name={i.icon} size={22} />
+            <span className="choice-title">{i.title}</span>
+            <span className="muted small">{i.hint}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+  const person = typeof part === "string" ? null : partners.find((p) => p.name === part.person) ?? null;
+  const title = part === "new" ? "برداشت جدید" : part === "shares" ? "سهم شرکا" : person ? `ریز برداشت‌های ${person.short}` : "";
   return (
     <>
-      <Tabs sub label="شرکا" value={key} items={items}
-        onChange={(k) => onPart(k === "new" || k === "shares" ? k : { person: k.slice(3) })} />
+      {partner && (
+        <div className="detail-head">
+          <button className="btn ghost small" onClick={() => onPart("menu")}><Icon name="back" size={16} /> همهٔ بخش‌های شرکا</button>
+          <h2>{title}</h2>
+        </div>
+      )}
       {part === "shares" && <Shares />}
       {part === "new" && people && <NewWithdrawal people={choices} />}
-      {person && people && (person.id
-        ? <PersonWithdrawals key={person.id} staffId={person.id} name={person.name} people={choices} />
-        : <p className="glass muted empty">در فهرست اشخاص کسی به نام «{person.name}» نیست. در «کاربران ← اشخاص» نام‌ها را یکی کنید.</p>)}
+      {person && people && (person.id ? (
+        <>
+          <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>
+          <Withdrawals key={person.id} period={period.range} people={choices} staffId={person.id} title={`برداشت‌های ${person.name}`} />
+        </>
+      ) : <p className="glass muted empty">در فهرست اشخاص کسی به نام «{person.name}» نیست. در «کاربران ← اشخاص» نام‌ها را یکی کنید.</p>)}
     </>
   );
 }
@@ -132,17 +158,6 @@ function PartnersView({ part, partner, onPart }: {
 function NewWithdrawal({ people }: { people: Person[] }) {
   const period = usePeriod("month");
   return <Withdrawals period={period.range} people={people} form />;
-}
-
-/** One partner's withdrawals over any period. */
-function PersonWithdrawals({ staffId, name, people }: { staffId: string; name: string; people: Person[] }) {
-  const period = usePeriod("month");
-  return (
-    <>
-      <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>
-      <Withdrawals period={period.range} people={people} staffId={staffId} title={`برداشت‌های ${name}`} />
-    </>
-  );
 }
 
 /** Edit and remove buttons of one line, when this user may change it. */
@@ -402,7 +417,7 @@ function Withdrawals({ period, people, staffId, form, title }: { period: Period;
             </tfoot>
           )}
         </table>
-        {lines && !lines.rows.length && <p className="muted empty">برداشتی ثبت نشده.</p>}
+        {lines && !lines.rows.length && <p className="muted empty">{staffId ? `در ${period.label} برداشتی نیست. بازهٔ دیگری انتخاب کنید.` : "برداشتی ثبت نشده."}</p>}
       </div>
       {removing && (
         <DeleteDialog title="حذف برداشت" onClose={() => setRemoving(null)}
