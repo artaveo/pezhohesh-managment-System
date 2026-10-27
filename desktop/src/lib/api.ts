@@ -123,6 +123,21 @@ export type Expense = { id: string; spent_on: string; category: string; descript
 export type Person = { id: string; full_name: string; title: string | null };
 export type Withdrawal = { id: string; taken_on: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
+export type HotspotCard = { volume_gb: number; price: number; active: boolean; bought: number; sold: number; in_hand: number };
+export type HotspotCards = { cost_per_gb: number; cards: HotspotCard[] };
+export type CardCount = { volume_gb: number; quantity: number };
+export type HotspotBuy = {
+  id: string; purchased_on: string; supplier_bill_no: string | null; bill_gb: number | null; extra_cost: number; note: string | null;
+  cards: string; card_count: number; gb: number; cost: number; created_by: string | null; removable: boolean;
+};
+export type HotspotSale = {
+  receipt_id: string; receipt_no: string; sold_on: string; cards: string; card_count: number; gb: number;
+  sales: number; cost: number; profit: number; voided: boolean; created_by: string | null;
+};
+export type HotspotSales = {
+  summary: { bought: number; sales: number; cost: number; profit: number; cards_sold: number; gb_sold: number };
+  rows: HotspotSale[];
+};
 export type BookRules = { loan_days: number; weekly_fee: number; fine_per_day: number };
 export type DepositKind = "cash" | "book" | "person";
 export type Deposit = {
@@ -277,6 +292,16 @@ export const api = {
   returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number }) =>
     request<{ receipt_id: string | null }>(`/book-loans/${id}/return`, { method: "POST", body: b }),
   deleteLoan: (id: string) => request<void>(`/book-loans/${id}`, { method: "DELETE" }),
+  hotspotCards: (signal?: AbortSignal) => request<HotspotCards>("/hotspot/cards", { signal }),
+  setHotspotCards: (p: { cost_per_gb: number; cards: { volume_gb: number; price: number; active: boolean }[] }) =>
+    request<void>("/hotspot/cards", { method: "PUT", body: p }),
+  hotspotBuys: (r: Range, signal?: AbortSignal) => request<HotspotBuy[]>(`/hotspot/buys?${query(r)}`, { signal }),
+  createHotspotBuy: (b: { purchased_on?: string; supplier_bill_no?: string; bill_gb?: number | null; extra_cost?: number; note?: string; lines: CardCount[] }) =>
+    request<string>("/hotspot/buys", { method: "POST", body: b }),
+  deleteHotspotBuy: (id: string) => request<void>(`/hotspot/buys/${id}`, { method: "DELETE" }),
+  hotspotSales: (r: Range, signal?: AbortSignal) => request<HotspotSales>(`/hotspot/sales?${query(r)}`, { signal }),
+  createHotspotSale: (lines: CardCount[]) =>
+    request<{ receipt_id: string; sales: number; cost: number; profit: number }>("/hotspot/sales", { method: "POST", body: { lines } }),
 };
 
 /** Persian message for an API error code. */
@@ -324,6 +349,11 @@ export function errorText(e: unknown): string {
     case "already_returned": return "این قبلاً برگشت خورده.";
     case "before_start": return "این تاریخ پیش از تاریخ شروع است.";
     case "future_date": return "تاریخ آینده قبول نمی‌شود.";
+    case "no_cards": return "تعداد دست‌کم یک کارت را بنویسید.";
+    case "bad_card": return "این نوع کارت در فهرست کارت‌ها نیست.";
+    case "cards_sold": return "بعضی کارت‌های این بل فروخته شده‌اند؛ پاک نمی‌شود.";
+    case "price_below_cost": return "قیمت فروش بعضی کارت‌ها از قیمت خریدشان کمتر است. قیمت‌ها را در «قیمت‌ها» درست کنید.";
+    case "not_enough_cards": return "این تعداد کارت موجود نیست. اگر کارت‌ها پیش از برنامه خریده شده‌اند، اول آن‌ها را در «خرید کارت» ثبت کنید.";
     case "excel_password_needed": return "این فایل اکسل رمز دارد. رمز فایل را بنویسید.";
     case "wrong_excel_password": return "رمز فایل اکسل درست نیست.";
     case "not_excel": return "این فایل اکسل (.xlsx) نیست یا خراب است.";

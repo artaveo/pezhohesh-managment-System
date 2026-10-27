@@ -4,6 +4,7 @@ import {
   type BookRules, type Borrower, type Deposit, type DepositKind, type DepositPage, type Loan,
 } from "../lib/api";
 import { addDays, fa, formatDay, iso, parseIso } from "../lib/solar";
+import { amount, decimal as digits } from "../lib/numbers";
 import { LoansList } from "./DueLists";
 import { SolarDate } from "../components/SolarDate";
 import { RemoveButton } from "../components/RemoveButton";
@@ -14,9 +15,6 @@ type Tab = "loans" | "lend" | "deposits" | "new-deposit";
 
 const KIND_LABEL: Record<DepositKind, string> = { cash: "ضمانت پولی", book: "ضمانت کتاب", person: "ضمانت شخص" };
 
-/** An amount as typed: digits and one decimal point. */
-const digits = (s: string) => s.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
-const amount = (s: string) => (Number.isFinite(Number(s)) ? Number(s) : 0);
 
 /**
  * Lending books like the Excel lending sheets: a borrower leaves a guarantee (their lending

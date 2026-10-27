@@ -4,6 +4,7 @@ import { Settings } from "./pages/Settings";
 import { Users } from "./pages/Users";
 import { MembersList } from "./pages/DueLists";
 import { Books } from "./pages/Books";
+import { Hotspot } from "./pages/Hotspot";
 import { ImportExcel } from "./pages/ImportExcel";
 import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
@@ -30,6 +31,7 @@ const NAV = [
   { id: "receipts", icon: "receipt", label: "بل‌ها", roles: HALL },
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", roles: HALL },
   { id: "books", icon: "book", label: "امانت کتاب", roles: HALL },
+  { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", roles: HALL },
   { id: "reports", icon: "chart", label: "گزارش مالی", roles: HALL },
   { id: "pec", icon: "briefcase", label: "خدمات تحصیلی", roles: ["partner", "pec_staff"] as Role[] },
   { id: "users", icon: "shield", label: "کاربران", roles: ["partner"] as Role[] },
@@ -112,6 +114,7 @@ function Shell() {
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />
+              : page === "hotspot" ? <Hotspot />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />
               : <p className="glass muted">این بخش در مرحله‌های بعدی ساخته می‌شود.</p>}
           </>

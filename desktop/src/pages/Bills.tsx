@@ -84,7 +84,7 @@ export function Bills() {
   );
 }
 
-function VoidBill({ bill, onClose }: { bill: Bill; onClose: (done: boolean) => void }) {
+export function VoidBill({ bill, note, onClose }: { bill: Bill; note?: string; onClose: (done: boolean) => void }) {
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,7 +98,7 @@ function VoidBill({ bill, onClose }: { bill: Bill; onClose: (done: boolean) => v
         <h2>باطل کردن بل <bdi dir="ltr">{bill.receipt_no}</bdi></h2>
         <p className="muted">
           {fa(bill.amount)} افغانی، {bill.customer ?? bill.description}. بل پاک نمی‌شود؛ با نشان «باطل» می‌ماند و از درآمد کم می‌شود.
-          {bill.book_loan_id ? " اگر ضمانتش هنوز نزد ماست، کتاب دوباره «بیرون» حساب می‌شود تا برگشتش را با مبلغ درست ثبت کنید." : bill.start_date && " عضویتی که با این بل ثبت شده هم برداشته می‌شود."}
+          {note ? ` ${note}` : bill.book_loan_id ? " اگر ضمانتش هنوز نزد ماست، کتاب دوباره «بیرون» حساب می‌شود تا برگشتش را با مبلغ درست ثبت کنید." : bill.start_date && " عضویتی که با این بل ثبت شده هم برداشته می‌شود."}
         </p>
         <label className="field wide"><span>دلیل *</span><input value={reason} onChange={(e) => setReason(e.target.value)} autoFocus placeholder="مثلاً: مبلغ اشتباه نوشته شد" /></label>
         {error && <p className="form-error">{error}</p>}

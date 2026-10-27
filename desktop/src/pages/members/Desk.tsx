@@ -100,7 +100,8 @@ function DailySeat({ onBill }: { onBill: (id: string) => void }) {
   );
 }
 
-const OTHER = ["misc", "services", "hotspot", "books"] as const;
+// Hotspot cards have their own page (stock and the end-of-day count).
+const OTHER = ["misc", "services", "books"] as const;
 
 function OtherBill({ onBill }: { onBill: (id: string) => void }) {
   const [category, setCategory] = useState<(typeof OTHER)[number]>("misc");
@@ -125,7 +126,7 @@ function OtherBill({ onBill }: { onBill: (id: string) => void }) {
   return (
     <section className="panel wide">
       <h2>بل دیگر</h2>
-      <p className="muted">برای درآمدهایی که عضویت نیستند، مثل کارت انترنت، امانت کتاب، پرینت و کاپی.</p>
+      <p className="muted">برای درآمدهایی که عضویت نیستند، مثل پرینت و کاپی. کارت هاتسپات و برگشت کتاب صفحهٔ خودشان را دارند.</p>
       <div className="form-grid">
         <label className="field wide">
           <span>بابت</span>

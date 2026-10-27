@@ -27,6 +27,7 @@ mod auth;
 mod books;
 mod dashboard;
 mod hall;
+mod hotspot;
 mod import_excel;
 mod lists;
 mod money;
@@ -243,6 +244,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/book-loans", post(books::lend))
         .route("/api/v1/book-loans/:id", get(books::loan).delete(books::delete_loan))
         .route("/api/v1/book-loans/:id/return", post(books::return_loan))
+        .route("/api/v1/hotspot/cards", get(hotspot::cards).put(hotspot::set_cards))
+        .route("/api/v1/hotspot/buys", get(hotspot::buys).post(hotspot::create_buy))
+        .route("/api/v1/hotspot/buys/:id", delete(hotspot::delete_buy))
+        .route("/api/v1/hotspot/sales", get(hotspot::sales).post(hotspot::create_sale))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

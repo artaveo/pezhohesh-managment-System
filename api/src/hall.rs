@@ -428,7 +428,8 @@ pub async fn issue(
 // Bills that are not a membership: other income typed at the desk
 
 /// Income lines a desk bill may be for (the same names as the year statement).
-const OTHER_INCOME: [&str; 4] = ["misc", "services", "hotspot", "books"];
+/// Hotspot cards are not here: their count moves stock (hotspot.rs).
+const OTHER_INCOME: [&str; 3] = ["misc", "services", "books"];
 
 #[derive(Deserialize)]
 pub struct OtherBill {
@@ -611,6 +612,11 @@ pub async fn void_bill(
     if let Some(m) = membership {
         sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = $1").bind(m).execute(&mut *tx).await?;
     }
+    // The cards of a wrong hotspot count go back into stock.
+    sqlx::query("UPDATE hotspot_sales SET deleted_at = now() WHERE receipt_id = $1 AND deleted_at IS NULL")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     // A wrong return bill puts the book back out, so it can be returned again with the right
     // amount; not when its guarantee has been given back meanwhile (nothing is held for it).
     if let Some(l) = loan {
