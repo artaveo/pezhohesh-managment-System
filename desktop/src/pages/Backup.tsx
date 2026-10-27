@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupOutcome, type BackupStatus } from "../lib/api";
+import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus } from "../lib/api";
 import { formatDay } from "../lib/solar";
 
 const EVERY = [
@@ -97,6 +97,8 @@ export function Backup() {
         <div className="actions"><button className="btn" disabled={!folders[0].trim() || !(Number(keep) >= 1 && Number(keep) <= 365)} onClick={() => void save()}>ذخیره</button></div>
       </section>
 
+      <Online />
+
       <h2>پشتیبان‌های پوشهٔ اول</h2>
       <div className="glass table-wrap">
         <table className="table">
@@ -136,5 +138,91 @@ function LastOutcome({ last }: { last: BackupOutcome | null }) {
         ))}
       </ul>
     </>
+  );
+}
+
+const ONLINE_EVERY = [
+  { h: 3, label: "هر 3 ساعت" },
+  { h: 6, label: "هر 6 ساعت" },
+  { h: 12, label: "هر 12 ساعت" },
+  { h: 24, label: "روزی یک بار" },
+  { h: 0, label: "خاموش" },
+];
+
+/** Why the online copy failed, in words the desk can act on. */
+function onlineWhy(error: string) {
+  if (error === "not_set") return "آدرس دیتابیس آنلاین هنوز داده نشده.";
+  if (/connect|timed out|dns|resolve|network|refused|unreachable/i.test(error)) return "به Neon وصل نشد. اینترنت وصل است؟ ساعت بعد خودش دوباره امتحان می‌کند.";
+  if (/password|authentication/i.test(error)) return "Neon رمز را قبول نکرد. آدرس دیتابیس آنلاین را دوباره بدهید.";
+  return "کپی آنلاین فرستاده نشد.";
+}
+
+/** The copy of the database in Neon: where, how often, and the last result. */
+function Online() {
+  const [s, setS] = useState<OnlineStatus | null>(null);
+  const [every, setEvery] = useState(6);
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    api.online().then((o) => { setS(o); setEvery(o.every_hours); }).catch((e) => setError(errorText(e)));
+  }, [tick]);
+
+  async function save() {
+    setError("");
+    try {
+      await api.setOnline({ every_hours: every, ...(url.trim() ? { url: url.trim() } : {}) });
+      setUrl("");
+      setSaved(true);
+      setTick((t) => t + 1);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+  async function now() {
+    setBusy(true);
+    setError("");
+    try { await api.onlineNow(); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
+  }
+
+  if (!s) return error ? <p className="form-error">{error}</p> : null;
+  const last = s.last;
+  return (
+    <section className="panel wide">
+      <h2>نسخهٔ آنلاین (Neon)</h2>
+      <p className="muted">
+        اصل اطلاعات روی همین لپ‌تاپ است. هر چند ساعت یک کپی کامل به Neon (اینترنت) فرستاده می‌شود، تا بیرون از دفتر هم در دسترس باشد.
+        عکس‌ها و تذکره‌ها فرستاده نمی‌شوند.
+      </p>
+      <p>{s.host ? <>سرور: <bdi dir="ltr">{s.host}</bdi></> : <span className="form-error">آدرس دیتابیس آنلاین هنوز داده نشده.</span>}</p>
+      {last?.at && (
+        <p className={last.ok ? "form-ok" : "form-error"}>
+          {last.ok ? "آخرین کپی فرستاده شد" : "آخرین کپی فرستاده نشد"}: {when(last.at)}
+          {!last.ok && last.error && <> · {onlineWhy(last.error)} <small dir="ltr">({last.error})</small></>}
+        </p>
+      )}
+      <div className="form-grid">
+        <label className="field wide">
+          <span>ارسال خودکار</span>
+          <select value={every} onChange={(e) => { setSaved(false); setEvery(Number(e.target.value)); }}>
+            {ONLINE_EVERY.map((o) => <option key={o.h} value={o.h}>{o.label}</option>)}
+            {!ONLINE_EVERY.some((o) => o.h === every) && <option value={every}>هر {every} ساعت</option>}
+          </select>
+        </label>
+        <label className="field wide span-2">
+          <span>{s.host ? "آدرس تازهٔ دیتابیس آنلاین (فقط برای عوض کردن)" : "آدرس دیتابیس آنلاین"}</span>
+          <input dir="ltr" type="password" autoComplete="off" value={url} placeholder="postgresql://…" onChange={(e) => { setSaved(false); setUrl(e.target.value); }} />
+        </label>
+      </div>
+      {saved && <p className="form-ok" role="status">ذخیره شد.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" onClick={() => void save()}>ذخیره</button>
+        <button className="btn ghost" disabled={busy || !s.host} onClick={() => void now()}>{busy ? "در حال فرستادن…" : "همین حالا بفرست"}</button>
+      </div>
+    </section>
   );
 }

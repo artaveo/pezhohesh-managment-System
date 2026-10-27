@@ -33,6 +33,7 @@ mod hotspot;
 mod import_excel;
 mod lists;
 mod money;
+mod online;
 mod reports;
 mod solar;
 
@@ -122,7 +123,8 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
             Ok(()) => {
                 *core.write().unwrap() = Core { ready: true, ..Default::default() };
                 tracing::info!("database ready");
-                tokio::spawn(backup::schedule(db, url));
+                tokio::spawn(backup::schedule(db.clone(), url.clone()));
+                tokio::spawn(online::schedule(db, url));
                 return;
             }
             Err(e) => {
@@ -257,6 +259,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/hotspot/buys/:id", delete(hotspot::delete_buy))
         .route("/api/v1/hotspot/sales", get(hotspot::sales).post(hotspot::create_sale))
         .route("/api/v1/backup", get(backup::status).put(backup::set_plan).post(backup::backup_now))
+        .route("/api/v1/online", get(online::status).put(online::set_plan).post(online::copy_now))
         .route("/api/v1/loans", get(lists::loans))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

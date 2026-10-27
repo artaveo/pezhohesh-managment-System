@@ -73,7 +73,12 @@ fn is_ours(name: &str) -> bool {
 
 /// pg_dump of the PostgreSQL that is installed (the newest version), or the one on PATH.
 fn pg_dump() -> PathBuf {
-    let exe = if cfg!(windows) { "pg_dump.exe" } else { "pg_dump" };
+    pg_tool("pg_dump")
+}
+
+/// A PostgreSQL program (pg_dump, pg_restore) of the newest installed version, or on PATH.
+pub fn pg_tool(name: &str) -> PathBuf {
+    let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     if let Ok(dir) = std::env::var("PG_BIN") {
         return Path::new(&dir).join(exe);
     }
@@ -85,7 +90,7 @@ fn pg_dump() -> PathBuf {
             .flatten()
             .filter_map(|e| {
                 let version = e.file_name().to_string_lossy().split('.').next()?.parse().ok()?;
-                let path = e.path().join("bin").join(exe);
+                let path = e.path().join("bin").join(&exe);
                 path.exists().then_some((version, path))
             })
             .collect();
@@ -169,15 +174,27 @@ async fn copy(src: &Path, dir: &Path, target: &Path) -> Result<(), String> {
     done.map_err(|e| e.to_string())
 }
 
-async fn dump(url: &str, dir: &Path, target: &Path) -> Result<(), String> {
+pub async fn dump(url: &str, dir: &Path, target: &Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dir).await.map_err(|e| format!("folder: {e}"))?;
-    // The password goes in the environment, not on the command line.
+    let partial = target.with_extension("partial");
+    let mut cmd = pg_command("pg_dump", url)?;
+    cmd.arg("--format=custom").arg("--file").arg(&partial);
+    if let Err(e) = run(cmd, "pg_dump").await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(e);
+    }
+    // Only a finished dump gets the .backup name, so a half-written file is never taken for one.
+    tokio::fs::rename(&partial, target).await.map_err(|e| e.to_string())
+}
+
+/// A PostgreSQL program for the database at `url`: the password goes in the environment,
+/// not on the command line, and on Windows no console window opens.
+pub fn pg_command(tool: &str, url: &str) -> Result<tokio::process::Command, String> {
     let mut parsed = url::Url::parse(url).map_err(|e| e.to_string())?;
     let password = parsed.password().map(|p| percent_encoding::percent_decode_str(p).decode_utf8_lossy().into_owned());
     let _ = parsed.set_password(None);
-    let partial = target.with_extension("partial");
-    let mut cmd = tokio::process::Command::new(pg_dump());
-    cmd.arg("--format=custom").arg("--file").arg(&partial).arg("--dbname").arg(parsed.as_str());
+    let mut cmd = tokio::process::Command::new(pg_tool(tool));
+    cmd.arg("--dbname").arg(parsed.as_str());
     if let Some(p) = password {
         cmd.env("PGPASSWORD", p);
     }
@@ -186,16 +203,19 @@ async fn dump(url: &str, dir: &Path, target: &Path) -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = cmd.output().await.map_err(|e| format!("pg_dump: {e}"))?;
-    if !output.status.success() {
-        let _ = tokio::fs::remove_file(&partial).await;
-        // pg_dump puts the cause on its "error:" line; detail and hint lines follow it.
-        let err = String::from_utf8_lossy(&output.stderr);
-        let line = err.lines().find(|l| l.contains("error:")).or_else(|| err.lines().find(|l| !l.trim().is_empty()));
-        return Err(line.unwrap_or("pg_dump failed").trim().to_string());
+    Ok(cmd)
+}
+
+/// Runs it; on failure, the line that says why (PostgreSQL programs put the cause on their
+/// "error:" line; detail and hint lines follow it).
+pub async fn run(mut cmd: tokio::process::Command, tool: &str) -> Result<(), String> {
+    let output = cmd.output().await.map_err(|e| format!("{tool}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
     }
-    // Only a finished dump gets the .backup name, so a half-written file is never taken for one.
-    tokio::fs::rename(&partial, target).await.map_err(|e| e.to_string())
+    let err = String::from_utf8_lossy(&output.stderr);
+    let line = err.lines().find(|l| l.contains("error:")).or_else(|| err.lines().find(|l| !l.trim().is_empty()));
+    Err(line.unwrap_or("failed").trim().to_string())
 }
 
 /// Keeps the newest `keep` backups of the folder.

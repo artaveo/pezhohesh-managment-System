@@ -127,6 +127,8 @@ export type Withdrawal = { id: string; taken_on: string; person: string; amount:
 export type Range = { from?: string; to?: string };
 export type BackupPlan = { folders: string[]; every_hours: number; keep: number };
 export type BackupOutcome = { at: string | null; ok: boolean; folders: { folder: string; file: string | null; error: string | null }[] };
+export type OnlineOutcome = { at: string | null; ok: boolean; error: string | null; seconds: number | null };
+export type OnlineStatus = { host: string | null; every_hours: number; last: OnlineOutcome | null };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
   files: { name: string; size: number; modified: string | null }[];
@@ -310,6 +312,9 @@ export const api = {
   backup: () => request<BackupStatus>("/backup"),
   setBackupPlan: (p: BackupPlan) => request<void>("/backup", { method: "PUT", body: p }),
   backupNow: () => request<BackupOutcome>("/backup", { method: "POST" }),
+  online: () => request<OnlineStatus>("/online"),
+  setOnline: (p: { every_hours: number; url?: string }) => request<void>("/online", { method: "PUT", body: p }),
+  onlineNow: () => request<OnlineOutcome>("/online", { method: "POST" }),
   hotspotCards: (signal?: AbortSignal) => request<HotspotCards>("/hotspot/cards", { signal }),
   setHotspotCards: (p: { cost_per_gb: number; cards: { volume_gb: number; price: number; active: boolean }[] }) =>
     request<void>("/hotspot/cards", { method: "PUT", body: p }),
@@ -372,6 +377,8 @@ export function errorText(e: unknown): string {
     case "file_too_large": return "فایل بیش از 10 MB است.";
     case "file_not_saved": return "فایل روی این کمپیوتر ذخیره نشد. جای خالی دیسک را ببینید.";
     case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";
+    case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
+    case "bad_online_plan": return "زمان ارسال درست نیست.";
     case "folder_required": return "دست‌کم یک پوشه برای پشتیبان بنویسید.";
     case "no_cards": return "تعداد دست‌کم یک کارت را بنویسید.";
     case "bad_card": return "این نوع کارت در فهرست کارت‌ها نیست.";
