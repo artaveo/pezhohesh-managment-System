@@ -106,7 +106,9 @@ export type Period = {
 };
 /** The seat and the internet plan each run on their own; a renewal starts after its own last day. */
 export type Timeline = { kind: "monthly" | "internet"; end_date: string | null; days_left: number | null; next_start: string };
-export type MemberDetail = { member: Member; periods: Period[]; timelines: Timeline[] };
+export type DocKind = "photo" | "tazkira_front" | "tazkira_back" | "other";
+export type MemberDocument = { id: string; kind: DocKind; mime_type: string; size_bytes: number; created_at: string };
+export type MemberDetail = { member: Member; periods: Period[]; timelines: Timeline[]; documents: MemberDocument[] };
 export type PlanKind = "monthly" | "daily" | "internet";
 export type Plan = { id: string; kind: PlanKind; name: string; price: number; duration_days: number; active: boolean; sort_order: number };
 export type Bill = {
@@ -201,20 +203,22 @@ export function setToken(t: string | null) {
 export const hasToken = () => token !== null;
 export function onSessionExpired(fn: () => void) { onExpired = fn; }
 
-async function request<T>(path: string, init: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+/** `file` sends a file as it is (instead of JSON); `blob` returns the answer as a file. */
+async function request<T>(path: string, init: { method?: string; body?: unknown; file?: Blob; blob?: boolean; signal?: AbortSignal } = {}): Promise<T> {
   const res = await fetch(`${API_BASE}/api/v1${path}`, {
     method: init.method ?? "GET",
     signal: init.signal,
     headers: {
-      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(init.file ? { "content-type": init.file.type || "application/octet-stream" } : init.body !== undefined ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+    body: init.file ?? (init.body !== undefined ? JSON.stringify(init.body) : undefined),
   });
   if (res.status === 204) return undefined as T;
+  if (res.ok && init.blob) return (await res.blob()) as T;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const code = typeof data.error === "string" ? data.error : "error";
+    const code = typeof data.error === "string" ? data.error : res.status === 413 ? "file_too_large" : "error";
     if (res.status === 401 && code === "unauthorized") onExpired();
     throw new ApiError(res.status, code, data);
   }
@@ -256,6 +260,11 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, typeof data.error === "string" ? data.error : "error", data);
     return data as ImportReport;
   },
+  addDocument: (member: string, kind: DocKind, file: Blob) =>
+    request<{ id: string }>(`/members/${member}/documents/${kind}`, { method: "POST", file }),
+  /** The file itself (a photo or a scan); the page shows it through an object URL. */
+  documentFile: (id: string) => request<Blob>(`/documents/${id}`, { blob: true }),
+  deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: "DELETE" }),
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 
@@ -359,6 +368,10 @@ export function errorText(e: unknown): string {
     case "before_start": return "این تاریخ پیش از تاریخ شروع است.";
     case "future_date": return "تاریخ آینده قبول نمی‌شود.";
     case "bad_backup_plan": return "تعداد نسخه‌ها باید بین 1 و 365 باشد.";
+    case "bad_file_type": return "این فایل عکس (JPG یا PNG) یا PDF نیست. عکس عضو باید عکس باشد.";
+    case "file_too_large": return "فایل بیش از 10 MB است.";
+    case "file_not_saved": return "فایل روی این کمپیوتر ذخیره نشد. جای خالی دیسک را ببینید.";
+    case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";
     case "folder_required": return "دست‌کم یک پوشه برای پشتیبان بنویسید.";
     case "no_cards": return "تعداد دست‌کم یک کارت را بنویسید.";
     case "bad_card": return "این نوع کارت در فهرست کارت‌ها نیست.";

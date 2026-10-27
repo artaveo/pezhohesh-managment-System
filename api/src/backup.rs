@@ -127,9 +127,19 @@ pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> 
             Ok(()) => {
                 out.ok = true;
                 first.get_or_insert(target.clone());
+                // Photos and tazkira scans are files, not in the dump: each folder gets a copy too.
                 let (dir, keep) = (dir.to_path_buf(), plan.keep.max(1));
-                let _ = tokio::task::spawn_blocking(move || prune(&dir, keep)).await;
-                out.folders.push(FolderOutcome { folder: folder.into(), file: Some(name.clone()), error: None });
+                let files = tokio::task::spawn_blocking(move || {
+                    prune(&dir, keep);
+                    crate::documents::mirror(&crate::documents::files_dir(), &dir.join("files"))
+                })
+                .await;
+                let error = match files {
+                    Ok(Ok(_)) => None,
+                    Ok(Err(e)) => Some(format!("files: {e}")),
+                    Err(e) => Some(format!("files: {e}")),
+                };
+                out.folders.push(FolderOutcome { folder: folder.into(), file: Some(name.clone()), error });
             }
             Err(e) => {
                 tracing::error!("backup to {folder} failed: {e}");

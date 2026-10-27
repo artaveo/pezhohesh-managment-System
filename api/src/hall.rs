@@ -123,6 +123,8 @@ pub struct MemberDetail {
     member: Member,
     periods: Vec<Period>,
     timelines: Vec<Timeline>,
+    /// Photo and tazkira scans.
+    documents: Vec<crate::documents::Document>,
 }
 
 fn check_member(m: &MemberInput) -> Result<(), ApiError> {
@@ -256,8 +258,9 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
             next_start: next_start(&mut tx, id, kind).await?,
         });
     }
+    let documents = crate::documents::of_member(&mut tx, id).await?;
     tx.commit().await?;
-    Ok(Json(MemberDetail { member, periods, timelines }))
+    Ok(Json(MemberDetail { member, periods, timelines, documents }))
 }
 
 /// The day after the member's last period of this kind (seat or internet), or today.

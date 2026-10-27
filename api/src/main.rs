@@ -27,6 +27,7 @@ mod auth;
 mod backup;
 mod books;
 mod dashboard;
+mod documents;
 mod hall;
 mod hotspot;
 mod import_excel;
@@ -222,6 +223,11 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/members/next-no", get(hall::next_member_no))
         .route("/api/v1/members/:id", get(hall::member).put(hall::update_member))
         .route("/api/v1/members/:id/periods", post(hall::add_member_period))
+        .route(
+            "/api/v1/members/:id/documents/:kind",
+            post(documents::add).layer(axum::extract::DefaultBodyLimit::max(documents::MAX_BYTES + 1024)),
+        )
+        .route("/api/v1/documents/:id", get(documents::file).delete(documents::remove))
         .route("/api/v1/periods/:id", delete(hall::delete_period))
         .route("/api/v1/daily-seats", post(hall::daily_seat))
         .route("/api/v1/bills", get(hall::bills).post(hall::other_bill))

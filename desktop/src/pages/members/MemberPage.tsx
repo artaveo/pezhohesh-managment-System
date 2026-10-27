@@ -5,6 +5,9 @@ import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview } from "../../components/BillSheet";
 import { RemoveButton } from "../../components/RemoveButton";
+import { MemberCardPreview } from "../../components/MemberCard";
+import { useDocumentUrl } from "../../lib/images";
+import { Documents } from "./Documents";
 
 const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
 import { MemberFields } from "./MemberFields";
@@ -16,6 +19,9 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"view" | "edit" | "renew" | "record">("view");
   const [bill, setBill] = useState<string | null>(openBill ?? null);
+  const [card, setCard] = useState(false);
+  const photoId = d?.documents.find((x) => x.kind === "photo")?.id ?? null;
+  const { url: photo } = useDocumentUrl(photoId);
 
   const load = () => api.member(id).then((x) => { setD(x); setError(""); }).catch((e) => setError(errorText(e)));
   useEffect(() => { void load(); api.plans().then(setPlans).catch(() => {}); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
@@ -36,6 +42,7 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
 
       <section className="panel wide member-head">
         <div className="member-title">
+          {photo && <img className="member-photo" src={photo} alt="" />}
           <div>
             <h2>{name}</h2>
             <p className="muted">
@@ -60,6 +67,7 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
             <button className="btn big" onClick={() => setMode("renew")}>تمدید عضویت</button>
             {!d.periods.length && <button className="btn ghost" onClick={() => setMode("record")}>ثبت تاریخ عضویت فعلی (پولش قبلاً گرفته شده)</button>}
             <button className="btn ghost" onClick={() => setMode("edit")}>ویرایش مشخصات</button>
+            <button className="btn ghost" onClick={() => setCard(true)}>چاپ کارت عضویت</button>
           </div>
         )}
       </section>
@@ -72,6 +80,8 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
           onDone={(billId) => { setMode("view"); void load(); if (billId) setBill(billId); }}
           onCancel={() => setMode("view")} />
       )}
+
+      <Documents memberId={id} docs={d.documents} onChange={() => void load()} />
 
       <section className="glass table-wrap">
         <table className="table">
@@ -93,6 +103,7 @@ export function MemberPage({ id, onBack, openBill }: { id: string; onBack: () =>
       </section>
 
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
+      {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
     </div>
   );
 }
