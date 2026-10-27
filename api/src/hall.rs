@@ -59,6 +59,10 @@ pub struct PeriodInput {
     discount: f64,
     #[serde(default)]
     record_only: bool,
+    /// A renewal while more than a few days are still left (paying ahead): asked for on
+    /// purpose, so a second click or a repeat does not add another month.
+    #[serde(default)]
+    ahead: bool,
 }
 
 #[derive(Deserialize)]
@@ -342,11 +346,12 @@ async fn add_period(
         return Err(ApiError::bad("bad_plan"));
     }
     if let Some(m) = member {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM members WHERE id = $1 AND deleted_at IS NULL)")
+        // Locks the member, so two renewals sent at once are checked one after the other.
+        let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM members WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
             .bind(m)
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
-        if !exists {
+        if exists.is_none() {
             return Err(NOT_FOUND);
         }
     }
@@ -360,6 +365,24 @@ async fn add_period(
         (None, Some(m)) if plan.kind != "daily" => next_start(tx, m, &plan.kind).await?,
         _ => today(),
     };
+    if let (Some(m), false) = (member, plan.kind == "daily") {
+        let last_end: Option<NaiveDate> = sqlx::query_scalar(
+            "SELECT max(ms.end_date) FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+             WHERE ms.member_id = $1 AND ms.deleted_at IS NULL AND p.kind::text = $2",
+        )
+        .bind(m)
+        .bind(&plan.kind)
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(end) = last_end {
+            if start <= end {
+                return Err(ApiError::bad("period_overlap"));
+            }
+            if (end - today()).num_days() > crate::dashboard::MEMBER_DUE_DAYS as i64 && !p.ahead {
+                return Err(ApiError(StatusCode::CONFLICT, "still_active"));
+            }
+        }
+    }
     let membership = Uuid::new_v4();
     // The end date comes from the plan's length (trigger membership_end_date).
     sqlx::query(

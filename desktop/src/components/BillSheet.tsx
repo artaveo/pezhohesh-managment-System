@@ -57,6 +57,22 @@ export function BillSheet({ bill }: { bill: Bill }) {
   );
 }
 
+/** Paper sizes a bill can print on. The sheet is drawn for A5 and scaled to the others. */
+const PAPER = {
+  a6: { label: "A6 (نصف A5)", page: "105mm 148mm", zoom: 0.7 },
+  a5: { label: "A5", page: "A5 portrait", zoom: 1 },
+  a4: { label: "A4", page: "A4 portrait", zoom: 210 / 148 },
+} as const;
+type Paper = keyof typeof PAPER;
+const PAPER_KEY = "pz.billPaper";
+function savedPaper(): Paper {
+  try {
+    const v = localStorage.getItem(PAPER_KEY);
+    if (v && v in PAPER) return v as Paper;
+  } catch { /* storage blocked: use the default */ }
+  return "a5";
+}
+
 /**
  * Shows a bill over the page with Print and Close. Printing counts the copy, so a second
  * print of the same bill says "کاپی" on the paper.
@@ -64,6 +80,9 @@ export function BillSheet({ bill }: { bill: Bill }) {
 export function BillPreview({ id, onClose }: { id: string; onClose: () => void }) {
   const [bill, setBill] = useState<Bill | null>(null);
   const [error, setError] = useState("");
+  // Remembered on this computer: each desk prints on the paper its printer holds.
+  const [paper, setPaper] = useState<Paper>(savedPaper);
+  const choose = (p: Paper) => { setPaper(p); try { localStorage.setItem(PAPER_KEY, p); } catch { /* not remembered */ } };
 
   useEffect(() => { api.bill(id).then(setBill).catch((e) => setError(errorText(e))); }, [id]);
 
@@ -74,6 +93,11 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
       void api.billPrinted(bill.id).catch(() => {});
       setBill({ ...bill, printed_count: bill.printed_count + 1 });
     }, { once: true });
+    // The page size and the scale of the A5 sheet, only while this bill prints.
+    const style = document.createElement("style");
+    style.textContent = `@page { size: ${PAPER[paper].page}; margin: 0; } @media print { .print-only .bill-sheet { zoom: ${PAPER[paper].zoom}; } }`;
+    document.head.appendChild(style);
+    window.addEventListener("afterprint", () => style.remove(), { once: true });
     window.print();
   }
 
@@ -82,10 +106,16 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
       <div className="modal-body">
         <div className="modal-tools no-print">
           <button className="btn" onClick={print} disabled={!bill}>چاپ</button>
+          <label className="paper-pick">
+            <span className="muted small">اندازهٔ ورق</span>
+            <select value={paper} onChange={(e) => choose(e.target.value as Paper)}>
+              {(Object.keys(PAPER) as Paper[]).map((k) => <option key={k} value={k}>{PAPER[k].label}</option>)}
+            </select>
+          </label>
           <button className="btn ghost" onClick={onClose}>بستن</button>
         </div>
         {error && <p className="form-error">{error}</p>}
-        {bill ? <BillSheet bill={bill} /> : !error && <p className="muted">در حال بارگذاری…</p>}
+        {bill ? <div style={{ zoom: Math.min(PAPER[paper].zoom, 1) }}><BillSheet bill={bill} /></div> : !error && <p className="muted">در حال بارگذاری…</p>}
       </div>
       {/* Printing shows only this copy, outside the app, so the bill is exactly one page. */}
       {bill && createPortal(<div className="print-only"><BillSheet bill={bill} /></div>, document.body)}

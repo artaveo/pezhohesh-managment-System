@@ -113,7 +113,7 @@ export type MemberInput = {
   member_no?: number | null; first_name: string; last_name?: string | null; father_name?: string | null;
   phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
 };
-export type PeriodInput = { plan_id: string; start_date?: string | null; fee?: number | null; discount?: number; record_only?: boolean };
+export type PeriodInput = { plan_id: string; start_date?: string | null; fee?: number | null; discount?: number; record_only?: boolean; ahead?: boolean };
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
 export type Period = {
@@ -427,6 +427,8 @@ export function errorText(e: unknown): string {
     case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
     case "bad_online_plan": return "زمان ارسال درست نیست.";
     case "bad_range": return "بازهٔ تاریخ درست نیست: «تا» نباید پیش از «از» باشد.";
+    case "still_active": return "این عضو هنوز بیشتر از 5 روز عضویت دارد. اگر واقعاً پیش‌پرداخت ماه بعد است، تیک «پیش‌پرداخت» را بزنید.";
+    case "period_overlap": return "این دوره با دورهٔ قبلی همین عضو روی هم می‌افتد؛ تاریخ شروع باید بعد از ختم دورهٔ قبلی باشد.";
     case "bad_date": return "ماه شروع درست نیست (سال 1400 به بعد، و نه بیشتر از یک سال بعد).";
     case "bad_salary_line": return "سطر مصارف را از لیست انتخاب کنید.";
     case "drive_not_found": return "این درایو دیگر وصل نیست.";

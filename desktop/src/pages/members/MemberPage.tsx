@@ -139,12 +139,17 @@ function AddPeriod({ id, detail, plans, record, onDone, onCancel }: {
   const today = iso(new Date());
   const start = (kind: Plan["kind"]) => (record ? today : detail.timelines.find((t) => t.kind === kind)?.next_start ?? today);
   const late = record ? [] : detail.timelines.filter((t) => t.end_date && daysBetween(parseIso(t.end_date), new Date()) > 0);
+  // Still more than 5 days left of this kind: a second renewal is almost always a mistake
+  // (a repeated click), so it needs a tick for "paying ahead".
+  const kind = plans.find((p) => p.id === period?.plan_id)?.kind;
+  const running = detail.timelines.find((t) => t.kind === kind && t.days_left !== null && t.days_left > 5);
+  const [ahead, setAhead] = useState(false);
 
   async function save() {
     if (!period) return;
     setBusy(true);
     try {
-      const r = await api.addPeriod(id, period);
+      const r = await api.addPeriod(id, { ...period, ahead: !!running && ahead });
       onDone(r.receipt_id);
     } catch (e) {
       setError(errorText(e));
@@ -169,9 +174,15 @@ function AddPeriod({ id, detail, plans, record, onDone, onCancel }: {
         </>
       )}
       <PeriodForm plans={plans} start={start} kinds={["monthly", "internet"]} recordOnly={record} onChange={setPeriod} />
+      {running && (
+        <div className="notice warn">
+          <p>این عضو هنوز تا {formatDay(running.end_date!)} ({fa(running.days_left!)} روز) {TIMELINE_LABEL[running.kind]} دارد. تمدید تازه از {formatDay(running.next_start)} شروع می‌شود.</p>
+          <label className="check"><input type="checkbox" checked={ahead} onChange={(e) => setAhead(e.target.checked)} /> پیش‌پرداخت است؛ مطمئنم که ماه بعد را هم ثبت کنم.</label>
+        </div>
+      )}
       {error && <p className="form-error">{error}</p>}
       <div className="actions">
-        <button className="btn big" disabled={!period || busy} onClick={() => void save()}>{busy ? "در حال ثبت…" : record ? "ثبت تاریخ" : "ثبت و بل"}</button>
+        <button className="btn big" disabled={!period || busy || (!!running && !ahead)} onClick={() => void save()}>{busy ? "در حال ثبت…" : record ? "ثبت تاریخ" : "ثبت و بل"}</button>
         <button className="btn ghost" onClick={onCancel}>انصراف</button>
       </div>
     </section>
