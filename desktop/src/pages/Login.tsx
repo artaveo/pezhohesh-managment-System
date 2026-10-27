@@ -4,7 +4,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { PasswordInput } from "../components/PasswordInput";
 import { canSaveLogin, forgetLogin, saveLogin, savedLogin, updateSavedPassword, type SavedLogin } from "../lib/savedLogin";
 
-function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+export function AuthCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
     <div className="auth-page">
       <div className="glass auth-card">
@@ -179,17 +179,6 @@ export function ForcePasswordChange() {
         <button className="btn big" disabled={busy || !current || !next}>ذخیره و ادامه</button>
         <button type="button" className="btn ghost" onClick={() => void signOut()}>خروج</button>
       </form>
-    </AuthCard>
-  );
-}
-
-export function Offline({ onRetry, loading }: { onRetry: () => void; loading: boolean }) {
-  return (
-    <AuthCard
-      title={loading ? "در حال وصل شدن…" : "هستهٔ سیستم در دسترس نیست"}
-      subtitle={loading ? "چند لحظه صبر کنید." : "برنامه نتوانست به هستهٔ سیستم وصل شود. مطمئن شوید PostgreSQL روشن است و دوباره امتحان کنید."}
-    >
-      {!loading && <button className="btn big" onClick={onRetry}>دوباره امتحان کن</button>}
     </AuthCard>
   );
 }

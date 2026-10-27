@@ -195,6 +195,8 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "postgres_down": return "دیتابیس (PostgreSQL) جواب نمی‌دهد. چند لحظه بعد دوباره امتحان کنید.";
+    case "starting": return "هستهٔ سیستم هنوز در حال آماده شدن است. چند لحظه بعد دوباره امتحان کنید.";
     case "excel_password_needed": return "این فایل اکسل رمز دارد. رمز فایل را بنویسید.";
     case "wrong_excel_password": return "رمز فایل اکسل درست نیست.";
     case "not_excel": return "این فایل اکسل (.xlsx) نیست یا خراب است.";

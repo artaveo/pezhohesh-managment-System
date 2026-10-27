@@ -49,8 +49,16 @@ impl IntoResponse for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         tracing::error!("database: {e}");
+        if is_unreachable(&e) {
+            return ApiError(StatusCode::SERVICE_UNAVAILABLE, "postgres_down");
+        }
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, "database")
     }
+}
+
+/// PostgreSQL is not answering at all (its service is stopped), as opposed to answering with an error.
+pub fn is_unreachable(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed)
 }
 
 // ---------------------------------------------------------------------------

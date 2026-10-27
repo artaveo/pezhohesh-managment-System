@@ -5,12 +5,23 @@
 //! PostgreSQL, and in the cloud against Neon.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
-use axum::{extract::State, http::StatusCode, routing::{get, post, put}, Json, Router};
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Json, Router,
+};
 use serde::Serialize;
+use serde_json::json;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 mod auth;
 mod dashboard;
@@ -22,48 +33,136 @@ mod solar;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    core: Arc<RwLock<Core>>,
+}
+
+/// Where getting the database ready stands. Until it is ready, /health says why and every
+/// other route answers 503 with the same reason, so the app can tell the person what to do.
+#[derive(Clone, Default, Serialize)]
+struct Core {
+    ready: bool,
+    /// postgres_down, db_login, migration or db_error.
+    problem: Option<&'static str>,
+    detail: Option<String>,
 }
 
 #[derive(Serialize)]
 struct Health {
     status: &'static str,
     database: bool,
+    problem: Option<&'static str>,
+    detail: Option<String>,
     version: &'static str,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
+    let logs = tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
-        .init();
+        .with_ansi(false);
+    match log_file() {
+        Some(file) => logs.with_writer(std::io::stderr.and(Mutex::new(file))).init(),
+        None => logs.init(),
+    }
+    let result = run().await;
+    if let Err(e) = &result {
+        tracing::error!("stopped: {e:#}");
+    }
+    result
+}
 
+async fn run() -> anyhow::Result<()> {
     let database_url = database_url();
     let bind: SocketAddr = std::env::var("API_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8750".into())
         .parse()?;
 
-    // First run on a fresh PostgreSQL: create the database itself, then the tables.
-    if !sqlx::Postgres::database_exists(&database_url).await? {
-        sqlx::Postgres::create_database(&database_url).await?;
-        tracing::info!("created database");
-    }
+    // The API answers right away even when PostgreSQL is not running yet (after a restart,
+    // or when its service was stopped); it keeps trying in the background and starts
+    // serving as soon as the database is there, so the app never needs restarting for it.
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
-        .await?;
-    let migrator = sqlx::migrate!("../db/migrations");
-    repair_crlf_checksums(&db, &migrator).await?;
-    migrator.run(&db).await?;
+        .acquire_timeout(Duration::from_secs(5))
+        .connect_lazy(&database_url)?;
+    let core = Arc::new(RwLock::new(Core { problem: Some("starting"), ..Default::default() }));
+    tokio::spawn(prepare_database(database_url, db.clone(), core.clone()));
 
-    let app = router(AppState { db });
+    let app = router(AppState { db, core });
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!("pezhohesh-api listening on {bind}");
+    tracing::info!("pezhohesh-api {} listening on {bind}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
     Ok(())
+}
+
+/// `%APPDATA%\\Pezhohesh\\api.log`, started over once it passes 1 MB.
+fn log_file() -> Option<std::fs::File> {
+    let dir = std::path::Path::new(&std::env::var("APPDATA").ok()?).join("Pezhohesh");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("api.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1_000_000) {
+        let _ = std::fs::remove_file(&path);
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
+    let mut last = String::new();
+    loop {
+        match prepare_once(&url, &db).await {
+            Ok(()) => {
+                *core.write().unwrap() = Core { ready: true, ..Default::default() };
+                tracing::info!("database ready");
+                return;
+            }
+            Err(e) => {
+                let detail = format!("{e:#}");
+                if detail != last {
+                    tracing::error!("database not ready: {detail}");
+                    last.clone_from(&detail);
+                }
+                *core.write().unwrap() = Core { ready: false, problem: Some(problem_of(&e)), detail: Some(detail) };
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn prepare_once(url: &str, db: &PgPool) -> anyhow::Result<()> {
+    // First run on a fresh PostgreSQL: create the database itself, then the tables.
+    if !sqlx::Postgres::database_exists(url).await? {
+        sqlx::Postgres::create_database(url).await?;
+        tracing::info!("created database");
+    }
+    let migrator = sqlx::migrate!("../db/migrations");
+    repair_crlf_checksums(db, &migrator).await?;
+    migrator.run(db).await?;
+    Ok(())
+}
+
+fn problem_of(e: &anyhow::Error) -> &'static str {
+    if e.downcast_ref::<sqlx::migrate::MigrateError>().is_some() {
+        return "migration";
+    }
+    match e.downcast_ref::<sqlx::Error>() {
+        Some(e) if auth::is_unreachable(e) => "postgres_down",
+        // invalid_password, invalid_authorization_specification
+        Some(sqlx::Error::Database(d)) if matches!(d.code().as_deref(), Some("28P01" | "28000")) => "db_login",
+        _ => "db_error",
+    }
+}
+
+/// Every route but /health waits for the database (CORS sits outside, so the app can read the answer).
+async fn wait_for_database(State(s): State<AppState>, req: Request, next: Next) -> Response {
+    let core = s.core.read().unwrap().clone();
+    if core.ready || req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+    let body = json!({ "error": core.problem.unwrap_or("starting"), "detail": core.detail });
+    (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
 }
 
 /// Databases first set up from a Windows checkout recorded the checksums of the migration
@@ -115,18 +214,24 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/reports/periods", get(reports::periods))
         .route("/api/v1/members", get(lists::members))
         .route("/api/v1/loans", get(lists::loans))
+        .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
 async fn health(State(s): State<AppState>) -> Json<Health> {
-    let database = sqlx::query("SELECT 1").execute(&s.db).await.is_ok();
-    Json(Health {
-        status: "ok",
-        database,
-        version: env!("CARGO_PKG_VERSION"),
-    })
+    let core = s.core.read().unwrap().clone();
+    let (database, problem, detail) = if core.ready {
+        match sqlx::query("SELECT 1").execute(&s.db).await {
+            Ok(_) => (true, None, None),
+            // Ready once, gone since: PostgreSQL was stopped while the app was open.
+            Err(e) => (false, Some(if auth::is_unreachable(&e) { "postgres_down" } else { "db_error" }), Some(e.to_string())),
+        }
+    } else {
+        (false, core.problem, core.detail)
+    };
+    Json(Health { status: "ok", database, problem, detail, version: env!("CARGO_PKG_VERSION") })
 }
 
 /// The official brand color; the desktop app falls back to it when a user has no personal color.

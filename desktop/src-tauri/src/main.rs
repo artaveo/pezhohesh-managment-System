@@ -1,6 +1,7 @@
 // Hide the extra console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod postgres;
 mod saved_login;
 
 use std::process::{Child, Command};
@@ -10,6 +11,31 @@ use tauri::{Manager, RunEvent};
 /// The core API ships inside the installer next to the app (Tauri "externalBin").
 /// It is started with the window and stopped when the app closes.
 struct Api(Mutex<Option<Child>>);
+
+/// Called by the offline screen while it waits: starts PostgreSQL if it was stopped (when
+/// Windows allows it), and the API again if it is not running. True when a new API started.
+#[tauri::command]
+fn restart_api(api: tauri::State<'_, Api>) -> bool {
+    postgres::start_if_stopped();
+    let mut child = api.0.lock().unwrap();
+    if let Some(c) = child.as_mut() {
+        if matches!(c.try_wait(), Ok(None)) {
+            return false;
+        }
+        *child = None;
+    }
+    *child = start_api();
+    child.is_some()
+}
+
+/// The end of the API's log, shown under "details" on the offline screen.
+#[tauri::command]
+fn api_log() -> String {
+    let Some(dir) = std::env::var_os("APPDATA") else { return String::new() };
+    let text = std::fs::read_to_string(std::path::Path::new(&dir).join("Pezhohesh").join("api.log")).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(15)..].join("\n")
+}
 
 fn start_api() -> Option<Child> {
     // An API that is already running (an earlier window, or one started by hand) is reused.
@@ -77,9 +103,22 @@ fn kill_with_app(child: &Child) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = postgres::helper(&args) {
+        std::process::exit(code);
+    }
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![saved_login::saved_login, saved_login::save_login, saved_login::forget_login])
+        .invoke_handler(tauri::generate_handler![
+            saved_login::saved_login,
+            saved_login::save_login,
+            saved_login::forget_login,
+            postgres::postgres_service,
+            postgres::fix_postgres,
+            restart_api,
+            api_log
+        ])
         .setup(|app| {
+            postgres::start_if_stopped();
             app.manage(Api(Mutex::new(start_api())));
             Ok(())
         })
