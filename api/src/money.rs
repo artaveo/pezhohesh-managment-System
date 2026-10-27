@@ -66,6 +66,8 @@ pub struct Reason {
 pub struct Range {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    /// Lines already shown, for «نمایش بیشتر».
+    offset: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,10 +254,11 @@ pub async fn expenses(State(s): State<AppState>, user: CurrentUser, Query(r): Qu
                 s.full_name AS created_by, e.import_batch_id IS NOT NULL AS from_excel, e.created_at \
          FROM expenses e JOIN expense_categories c ON c.id = e.category_id \
          LEFT JOIN app_users u ON u.id = e.created_by LEFT JOIN staff s ON s.id = u.staff_id \
-         WHERE {filter} ORDER BY e.spent_on DESC, e.created_at DESC LIMIT {SHOWN}"
+         WHERE {filter} ORDER BY e.spent_on DESC, e.created_at DESC, e.id LIMIT {SHOWN} OFFSET $3"
     ))
     .bind(r.from)
     .bind(r.to)
+    .bind(r.offset.unwrap_or(0).max(0))
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -397,6 +400,7 @@ pub struct WithdrawalQuery {
     to: Option<NaiveDate>,
     /// Only this person's withdrawals.
     staff_id: Option<Uuid>,
+    offset: Option<i64>,
 }
 
 pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r): Query<WithdrawalQuery>) -> Result<Json<Lines<Withdrawal>>, ApiError> {
@@ -416,11 +420,12 @@ pub async fn withdrawals(State(s): State<AppState>, user: CurrentUser, Query(r):
                 s.full_name AS paid_by, w.import_batch_id IS NOT NULL AS from_excel, w.created_at \
          FROM withdrawals w JOIN staff p ON p.id = w.staff_id \
          LEFT JOIN app_users u ON u.id = w.paid_by LEFT JOIN staff s ON s.id = u.staff_id \
-         WHERE {filter} ORDER BY w.taken_on DESC, w.created_at DESC LIMIT {SHOWN}"
+         WHERE {filter} ORDER BY w.taken_on DESC, w.created_at DESC, w.id LIMIT {SHOWN} OFFSET $4"
     ))
     .bind(r.from)
     .bind(r.to)
     .bind(r.staff_id)
+    .bind(r.offset.unwrap_or(0).max(0))
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;

@@ -63,7 +63,7 @@ function sees(user: User, n: NavItem) {
 
 type PageId = (typeof NAV)[number]["id"];
 /** Where the app is: a page, and inside "members" one member or the new-member form. */
-type View = { page: PageId; member: { id: string | null; bill?: string | null } | null; reg?: RegFilter };
+type View = { page: PageId; member: { id: string | null; bill?: string | null; fresh?: boolean } | null; reg?: RegFilter };
 
 export default function App() {
   const { status, user, retry } = useAuth();
@@ -97,7 +97,7 @@ function Shell() {
   const setPage = (id: PageId) => { if (id !== page || member) go({ page: id, member: null }); };
   const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) =>
     go({ page: id, member: null, reg: id === "registrations" ? { span: "today", kind } : undefined });
-  const openMember = (id: string, bill: string | null = null) => go({ page: "members", member: { id, bill } });
+  const openMember = (id: string, bill: string | null = null, fresh = false) => go({ page: "members", member: { id, bill, fresh } });
   useEffect(() => {
     if (!nav.some((n) => n.id === page)) setView({ page: "dashboard", member: null });
   }, [user, nav, page]);
@@ -177,8 +177,8 @@ function Shell() {
               : page === "users" ? <Users />
               : page === "members" ? (
                 <>
-                  {member?.id && <MemberPage key={member.id} id={member.id} openBill={member.bill} onBack={back} onRemoved={() => { setListKey((k) => k + 1); back(); }} />}
-                  {member && member.id === null && <NewMember onSaved={(id, bill) => openMember(id, bill)} onCancel={back} />}
+                  {member?.id && <MemberPage key={member.id} id={member.id} openBill={member.bill} fresh={member.fresh} onBack={back} onRemoved={() => { setListKey((k) => k + 1); back(); }} />}
+                  {member && member.id === null && <NewMember onSaved={(id, bill) => openMember(id, bill, true)} onCancel={back} />}
                   {/* The list stays mounted under a member's page, so its search and place are kept. */}
                   <div hidden={!!member}>
                     <MembersList key={listKey} open={(id) => openMember(id)} add={() => go({ page: "members", member: { id: null } })} />

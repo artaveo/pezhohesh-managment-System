@@ -6,7 +6,7 @@ import { AmountInput } from "../components/AmountInput";
 import { DeleteDialog } from "../components/DeleteDialog";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icon";
-import { PeriodPicker, usePeriod, type Range } from "../components/PeriodPicker";
+import { PeriodPicker, initialPeriod, rangeOf, usePeriod, type Range } from "../components/PeriodPicker";
 import { useAuth } from "../auth/AuthProvider";
 import { PARTNERS } from "../lib/shares";
 import { Shares } from "./Shares";
@@ -22,24 +22,25 @@ type View =
 /** «menu»: the list of what there is for the partners; the rest open one of them. */
 type PartnerPart = "menu" | "new" | "shares" | { person: string };
 
-const VIEW_KEY = "pz.moneyView";
+// Kept per user: the office laptop is shared, and the next person should not land in another's view.
+const viewKey = (user: string) => `pz.moneyView.${user}`;
 
-function remembered(): View {
+function remembered(key: string): View {
   try {
-    const v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "null") as View | null;
+    const v = JSON.parse(localStorage.getItem(key) ?? "null") as View | null;
     if (v && (v.tab === "expenses" || v.tab === "staff" || v.tab === "partners")) return v;
   } catch { /* nothing kept */ }
   return { tab: "expenses" };
 }
 
-/** A row of buttons that picks one of a few views. */
+/** A row of buttons that picks one of a few views (the pressed one is the view shown). */
 function Tabs<T extends string>({ label, value, items, onChange, sub }: {
   label: string; value: T; items: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; sub?: boolean;
 }) {
   return (
-    <div className={`segmented${sub ? " sub" : ""}`} role="tablist" aria-label={label}>
+    <div className={`segmented${sub ? " sub" : ""}`} role="group" aria-label={label}>
       {items.map((i) => (
-        <button key={i.id} role="tab" aria-selected={value === i.id} className={value === i.id ? "on" : ""} onClick={() => onChange(i.id)}>
+        <button key={i.id} aria-pressed={value === i.id} className={value === i.id ? "on" : ""} onClick={() => onChange(i.id)}>
           {i.label}{i.hint && <small className="muted"> {i.hint}</small>}
         </button>
       ))}
@@ -56,10 +57,11 @@ export function Money() {
   const partner = user?.role === "partner";
   const has = (s: Section) => partner || (user?.sections ?? []).includes(s);
   const may = { expenses: has("expenses"), staff: has("salaries"), partners: partner || has("shares") };
-  const [view, setViewState] = useState<View>(remembered);
+  const key = viewKey(user?.id ?? "");
+  const [view, setViewState] = useState<View>(() => remembered(key));
   const setView = (v: View) => {
     setViewState(v);
-    try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* not kept */ }
+    try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* not kept */ }
   };
   // Never open on a part this person may not see.
   const shown: View =
@@ -111,25 +113,48 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
   // The partners as the statement names them (Rahimi first); their withdrawals are under these staff names.
   const partners = PARTNERS.map((p) => ({ ...p, id: people?.find((x) => x.full_name === p.name)?.id ?? null }))
     .sort((a, b) => Number(b.paysManager) - Number(a.paysManager));
-  const takers = people?.filter((x) => partners.some((p) => p.id === x.id)) ?? [];
-  const choices = takers.length ? takers : people ?? [];
+  // Only the partners: staff pay is never a partner's withdrawal.
+  const choices = people?.filter((x) => partners.some((p) => p.id === x.id)) ?? [];
+  const missing = partners.filter((p) => !p.id).map((p) => `«${p.name}»`).join(" و ");
+  const unmatched = people && missing && (
+    <p className="glass muted empty">در فهرست اشخاص کسی به نام {missing} نیست. در «کاربران ← اشخاص» نام‌ها را یکی کنید.</p>
+  );
+  // What each partner took this year, on their card of the menu.
+  const [taken, setTaken] = useState<Record<string, number>>({});
+  const ids = partners.map((p) => p.id ?? "").join(",");
+  useEffect(() => {
+    if (part !== "menu" || !partner) return;
+    const ctl = new AbortController();
+    const year = rangeOf(initialPeriod("year"));
+    const ready = partners.filter((p): p is typeof p & { id: string } => !!p.id);
+    Promise.all(ready.map((p) => api.withdrawals({ from: year.from, to: year.to, staff_id: p.id }, ctl.signal).then((l) => [p.name, l.sum] as const)))
+      .then((all) => setTaken(Object.fromEntries(all)))
+      .catch(() => { /* the cards still work without the figure */ });
+    return () => ctl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [part, partner, ids]);
 
   if (part === "menu" && partner) {
-    const items: { part: PartnerPart; icon: string; title: string; hint: string }[] = [
+    const year = rangeOf(initialPeriod("year")).label;
+    const items: { part: PartnerPart; icon: string; title: string; hint: string; figure?: number }[] = [
       { part: "new", icon: "plus", title: "برداشت جدید", hint: "ثبت پولی که یکی از شرکا از صندوق می‌برد" },
       { part: "shares", icon: "pie", title: "سهم شرکا", hint: "سهم هر شریک از سود، ماه به ماه، و تسویهٔ سال" },
-      ...partners.map((p) => ({ part: { person: p.name }, icon: "receipt", title: `ریز برداشت‌های ${p.short}`, hint: `همهٔ برداشت‌های ${p.name}، امروز، ماه، سال یا هر بازه` })),
+      ...partners.map((p) => ({ part: { person: p.name }, icon: "receipt", title: `ریز برداشت‌های ${p.short}`, hint: `امروز، ماه، سال یا هر بازه`, figure: taken[p.name] })),
     ];
     return (
-      <div className="choice-grid">
-        {items.map((i) => (
-          <button key={i.title} className="glass choice" onClick={() => onPart(i.part)}>
-            <Icon name={i.icon} size={22} />
-            <span className="choice-title">{i.title}</span>
-            <span className="muted small">{i.hint}</span>
-          </button>
-        ))}
-      </div>
+      <>
+        {unmatched}
+        <div className="choice-grid">
+          {items.map((i) => (
+            <button key={i.title} className="glass choice" onClick={() => onPart(i.part)}>
+              <Icon name={i.icon} size={22} />
+              <span className="choice-title">{i.title}</span>
+              {i.figure !== undefined && <span className="choice-figure">{fa(i.figure)} <small>؋</small> <span className="muted small">برداشت در {year}</span></span>}
+              <span className="muted small">{i.hint}</span>
+            </button>
+          ))}
+        </div>
+      </>
     );
   }
   const person = typeof part === "string" ? null : partners.find((p) => p.name === part.person) ?? null;
@@ -143,7 +168,7 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
         </div>
       )}
       {part === "shares" && <Shares />}
-      {part === "new" && people && <NewWithdrawal people={choices} />}
+      {part === "new" && people && (choices.length ? <NewWithdrawal people={choices} /> : unmatched)}
       {person && people && (person.id ? (
         <>
           <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>
@@ -158,6 +183,17 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
 function NewWithdrawal({ people }: { people: Person[] }) {
   const period = usePeriod("month");
   return <Withdrawals period={period.range} people={people} form />;
+}
+
+/** Under a long list: how many lines are shown, and a button for the next ones. */
+function More({ lines, busy, onMore }: { lines: Lines<unknown> | null; busy: boolean; onMore: () => void }) {
+  if (!lines || lines.rows.length >= lines.total) return null;
+  return (
+    <div className="list-more">
+      <span className="muted small">{fa(lines.rows.length)} از {fa(lines.total)} مورد نشان داده شده (جمع پایین جدول همهٔ {fa(lines.total)} مورد است).</span>
+      <button className="btn ghost" disabled={busy} onClick={onMore}>{busy ? "در حال آوردن…" : "نمایش بیشتر"}</button>
+    </div>
+  );
 }
 
 /** Edit and remove buttons of one line, when this user may change it. */
@@ -185,7 +221,16 @@ function Expenses({ period }: { period: Period }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const reload = () => setTick((t) => t + 1);
+  async function more() {
+    if (!lines) return;
+    setLoadingMore(true);
+    try {
+      const next = await api.expenses({ from: period.from, to: period.to, offset: lines.rows.length });
+      setLines({ ...next, rows: [...lines.rows, ...next.rows] });
+    } catch (e) { setError(errorText(e)); } finally { setLoadingMore(false); }
+  }
 
   useEffect(() => { api.categories().then((c) => { setCats(c); setCat((x) => x || c[0]?.id || ""); }).catch((e) => setError(errorText(e))); }, [tick]);
   useEffect(() => {
@@ -255,9 +300,6 @@ function Expenses({ period }: { period: Period }) {
           {editing && <button className="btn ghost" onClick={clear}>انصراف</button>}
         </div>
       </section>
-      {lines && lines.rows.length < lines.total && (
-        <p className="muted small">{fa(lines.rows.length)} مورد تازه‌تر از {fa(lines.total)} مورد نشان داده شده؛ برای دیدن بقیه بازهٔ کوتاه‌تری انتخاب کنید.</p>
-      )}
       <div className="glass table-wrap">
         <table className="table">
           <thead><tr><th>تاریخ</th><th>سطر</th><th>شرح</th><th className="num">مبلغ</th><th>ثبت کننده</th><th><span className="sr-only">کارها</span></th></tr></thead>
@@ -279,8 +321,9 @@ function Expenses({ period }: { period: Period }) {
             </tfoot>
           )}
         </table>
-        {lines && !lines.rows.length && <p className="muted empty">مصرفی ثبت نشده.</p>}
+        {lines && !lines.rows.length && <p className="muted empty">در {period.label} مصرفی ثبت نشده.</p>}
       </div>
+      <More lines={lines} busy={loadingMore} onMore={() => void more()} />
       {removing && (
         <DeleteDialog title="حذف مصرف" onClose={() => setRemoving(null)}
           onConfirm={async (reason) => {
@@ -314,7 +357,16 @@ function Withdrawals({ period, people, staffId, form, title }: { period: Period;
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const reload = () => setTick((t) => t + 1);
+  async function more() {
+    if (!lines) return;
+    setLoadingMore(true);
+    try {
+      const next = await api.withdrawals({ from: period.from, to: period.to, staff_id: staffId, offset: lines.rows.length });
+      setLines({ ...next, rows: [...lines.rows, ...next.rows] });
+    } catch (e) { setError(errorText(e)); } finally { setLoadingMore(false); }
+  }
 
   useEffect(() => { setWho((x) => x || staffId || people[0]?.id || ""); }, [people, staffId]);
   useEffect(() => {
@@ -393,9 +445,7 @@ function Withdrawals({ period, people, staffId, form, title }: { period: Period;
           </div>
         </section>
       )}
-      {lines && lines.rows.length < lines.total && (
-        <p className="muted small">{fa(lines.rows.length)} مورد تازه‌تر از {fa(lines.total)} مورد نشان داده شده؛ برای دیدن بقیه بازهٔ کوتاه‌تری انتخاب کنید.</p>
-      )}
+      {!form && !editing && error && <p className="form-error" role="alert">{error}</p>}
       <div className="glass table-wrap">
         <table className="table">
           <thead><tr><th>تاریخ</th>{!staffId && <th>شریک</th>}<th>بابت</th><th className="num">مبلغ</th><th>ثبت کننده</th><th><span className="sr-only">کارها</span></th></tr></thead>
@@ -417,8 +467,9 @@ function Withdrawals({ period, people, staffId, form, title }: { period: Period;
             </tfoot>
           )}
         </table>
-        {lines && !lines.rows.length && <p className="muted empty">{staffId ? `در ${period.label} برداشتی نیست. بازهٔ دیگری انتخاب کنید.` : "برداشتی ثبت نشده."}</p>}
+        {lines && !lines.rows.length && <p className="muted empty">{staffId ? `در ${period.label} برداشتی نیست. بازهٔ دیگری انتخاب کنید.` : `در ${period.label} برداشتی ثبت نشده.`}</p>}
       </div>
+      <More lines={lines} busy={loadingMore} onMore={() => void more()} />
       {removing && (
         <DeleteDialog title="حذف برداشت" onClose={() => setRemoving(null)}
           onConfirm={async (reason) => {

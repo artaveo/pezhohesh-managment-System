@@ -196,7 +196,8 @@ function Figure({ label, v }: { label: string; v: number }) {
   return (
     <div className="glass kpi">
       <span className="kpi-label">{label}</span>
-      <span className="kpi-value"><Balance v={v} /></span>
+      <span className={`kpi-value${v < -0.5 ? " ahead" : ""}`}>{fa(Math.abs(v))} <small>؋</small></span>
+      <span className="kpi-foot muted small">{Math.abs(v) < 0.5 ? "تسویه" : v > 0 ? "طلب کارمند" : "پیش‌پرداخت"}</span>
     </div>
   );
 }
@@ -207,12 +208,21 @@ function MonthRow({ p, m, running, showYear, partner, onDone }: {
 }) {
   const [edit, setEdit] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [zeroOk, setZeroOk] = useState(false);
   const name = `${MONTHS[m.month - 1]}${showYear ? ` ${m.year}` : ""}`;
+  const stop = () => { setEdit(null); setError(""); setZeroOk(false); };
   async function save() {
+    if (!edit?.trim() || Number.isNaN(Number(edit))) return setError("مبلغ را بنویسید.");
+    const amount = Number(edit);
+    // A month with no salary is rare (unpaid leave); ask once before writing a zero.
+    if (amount === 0 && m.accrued !== 0 && !zeroOk) {
+      setZeroOk(true);
+      return setError(`معاش ${name} صفر می‌شود. اگر درست است، دوباره «ذخیره» را بزنید.`);
+    }
     try {
-      await api.setSalaryMonth(p.id, { year: m.year, month: m.month, amount: Number(edit || 0) });
-      setEdit(null);
-      onDone(`معاش ${name} ${p.full_name} ${fa(Number(edit || 0))} افغانی شد.`);
+      await api.setSalaryMonth(p.id, { year: m.year, month: m.month, amount });
+      stop();
+      onDone(`معاش ${name} ${p.full_name} ${fa(amount)} افغانی شد.`);
     } catch (e) {
       setError(errorText(e));
     }
@@ -224,8 +234,8 @@ function MonthRow({ p, m, running, showYear, partner, onDone }: {
         {edit === null ? fa(m.accrued) : (
           <span className="inline-edit">
             <input dir="ltr" inputMode="numeric" aria-label={`معاش ${name}`} value={edit} autoFocus
-              onChange={(e) => setEdit(e.target.value.replace(/[^\d.]/g, ""))}
-              onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setEdit(null); }} />
+              onChange={(e) => { setEdit(e.target.value.replace(/[^\d.]/g, "")); setError(""); setZeroOk(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") stop(); }} />
             {error && <small className="form-error" role="alert">{error}</small>}
           </span>
         )}
@@ -236,7 +246,7 @@ function MonthRow({ p, m, running, showYear, partner, onDone }: {
         <td>
           {edit === null
             ? <button className="btn ghost small" onClick={() => setEdit(String(m.accrued))}>اصلاح معاش</button>
-            : <span className="actions"><button className="btn small" onClick={() => void save()}>ذخیره</button><button className="btn ghost small" onClick={() => setEdit(null)}>انصراف</button></span>}
+            : <span className="actions"><button className="btn small" onClick={() => void save()}>ذخیره</button><button className="btn ghost small" onClick={stop}>انصراف</button></span>}
         </td>
       )}
     </tr>

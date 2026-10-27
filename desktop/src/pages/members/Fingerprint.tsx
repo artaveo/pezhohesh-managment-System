@@ -16,18 +16,23 @@ const time = (at: string) => {
   return `${formatDay(d)} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 };
 
-/** The member on the fingerprint device: open until when, their fingers, their last visits. */
-export function Fingerprint({ memberId, reload }: { memberId: string; reload: number }) {
+/**
+ * The member on the fingerprint device: open until when, their fingers, their last visits.
+ * Enrolling a finger is the page's own dialog (it is also offered at the top of the page).
+ */
+export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
+  memberId: string; reload: number; onLoaded: (k: MemberK50) => void; onEnroll: () => void;
+}) {
   const toast = useToast();
   const [k, setK] = useState<MemberK50 | null>(null);
   const [fingers, setFingers] = useState<number | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [enrolling, setEnrolling] = useState(false);
 
-  const load = () => api.memberK50(memberId).then((x) => { setK(x); setFingers((f) => f ?? x.sent?.fingers ?? null); }).catch((e) => setError(errorText(e)));
+  const load = () => api.memberK50(memberId).then((x) => { setK(x); onLoaded(x); setFingers((f) => f ?? x.sent?.fingers ?? null); }).catch((e) => setError(errorText(e)));
   // A renewal sends the new dates a few seconds later; look again then.
   useEffect(() => {
+    setFingers(null);
     void load();
     const t = setTimeout(() => void load(), 6000);
     return () => clearTimeout(t);
@@ -74,7 +79,7 @@ export function Fingerprint({ memberId, reload }: { memberId: string; reload: nu
         {s?.error && <span className="form-error inline">{k50ErrorText(s.error)}</span>}
       </div>
       <div className="actions">
-        <button className="btn" disabled={!!busy || !k.enabled} onClick={() => setEnrolling(true)}
+        <button className="btn" disabled={!!busy || !k.enabled} onClick={onEnroll}
           title={k.enabled ? undefined : "اول عضویت را تمدید کنید"}>ثبت انگشت</button>
         <button className="btn ghost" disabled={!!busy} onClick={() => void act("push", () => api.pushMemberK50(memberId), "به دستگاه فرستاده شد.")}>
           {busy === "push" ? "در حال فرستادن…" : "همین حالا به دستگاه بفرست"}
@@ -90,15 +95,37 @@ export function Fingerprint({ memberId, reload }: { memberId: string; reload: nu
         </>
       )}
     </section>
-    {enrolling && <Enroll memberId={memberId} onClose={() => { setEnrolling(false); void check(); }} />}
     </>
   );
 }
 
-function Enroll({ memberId, onClose }: { memberId: string; onClose: () => void }) {
+/**
+ * Enrolling one finger: pick it, the device is made ready, the member presses it three
+ * times, and then the device is asked whether the finger is there.
+ */
+export function Enroll({ memberId, name, onClose }: { memberId: string; name: string; onClose: (added: boolean) => void }) {
   const [finger, setFinger] = useState(6);
-  const [state, setState] = useState<"pick" | "busy" | "waiting">("pick");
+  const [state, setState] = useState<"pick" | "busy" | "waiting" | "checking" | "done" | "missing">("pick");
   const [error, setError] = useState("");
+  const [count, setCount] = useState(0);
+  const [before, setBefore] = useState<number | null>(null);
+  // How many fingers the device has now, to tell a new one from an old one afterwards.
+  useEffect(() => {
+    api.checkMemberK50(memberId).then((r) => { if (r.ok) setBefore(r.exists ? r.fingers ?? 0 : 0); }).catch(() => {});
+  }, [memberId]);
+  async function verify() {
+    setState("checking");
+    try {
+      const r = await api.checkMemberK50(memberId);
+      const now = r.ok && r.exists ? r.fingers ?? 0 : 0;
+      setCount(now);
+      setState(r.ok && now > (before ?? 0) ? "done" : "missing");
+      if (!r.ok) setError(k50ErrorText(r.error));
+    } catch (e) {
+      setError(errorText(e));
+      setState("missing");
+    }
+  }
   async function start() {
     setState("busy");
     setError("");
@@ -111,9 +138,14 @@ function Enroll({ memberId, onClose }: { memberId: string; onClose: () => void }
     }
   }
   return (
-    <Modal label="ثبت انگشت" onClose={onClose}>
-      <h2>ثبت انگشت</h2>
-      {state !== "waiting" ? (
+    <Modal label="ثبت انگشت" onClose={() => onClose(state === "done")}>
+      <h2>ثبت انگشت {name}</h2>
+      <ol className="enroll-steps" aria-label="قدم‌ها">
+        <li className={state === "pick" || state === "busy" ? "on" : "done"}>انتخاب انگشت</li>
+        <li className={state === "waiting" ? "on" : state === "checking" || state === "done" || state === "missing" ? "done" : ""}>سه بار روی دستگاه</li>
+        <li className={state === "checking" || state === "done" || state === "missing" ? "on" : ""}>بررسی</li>
+      </ol>
+      {state === "pick" || state === "busy" ? (
         <>
           <p className="muted">کدام انگشت؟</p>
           <div className="finger-grid">
@@ -124,15 +156,37 @@ function Enroll({ memberId, onClose }: { memberId: string; onClose: () => void }
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="actions">
             <button className="btn big" disabled={state === "busy"} onClick={() => void start()}>{state === "busy" ? "در حال آماده کردن دستگاه…" : "دستگاه را آماده کن"}</button>
-            <button className="btn ghost" onClick={onClose}>انصراف</button>
+            <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
+          </div>
+        </>
+      ) : state === "waiting" ? (
+        <>
+          <p className="form-ok">دستگاه آماده است.</p>
+          <p>{name} <strong>{FINGERS.find((f) => f.n === finger)?.label}</strong> را <strong>سه بار</strong> روی دستگاه بگذارد و بردارد، تا دستگاه بگوید ثبت شد.</p>
+          <div className="actions">
+            <button className="btn big" autoFocus onClick={() => void verify()}>ثبت شد، بررسی کن</button>
+            <button className="btn ghost" onClick={() => setState("pick")}>از نو</button>
+          </div>
+        </>
+      ) : state === "checking" ? (
+        <p className="muted" role="status">در حال پرسیدن از دستگاه…</p>
+      ) : state === "done" ? (
+        <>
+          <p className="form-ok" role="status">انگشت ثبت شد. حالا {fa(count)} انگشت از {name} روی دستگاه است.</p>
+          <p className="muted small">برای وقتی که این انگشت زخمی شد، بهتر است یک انگشت دیگر هم ثبت شود.</p>
+          <div className="actions">
+            <button className="btn big" autoFocus onClick={() => onClose(true)}>تمام</button>
+            <button className="btn ghost" onClick={() => { setBefore(count); setState("pick"); setFinger(finger === 6 ? 5 : 6); }}>انگشت دیگر</button>
           </div>
         </>
       ) : (
         <>
-          <p className="form-ok">دستگاه آماده است.</p>
-          <p>عضو همان انگشت را <strong>سه بار</strong> روی دستگاه بگذارد و بردارد، تا دستگاه بگوید ثبت شد.</p>
-          <p className="muted small">اگر دستگاه چیزی نگفت، دوباره «دستگاه را آماده کن» بزنید.</p>
-          <div className="actions"><button className="btn big" onClick={onClose}>تمام شد</button></div>
+          <p className="form-error" role="alert">{error || "دستگاه انگشت تازه‌ای نشان نمی‌دهد."}</p>
+          <p className="muted small">شاید سه بار کامل نشد یا دستگاه وقتش تمام شد. دوباره امتحان کنید.</p>
+          <div className="actions">
+            <button className="btn big" autoFocus onClick={() => { setError(""); setState("pick"); }}>دوباره</button>
+            <button className="btn ghost" onClick={() => onClose(false)}>بستن</button>
+          </div>
         </>
       )}
     </Modal>

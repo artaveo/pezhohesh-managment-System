@@ -615,6 +615,31 @@ pub struct Compared {
     /// The member with that number in the app, if any.
     app_name: Option<String>,
     admin: bool,
+    /// "same", "differs" (the names look like two people) or "missing" (no such member).
+    state: &'static str,
+}
+
+/// A name as it is compared: Arabic ي/ك as Persian ی/ک, no half-spaces, one space between
+/// words, Latin letters in lower case.
+fn plain_name(s: &str) -> String {
+    let s: String = s
+        .chars()
+        .map(|c| match c {
+            'ي' | 'ى' => 'ی',
+            'ك' => 'ک',
+            '\u{200c}' | '\u{200f}' | '\u{200e}' => ' ',
+            c => c,
+        })
+        .flat_map(char::to_lowercase)
+        .collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The device keeps short names (often cut), so a device name that starts the app's name
+/// counts as the same person.
+fn same_person(device: &str, app: &str) -> bool {
+    let (d, a) = (plain_name(device), plain_name(app));
+    !d.is_empty() && (d == a || a.starts_with(&d) || d.starts_with(&a))
 }
 
 #[derive(Serialize)]
@@ -623,11 +648,13 @@ pub struct Comparison {
     /// Users whose ID is a member number in the app (read with the digits setting).
     in_app: usize,
     not_in_app: usize,
+    /// Users whose device name and app name do not look like the same person.
+    differs: usize,
     admins: usize,
     /// IDs written with zeros in front (as 051003), and their usual length.
     zero_padded: usize,
     padded_width: Option<usize>,
-    /// Up to 300 users, members the app knows first, for a person to check the names.
+    /// Every user whose name differs, then those the app does not know, then up to 300 in all.
     rows: Vec<Compared>,
 }
 
@@ -666,11 +693,15 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
     };
     let mut rows: Vec<Compared> = users
         .iter()
-        .map(|u| Compared {
-            no: u.no.clone(),
-            device_name: u.name.trim().to_string(),
-            app_name: u.no.trim().parse::<i32>().ok().and_then(|n| app.get(&n).cloned()),
-            admin: u.privilege > 0,
+        .map(|u| {
+            let app_name = u.no.trim().parse::<i32>().ok().and_then(|n| app.get(&n).cloned());
+            let state = match &app_name {
+                None => "missing",
+                // A user with no name on the device cannot be checked; it is not a different person.
+                Some(a) if u.name.trim().is_empty() || same_person(&u.name, a) => "same",
+                Some(_) => "differs",
+            };
+            Compared { no: u.no.clone(), device_name: u.name.trim().to_string(), app_name, admin: u.privilege > 0, state }
         })
         .collect();
     let in_app = rows.iter().filter(|r| r.app_name.is_some()).count();
@@ -678,12 +709,19 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         device_users: users.len(),
         in_app,
         not_in_app: users.len() - in_app,
+        differs: rows.iter().filter(|r| r.state == "differs").count(),
         admins: rows.iter().filter(|r| r.admin).count(),
         zero_padded: padded.len(),
         padded_width,
         rows: {
-            rows.sort_by_key(|r| (r.app_name.is_none(), r.no.trim_start_matches('0').parse::<i64>().unwrap_or(i64::MAX)));
-            rows.truncate(300);
+            let rank = |r: &Compared| match r.state {
+                "differs" => 0,
+                "missing" => 1,
+                _ => 2,
+            };
+            rows.sort_by_key(|r| (rank(r), r.no.trim_start_matches('0').parse::<i64>().unwrap_or(i64::MAX)));
+            let keep = rows.iter().filter(|r| r.state == "differs").count().max(300);
+            rows.truncate(keep);
             rows
         },
     };
@@ -901,6 +939,15 @@ mod tests {
         let text = ascii_json(&v);
         assert!(text.is_ascii());
         assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
+    }
+
+    #[test]
+    fn names_are_compared_loosely() {
+        assert!(same_person("علي احمدي", "علی  احمدی"));
+        assert!(same_person("Ali Ahm", "ali ahmadi"));
+        assert!(same_person("زهرا\u{200c}کریمی", "زهرا کریمی"));
+        assert!(!same_person("محمد", "زهرا کریمی"));
+        assert!(!same_person("", "زهرا"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Info, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
+import { Modal } from "../components/Modal";
 
 const when = (at: string) => {
   const d = new Date(at);
@@ -20,6 +21,7 @@ export function Device() {
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
   const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare">("");
   const [cmp, setCmp] = useState<K50Comparison | null>(null);
+  const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -38,6 +40,13 @@ export function Device() {
     try { return await f(); } catch (e) { setError(errorText(e)); return undefined; } finally { setBusy(""); setTick((n) => n + 1); }
   }
   const save = (c: K50Config) => run("save", async () => { await api.setK50(c); setForm(c); toast("ذخیره شد."); });
+  // Only the switch is saved here; other unsaved edits on the form stay unsaved.
+  const setAuto = (enabled: boolean) => run("save", async () => {
+    await api.setK50({ ...s!.config, enabled });
+    setForm((f) => f && { ...f, enabled });
+    setAsking(false);
+    toast(enabled ? "به‌روزرسانی خودکار روشن شد." : "به‌روزرسانی خودکار خاموش شد.");
+  });
   const test = () => run("test", async () => setInfo(await api.testK50(form!)));
   const scan = () => run("scan", async () => setFound(await api.scanK50()));
   const sync = () => run("sync", async () => {
@@ -99,10 +108,17 @@ export function Device() {
           </label>
         </div>
         <label className="check big">
-          <input type="checkbox" checked={form.enabled} disabled={!form.ip}
-            onChange={(e) => void save({ ...form, enabled: e.target.checked })} />
+          <input type="checkbox" checked={saved.enabled} disabled={!!busy || !saved.ip || (!saved.enabled && (!cmp || cmp.differs > 0))}
+            onChange={(e) => { if (e.target.checked) setAsking(true); else void setAuto(false); }} />
           برنامه خودش دستگاه را به‌روز نگه دارد (آیدی، نام و تاریخ عضویت، و خواندن حاضری‌ها)
         </label>
+        {!saved.enabled && saved.ip && (
+          <p className="muted small">
+            {!cmp ? "برای روشن کردن، اول پایین‌تر «مقایسهٔ آیدی‌ها با دستگاه» را بزنید."
+              : cmp.differs > 0 ? `${fa(cmp.differs)} آیدی روی دستگاه نام کس دیگری را دارد؛ تا درست نشده، خودکار روشن نمی‌شود.`
+              : "آیدی‌ها یکی‌اند؛ می‌توانید خودکار را روشن کنید."}
+          </p>
+        )}
         <div className="actions">
           <button className="btn" disabled={!!busy || !changed} onClick={() => void save(form)}>ذخیره</button>
           <button className="btn ghost" disabled={!!busy || !form.ip} onClick={() => void test()}>{busy === "test" ? "در حال وصل شدن…" : "آزمایش اتصال"}</button>
@@ -141,28 +157,37 @@ export function Device() {
           <>
             <div className="stats-row">
               <div><span className="muted small">کاربر روی دستگاه</span><strong>{fa(cmp.device_users)}</strong></div>
-              <div><span className="muted small">آیدی‌شان در برنامه هست</span><strong>{fa(cmp.in_app)}</strong></div>
+              <div><span className="muted small">نام یکی است</span><strong>{fa(cmp.in_app - cmp.differs)}</strong></div>
+              <div className={cmp.differs ? "bad" : ""}><span className="muted small">نام فرق دارد</span><strong>{fa(cmp.differs)}</strong></div>
               <div><span className="muted small">در برنامه نیست</span><strong>{fa(cmp.not_in_app)}</strong></div>
               <div><span className="muted small">مدیر دستگاه</span><strong>{fa(cmp.admins)}</strong></div>
             </div>
+            {cmp.differs > 0 ? (
+              <p className="form-error" role="alert">{fa(cmp.differs)} آیدی روی دستگاه نام کس دیگری را دارد (بالای جدول). خودکار را روشن نکنید و به من خبر بدهید.</p>
+            ) : <p className="form-ok">هر آیدی که در برنامه هست، روی دستگاه هم نام همان کس را دارد.</p>}
             {cmp.zero_padded > 0 && (
               <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
             )}
             <div className="table-wrap flush">
               <table className="table">
-                <thead><tr><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
+                <thead><tr><th>وضع</th><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
                 <tbody>
                   {cmp.rows.map((r) => (
                     <tr key={r.no}>
+                      <td>
+                        <span className={`status ${r.state === "differs" ? "bad" : r.state === "missing" ? "off" : "on"}`}>
+                          {r.state === "differs" ? "فرق دارد" : r.state === "missing" ? "در برنامه نیست" : "یکی"}
+                        </span>
+                      </td>
                       <td><bdi dir="ltr">{r.no}</bdi>{r.admin && <span className="chip">مدیر دستگاه</span>}</td>
                       <td>{r.device_name || "—"}</td>
-                      <td>{r.app_name ?? <span className="muted">در برنامه نیست</span>}</td>
+                      <td>{r.app_name ?? <span className="muted">—</span>}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            {cmp.rows.length < cmp.device_users && <p className="muted small">{fa(cmp.rows.length)} نفر اول نشان داده شده.</p>}
+            {cmp.rows.length < cmp.device_users && <p className="muted small">همهٔ آیدی‌هایی که نام‌شان فرق دارد نشان داده شده؛ از بقیه {fa(cmp.rows.length)} نفر اول.</p>}
           </>
         )}
       </section>
@@ -176,6 +201,21 @@ export function Device() {
           <li>مدیرهای خود دستگاه دست نمی‌خورند. اعضایی که عضویت فعال ندارند و قبلاً با ZKAccess ثبت شده‌اند، همان‌طور می‌مانند.</li>
         </ul>
       </section>
+
+      {asking && (
+        <Modal label="روشن کردن به‌روزرسانی خودکار" onClose={() => !busy && setAsking(false)}>
+          <h2>روشن کردن به‌روزرسانی خودکار</h2>
+          <p>
+            از این به بعد برنامه آیدی، نام و تاریخ عضویت اعضا را خودش به دستگاه می‌فرستد
+            {s.pending > 0 && <>؛ همین حالا <strong>{fa(s.pending)} عضو</strong> در نوبت است</>}.
+            عضوی که عضویتش تمام شده روی دستگاه غیرفعال می‌شود (انگشتش پاک نمی‌شود).
+          </p>
+          <div className="actions">
+            <button className="btn" autoFocus disabled={!!busy} onClick={() => void setAuto(true)}>{busy === "save" ? "…" : "روشن کن"}</button>
+            <button className="btn ghost" disabled={!!busy} onClick={() => setAsking(false)}>انصراف</button>
+          </div>
+        </Modal>
+      )}
 
       {s.errors.length > 0 && (
         <section className="glass table-wrap">

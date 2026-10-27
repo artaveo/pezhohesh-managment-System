@@ -38,8 +38,8 @@ export type Arrived = {
 export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
 export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number };
 export type K50Comparison = {
-  device_users: number; in_app: number; not_in_app: number; admins: number; zero_padded: number; padded_width: number | null;
-  rows: { no: string; device_name: string; app_name: string | null; admin: boolean }[];
+  device_users: number; in_app: number; not_in_app: number; differs: number; admins: number; zero_padded: number; padded_width: number | null;
+  rows: { no: string; device_name: string; app_name: string | null; admin: boolean; state: "same" | "differs" | "missing" }[];
 };
 export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
 export type K50Status = {
@@ -397,7 +397,7 @@ export const api = {
   updatePlan: (id: string, p: Omit<Plan, "id">) => request<void>(`/plans/${id}`, { method: "PUT", body: p }),
   categories: () => request<Category[]>("/expense-categories"),
   createCategory: (name: string) => request<string>("/expense-categories", { method: "POST", body: { name } }),
-  expenses: (r: Range, signal?: AbortSignal) => request<Lines<Expense>>(`/expenses?${query(r)}`, { signal }),
+  expenses: (r: Range & { offset?: number }, signal?: AbortSignal) => request<Lines<Expense>>(`/expenses?${query(r)}`, { signal }),
   createExpense: (e: ExpenseInput) => request<string>("/expenses", { method: "POST", body: e }),
   updateExpense: (id: string, e: ExpenseInput) => request<void>(`/expenses/${id}`, { method: "PUT", body: e }),
   deleteExpense: (id: string, reason?: string) => request<void>(`/expenses/${id}${why(reason)}`, { method: "DELETE" }),
@@ -407,7 +407,7 @@ export const api = {
   setSalaryMonth: (id: string, m: { year: number; month: number; amount: number }) => request<void>(`/salaries/${id}/month`, { method: "PUT", body: m }),
   createSalary: (s: SalaryInput) => request<string>("/salaries", { method: "POST", body: s }),
   updateSalary: (id: string, s: SalaryInput) => request<void>(`/salaries/${id}`, { method: "PUT", body: s }),
-  withdrawals: (r: Range & { staff_id?: string }, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
+  withdrawals: (r: Range & { staff_id?: string; offset?: number }, signal?: AbortSignal) => request<Lines<Withdrawal>>(`/withdrawals?${query(r)}`, { signal }),
   createWithdrawal: (w: WithdrawalInput) => request<string>("/withdrawals", { method: "POST", body: w }),
   updateWithdrawal: (id: string, w: WithdrawalInput) => request<void>(`/withdrawals/${id}`, { method: "PUT", body: w }),
   deleteWithdrawal: (id: string, reason?: string) => request<void>(`/withdrawals/${id}${why(reason)}`, { method: "DELETE" }),

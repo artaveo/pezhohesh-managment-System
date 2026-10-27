@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type MemberDetail, type MemberInput, type Period, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
+import { api, errorText, type MemberK50, type MemberDetail, type MemberInput, type Period, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
 import { daysBetween, fa, formatDay, iso, parseIso } from "../../lib/solar";
 import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
@@ -13,14 +13,14 @@ import { useAuth } from "../../auth/AuthProvider";
 import { MemberCardPreview } from "../../components/MemberCard";
 import { useDocumentUrl } from "../../lib/images";
 import { Documents } from "./Documents";
-import { Fingerprint } from "./Fingerprint";
+import { Enroll, Fingerprint } from "./Fingerprint";
 
 import { MemberFields } from "./MemberFields";
 
 const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
 
 /** One member: details, every paid period, and renewing (which prints the bill). */
-export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: () => void; onRemoved?: () => void; openBill?: string | null }) {
+export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onBack?: () => void; onRemoved?: () => void; openBill?: string | null; fresh?: boolean }) {
   const toast = useToast();
   const partner = useAuth().user?.role === "partner";
   const [removing, setRemoving] = useState<"member" | Period | null>(null);
@@ -31,6 +31,12 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
   const [mode, setMode] = useState<"view" | "edit" | "renew" | "record">("view");
   const [bill, setBill] = useState<string | null>(openBill ?? null);
   const [card, setCard] = useState(false);
+  // The fingerprint device, as the panel below last read it (null: no device set up).
+  const [k50, setK50] = useState<MemberK50 | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
+  const [fingerDone, setFingerDone] = useState(0);
+  // Right after registering: the next steps at the desk, until the person closes them.
+  const [steps, setSteps] = useState(!!fresh);
   const photoId = d?.documents.find((x) => x.kind === "photo")?.id ?? null;
   const { url: photo } = useDocumentUrl(photoId);
 
@@ -69,6 +75,10 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
         {mode === "view" && (
           <div className="actions">
             <button className="btn big" onClick={() => setMode("renew")}>تمدید عضویت</button>
+            {k50?.configured && (
+              <button className="btn ghost" disabled={!k50.enabled} onClick={() => setEnrolling(true)}
+                title={k50.enabled ? undefined : "اول عضویت سالن را ثبت یا تمدید کنید"}><Icon name="fingerprint" /> ثبت انگشت</button>
+            )}
             {!d.periods.length && <button className="btn ghost" onClick={() => setMode("record")}>ثبت تاریخ عضویت فعلی (پولش قبلاً گرفته شده)</button>}
             <button className="btn ghost" onClick={() => setMode("edit")}>ویرایش مشخصات</button>
             <button className="btn ghost" onClick={() => setCard(true)}>چاپ کارت عضویت</button>
@@ -79,6 +89,33 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
 
       {error && <p className="form-error" role="alert">{error}</p>}
 
+      {steps && mode === "view" && (
+        <section className="glass next-steps" aria-label="قدم‌های بعدی">
+          <div className="next-steps-head">
+            <h2><Icon name="check" /> {name} ثبت شد</h2>
+            <button className="btn ghost small" onClick={() => setSteps(false)}>بستن</button>
+          </div>
+          <ol>
+            {k50?.configured && (
+              <li className={fingerDone > 0 ? "done" : ""}>
+                <span>ثبت انگشت روی دستگاه دم در{fingerDone > 0 && <> · <strong>ثبت شد</strong></>}</span>
+                {k50.enabled
+                  ? <button className={`btn small${fingerDone > 0 ? " ghost" : ""}`} onClick={() => setEnrolling(true)}>{fingerDone > 0 ? "انگشت دیگر" : "ثبت انگشت"}</button>
+                  : <span className="muted small">بدون عضویت فعال، دستگاه انگشت را قبول نمی‌کند.</span>}
+              </li>
+            )}
+            <li className={photoId ? "done" : ""}>
+              <span>عکس عضو برای کارت{photoId && <> · <strong>گذاشته شد</strong></>}</span>
+              {!photoId && <button className="btn ghost small" onClick={() => document.getElementById("member-docs")?.scrollIntoView({ behavior: "smooth" })}>رفتن به عکس</button>}
+            </li>
+            <li>
+              <span>چاپ کارت عضویت</span>
+              <button className="btn ghost small" onClick={() => setCard(true)}>چاپ کارت</button>
+            </li>
+          </ol>
+        </section>
+      )}
+
       {mode === "edit" && <EditMember id={id} member={d} onDone={() => { setMode("view"); void load(); }} />}
       {(mode === "renew" || mode === "record") && (
         <AddPeriod id={id} detail={d} plans={plans} record={mode === "record"}
@@ -87,7 +124,7 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
       )}
 
       <Documents memberId={id} docs={d.documents} onChange={() => void load()} />
-      <Fingerprint memberId={id} reload={d.periods.length} />
+      <Fingerprint memberId={id} reload={d.periods.length + fingerDone} onLoaded={setK50} onEnroll={() => setEnrolling(true)} />
 
       <section className="glass table-wrap">
         <table className="table">
@@ -132,6 +169,7 @@ export function MemberPage({ id, openBill, onRemoved }: { id: string; onBack?: (
       )}
       {dates && <PeriodDates period={dates} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("تاریخ دوره اصلاح شد."); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
+      {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
     </div>
   );

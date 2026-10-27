@@ -44,7 +44,7 @@ export function Documents({ memberId, docs, onChange }: { memberId: string; docs
   }
 
   return (
-    <section className="panel wide">
+    <section className="panel wide" id="member-docs">
       <h2>عکس و تذکره</h2>
       <div className="doc-slots">
         {SLOTS.map((s) => {
