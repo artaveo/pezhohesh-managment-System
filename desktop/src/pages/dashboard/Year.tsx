@@ -1,9 +1,10 @@
-import { addDays, daysBetween, fa, formatShort, iso, monthName, monthsOfYear, nextYear, parseIso, prevYear, yearNumber, yearStart } from "../../lib/solar";
+import { addDays, daysBetween, fa, formatShort, iso, monthName, monthsOfYear, nextYear, parseIso, prevYear, toSolar, yearNumber, yearStart } from "../../lib/solar";
 import { loadRanges, total, type Range, type Sum } from "../../lib/reports";
 import { useLoad } from "../../lib/useLoad";
 import { Failed, Figure, Kpi, Loading } from "../../components/Stat";
 import { TrendChart } from "../../components/charts/TrendChart";
 import { LABELS } from "../../components/charts/CategoryBars";
+import { api, type SalaryPage } from "../../lib/api";
 
 const INCOME_ORDER = Object.keys(LABELS);
 
@@ -39,8 +40,10 @@ export function YearView() {
       const b = await loadRanges(ranges, false, signal);
       ranges.forEach((r, i) => years.push({ start: starts[i], sum: b.sum(r) }));
     }
+    // Staff salaries, for the "if everyone had been paid exactly their salary" table.
+    const salaries = await api.salaries(toSolar(ys).y, signal).catch(() => null);
     return {
-      byMonth, cur: total(a.res.periods.filter((p) => p.from >= iso(ys))), last: a.sum(lastYtd), years, first,
+      salaries, byMonth, cur: total(a.res.periods.filter((p) => p.from >= iso(ys))), last: a.sum(lastYtd), years, first,
       allTime: a.res.all_time_income, expenseOrder: a.res.expense_order,
     };
   }, [iso(now)]);
@@ -80,6 +83,7 @@ export function YearView() {
       </section>
 
       <Statement y={y} months={months.slice(0, 12)} byMonth={byMonth} cur={cur} expenseOrder={data.expenseOrder} />
+      {data.salaries && <AtFixedSalary y={y} months={months.slice(0, 12)} byMonth={byMonth} salaries={data.salaries} />}
     </>
   );
 }
@@ -165,3 +169,48 @@ function Statement({ y, months, byMonth, cur, expenseOrder }: { y: string; month
 }
 
 const rank = (c: string) => (INCOME_ORDER.includes(c) ? INCOME_ORDER.indexOf(c) : 99);
+
+/**
+ * The statement counts what staff were really paid. This table shows each month as if they
+ * had been paid exactly their fixed salary: their paid lines out, the fixed salaries in.
+ */
+function AtFixedSalary({ y, months, byMonth, salaries }: { y: string; months: Date[]; byMonth: Sum[]; salaries: SalaryPage }) {
+  const staff = salaries.people.filter((p) => p.category && p.months.some((m) => m.accrued > 0));
+  if (!staff.length) return null;
+  const lines = [...new Set(staff.map((p) => p.category!))];
+  const fixed = (i: number) => staff.reduce((t, p) => t + (p.months[i]?.accrued ?? 0), 0);
+  const paid = (s: Sum) => lines.reduce((t, c) => t + (s.expenses_by_category[c] ?? 0), 0);
+  const rows: { label: string; v: (s: Sum, i: number) => number; cls?: string }[] = [
+    { label: "مجموع درآمد", v: (s) => s.income },
+    { label: `پول گرفته‌شده (${lines.join("، ")})`, v: (s) => paid(s) },
+    { label: "معاش ثابت کارمندان", v: (_, i) => fixed(i) },
+    { label: "مجموع مصارفات با معاش ثابت", v: (s, i) => s.expenses - paid(s) + fixed(i), cls: "sum" },
+    { label: "سود خالص با معاش ثابت", v: (s, i) => s.income - s.expenses + paid(s) - fixed(i), cls: "net" },
+    { label: "فرق با سود خالص صورت حساب", v: (s, i) => paid(s) - fixed(i) },
+  ];
+  const yearTotal = (v: (s: Sum, i: number) => number) => byMonth.reduce((t, s, i) => t + v(s, i), 0);
+  return (
+    <section className="glass statement">
+      <div className="panel-head">
+        <h2>اگر معاش ثابت داده می‌شد، سال {y}</h2>
+        <span className="muted small">صورت حساب بالا پول واقعی گرفته‌شده را حساب می‌کند؛ این جدول فرض می‌کند هر کارمند هر ماه دقیقاً معاش ثابتش را گرفته.</span>
+      </div>
+      <div className="table-wrap flush">
+        <table className="table sheet">
+          <thead>
+            <tr><th>شرح</th>{months.map((m) => <th key={iso(m)}>{monthName(m)}</th>)}<th className="remarks">ملاحظات</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.label} className={r.cls ?? ""}>
+                <th scope="row">{r.label}</th>
+                {months.map((_, i) => <td key={i}>{i < byMonth.length ? fa(r.v(byMonth[i], i)) : "—"}</td>)}
+                <td className="remarks">{fa(yearTotal(r.v))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}

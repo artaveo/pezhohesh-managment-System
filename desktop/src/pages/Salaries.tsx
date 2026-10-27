@@ -37,8 +37,8 @@ export function Salaries() {
     <div className="page">
       <div className="page-head">
         <p className="muted">
-          معاش ثابت هر نفر، اول هر ماه خودش در «مصارف» همان ماه ثبت می‌شود (زیر سطری که برایش انتخاب شده)، پس سود ماه و سهم شرکا درست می‌ماند.
-          پولی که کارمند از صندوق می‌گیرد را در «مصارف و برداشت‌ها ← برداشت‌ها» به نام خودش ثبت کنید.
+          معاش ثابت فقط برای مقایسه است و به مصارف نمی‌رود. هر پولی که کارمند می‌گیرد، مثل اکسل در «مصارف» زیر سطر خودش ثبت شود
+          (مثلاً «اجوره مدیر اداری»). صورت حساب و سهم شرکا همان پول واقعی را حساب می‌کنند. اینجا هر ماه معاش با پول گرفته‌شده مقایسه می‌شود.
         </p>
         {partner && !editing && <button className="btn" onClick={() => { setEditing("new"); setNotice(""); }}>+ کارمند تازه</button>}
       </div>
@@ -126,7 +126,8 @@ function SalaryForm({ person, categories, onDone, onCancel }: {
   onCancel: () => void;
 }) {
   const now = toSolar(new Date());
-  const from = person?.salary_from ? toSolar(person.salary_from) : now;
+  // A new person starts with the year (the book begins on 1 Hamal).
+  const from = person?.salary_from ? toSolar(person.salary_from) : { y: now.y, m: 1, d: 1 };
   const [name, setName] = useState(person?.full_name ?? "");
   const [title, setTitle] = useState(person?.title ?? "");
   const [salary, setSalary] = useState(person?.monthly_salary ? String(person.monthly_salary) : "");
@@ -138,7 +139,6 @@ function SalaryForm({ person, categories, onDone, onCancel }: {
   const [error, setError] = useState("");
 
   const start = fromSolar({ y: Number(year), m: month, d: 1 });
-  const earlier = start && (Number(year) < now.y || (Number(year) === now.y && month < now.m));
 
   async function save() {
     if (!start) return;
@@ -148,7 +148,7 @@ function SalaryForm({ person, categories, onDone, onCancel }: {
     try {
       if (person) await api.updateSalary(person.id, body);
       else await api.createSalary(body);
-      onDone(person ? `معاش ${name} به‌روز شد.` : `${name} اضافه شد. معاش ${MONTHS[month - 1]} ${year} تا امروز در مصارف ثبت شد.`);
+      onDone(person ? `معاش ${name} به‌روز شد.` : `${name} اضافه شد. معاش از ${MONTHS[month - 1]} ${year} با پول‌های سطر خودش مقایسه می‌شود.`);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -182,14 +182,9 @@ function SalaryForm({ person, categories, onDone, onCancel }: {
           </div>
         </div>
         {person && (
-          <label className="check"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> هنوز کار می‌کند (معاش ماه‌های بعد ثبت شود)</label>
+          <label className="check"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> هنوز کار می‌کند (معاش ماه‌های بعد حساب شود)</label>
         )}
       </div>
-      {earlier && (
-        <p className="form-error inline">
-          ماه‌های قبل از این ماه هم ثبت می‌شوند. اگر معاش آن ماه‌ها از اکسل در مصارف آمده، شروع را همین ماه بگذارید تا دو بار حساب نشود.
-        </p>
-      )}
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="actions">
         <button className="btn" disabled={busy || !name.trim() || !(Number(salary) >= 0) || !cat || !start} onClick={() => void save()}>ذخیره</button>

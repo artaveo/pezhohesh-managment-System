@@ -431,6 +431,7 @@ export function errorText(e: unknown): string {
     case "period_overlap": return "این دوره با دورهٔ قبلی همین عضو روی هم می‌افتد؛ تاریخ شروع باید بعد از ختم دورهٔ قبلی باشد.";
     case "bad_date": return "ماه شروع درست نیست (سال 1400 به بعد، و نه بیشتر از یک سال بعد).";
     case "bad_salary_line": return "سطر مصارف را از لیست انتخاب کنید.";
+    case "salary_line_taken": return "این سطر مصارف مال کارمند دیگری است. برای هر کارمند سطر خودش را انتخاب کنید.";
     case "drive_not_found": return "این درایو دیگر وصل نیست.";
     case "drive_not_writable": return "روی این درایو نمی‌شود نوشت (شاید قفل است).";
     case "person_has_login": return "این شخص از قبل حساب ورود دارد.";

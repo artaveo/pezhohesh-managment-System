@@ -102,7 +102,7 @@ function Expenses({ period }: { period: Period }) {
                 <td>{e.category}</td>
                 <td className="muted">{e.description ?? "—"}</td>
                 <td className="num">{fa(e.amount)}</td>
-                <td className="muted">{e.from_excel ? "اکسل" : e.created_by ?? "خودکار (معاش)"}</td>
+                <td className="muted">{e.from_excel ? "اکسل" : e.created_by ?? "—"}</td>
                 <td>{e.removable && <RemoveButton onConfirm={() => void remove(e.id)} />}</td>
               </tr>
             ))}
@@ -154,7 +154,7 @@ function Withdrawals({ period }: { period: Period }) {
     <>
       <section className="panel wide">
         <h2>ثبت برداشت</h2>
-        <p className="muted">پولی که یکی از شرکا یا کارمندان از صندوق می‌برد. معاش ثابت کارمندان خودش هر ماه در «مصارف» ثبت می‌شود؛ پولی که کارمند می‌گیرد اینجا به نام خودش ثبت شود تا در «معاش کارمندان» از طلبش کم شود.</p>
+        <p className="muted">پولی که یکی از شرکا از صندوق می‌برد. پولی که کارمندان می‌گیرند، مثل اکسل، در «مصارف» زیر سطر خودشان ثبت شود (مثلاً «اجوره مدیر اداری»)؛ «معاش کارمندان» آن را با معاش ثابتشان مقایسه می‌کند.</p>
         <div className="form-grid">
           <label className="field wide">
             <span>برداشت کننده</span>
