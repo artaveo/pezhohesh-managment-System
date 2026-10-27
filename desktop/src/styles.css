@@ -525,7 +525,11 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .chip.kind-monthly.new { background: var(--good-soft); color: var(--good); }
 .dest { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--glass-strong); }
 .dest .muted.small { margin: 0; }
-.drive-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.drive-list { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.drive-list li { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.drive-list li.picked { border-color: var(--accent); background: var(--accent-soft); }
+.folder-field { display: flex; gap: 8px; }
+.folder-field input { flex: 1; min-width: 0; }
 
 /* One period filter for every list (PeriodPicker) */
 .period-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

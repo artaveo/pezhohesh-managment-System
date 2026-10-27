@@ -172,7 +172,7 @@ export type AuditPage = { lines: AuditLine[]; more: boolean; users: { id: string
 export type MonthSummary = { id: string; solar_year: number; solar_month: number; starts_on: string; net_balance: number; note: string | null };
 export type Withdrawal = { id: string; taken_on: string; staff_id: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
-export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number };
+export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number; usb_drive?: string | null };
 export type BackupOutcome = {
   at: string | null; ok: boolean;
   folders: { kind: "folder" | "usb" | "gdrive"; folder: string; file: string | null; error: string | null }[];
@@ -181,7 +181,7 @@ export type OnlineOutcome = { at: string | null; ok: boolean; error: string | nu
 export type OnlineStatus = { host: string | null; every_hours: number; last: OnlineOutcome | null };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
-  usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean }[];
+  usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean; picked: boolean; removable: boolean }[];
   files: { name: string; size: number; modified: string | null }[];
 };
 export type HotspotCard = { volume_gb: number; price: number; active: boolean; bought: number; sold: number; in_hand: number };

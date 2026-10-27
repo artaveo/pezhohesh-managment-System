@@ -26,3 +26,11 @@ export async function updateSavedPassword(username: string, password: string) {
 }
 
 export const canSaveLogin = isTauri;
+
+/** The Windows folder picker ("This PC"); null when cancelled or outside the desktop app. */
+export async function pickFolder(start?: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  try { return await invoke<string | null>("pick_folder", { start: start || null }); } catch (e) { console.error("pick_folder", e); return null; }
+}
+
+export const canPickFolder = () => isTauri();

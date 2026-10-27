@@ -51,6 +51,30 @@ fn api_log() -> String {
     lines[lines.len().saturating_sub(15)..].join("\n")
 }
 
+/// The Windows folder picker (opens at "This PC"), for the backup folders. None when cancelled.
+#[tauri::command]
+async fn pick_folder(window: tauri::WebviewWindow, start: Option<String>) -> Option<String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut dialog = rfd::FileDialog::new().set_title("انتخاب پوشه").set_parent(&window);
+            if let Some(dir) = start.filter(|d| std::path::Path::new(d).is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog.pick_folder()
+        })
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.display().to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, start);
+        None
+    }
+}
+
 fn start_api() -> Option<Child> {
     // An API that is already running (an earlier window, or one started by hand) is reused.
     if std::net::TcpStream::connect(("127.0.0.1", 8750)).is_ok() {
@@ -129,7 +153,8 @@ fn main() {
             postgres::postgres_service,
             postgres::fix_postgres,
             restart_api,
-            api_log
+            api_log,
+            pick_folder
         ])
         .setup(|app| {
             postgres::start_if_stopped();

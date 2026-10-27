@@ -12,6 +12,8 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+use uuid::Uuid;
+
 use crate::auth::{begin_as, ApiError, CurrentUser};
 use crate::{solar, AppState};
 
@@ -27,8 +29,13 @@ pub const USB_FOLDER: &str = "Pezhohesh-Backup";
 pub struct Plan {
     /// First: on this laptop. Second (optional): a network folder or any other folder.
     folders: Vec<String>,
-    /// Also to the first drive with a `Pezhohesh-Backup` folder (a USB stick).
+    /// Also to the drive chosen for backups (a USB stick), see `usb_drive`.
     usb: bool,
+    /// The drive picked on the backup page ("F:\\"), as it was named then.
+    usb_drive: Option<String>,
+    /// The id written on that drive (Pezhohesh-Backup\\pezhohesh-drive.txt), so it is found
+    /// again when Windows gives it another letter, and no other drive is used instead.
+    usb_id: Option<String>,
     /// Also to Google Drive ("Google Drive for desktop" signed in on this laptop).
     gdrive: bool,
     every_hours: u32,
@@ -37,7 +44,7 @@ pub struct Plan {
 
 impl Default for Plan {
     fn default() -> Self {
-        Plan { folders: vec![default_folder()], usb: true, gdrive: true, every_hours: 24, keep: KEEP_DEFAULT }
+        Plan { folders: vec![default_folder()], usb: true, usb_drive: None, usb_id: None, gdrive: true, every_hours: 24, keep: KEEP_DEFAULT }
     }
 }
 
@@ -64,10 +71,70 @@ fn kind_folder() -> String {
     "folder".into()
 }
 
-/// The drives other than the system drive: D: to Z: on Windows (or PZ_DRIVES, ";"-separated, in tests).
-fn drive_roots() -> Vec<PathBuf> {
+/// A drive other than the system drive, and whether it is outside the laptop: a USB stick or
+/// a USB hard disk (which Windows calls "fixed", like the laptop's own partitions).
+#[derive(Clone)]
+struct Root {
+    path: PathBuf,
+    removable: bool,
+}
+
+/// The file on a picked drive that names it.
+const DRIVE_ID_FILE: &str = "pezhohesh-drive.txt";
+
+fn drive_id(root: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(root.join(USB_FOLDER).join(DRIVE_ID_FILE)).ok()?;
+    Some(id.trim().to_string()).filter(|i| !i.is_empty())
+}
+
+/// Whether the volume sits on a disk connected by USB (the bus type of its disk).
+#[cfg(windows)]
+fn on_usb(letter: char) -> bool {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{BusTypeUsb, CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows_sys::Win32::System::Ioctl::{
+        PropertyStandardQuery, StorageDeviceProperty, IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    let path: Vec<u16> = format!("\\\\.\\{letter}:").encode_utf16().chain([0]).collect();
+    unsafe {
+        // No access rights are needed to ask a volume about its disk.
+        let h = CreateFileW(path.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
+        if h == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let query = STORAGE_PROPERTY_QUERY { PropertyId: StorageDeviceProperty, QueryType: PropertyStandardQuery, AdditionalParameters: [0] };
+        let mut buf = [0u8; 1024];
+        let mut got = 0u32;
+        let ok = DeviceIoControl(
+            h,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            &query as *const _ as *const _,
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            buf.as_mut_ptr() as *mut _,
+            buf.len() as u32,
+            &mut got,
+            std::ptr::null_mut(),
+        );
+        CloseHandle(h);
+        if ok == 0 || (got as usize) < size_of::<STORAGE_DEVICE_DESCRIPTOR>() {
+            return false;
+        }
+        let d: STORAGE_DEVICE_DESCRIPTOR = std::ptr::read_unaligned(buf.as_ptr() as *const _);
+        d.BusType == BusTypeUsb
+    }
+}
+
+/// The drives other than the system drive: D: to Z: on Windows (or PZ_DRIVES, ";"-separated, in
+/// tests; a "+" in front marks a removable one).
+fn drive_roots() -> Vec<Root> {
     if let Ok(list) = std::env::var("PZ_DRIVES") {
-        return list.split(';').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+        return list
+            .split(';')
+            .filter(|p| !p.is_empty())
+            .map(|p| Root { removable: p.starts_with('+'), path: PathBuf::from(p.trim_start_matches('+')) })
+            .collect();
     }
     #[cfg(windows)]
     {
@@ -76,28 +143,36 @@ fn drive_roots() -> Vec<PathBuf> {
         // An empty card reader must not open a "no disk" message on the desk's screen.
         unsafe { SetErrorMode(SEM_FAILCRITICALERRORS) };
         ('D'..='Z')
-            .filter(|c| {
+            .filter_map(|c| {
                 let root: Vec<u16> = format!("{c}:\\").encode_utf16().chain([0]).collect();
                 // 2 removable, 3 fixed (USB hard disks say fixed), 4 network
-                matches!(unsafe { GetDriveTypeW(root.as_ptr()) }, 2 | 3 | 4)
+                match unsafe { GetDriveTypeW(root.as_ptr()) } {
+                    t @ (2 | 3 | 4) => Some(Root { path: PathBuf::from(format!("{c}:\\")), removable: t == 2 || (t == 3 && on_usb(c)) }),
+                    _ => None,
+                }
             })
-            .map(|c| PathBuf::from(format!("{c}:\\")))
-            .filter(|p| p.exists())
+            .filter(|r| r.path.exists())
             .collect()
     }
     #[cfg(not(windows))]
     Vec::new()
 }
 
-/// The backup folder on the first drive that carries one (the USB stick).
-fn usb_dir(roots: &[PathBuf]) -> Option<PathBuf> {
-    roots.iter().map(|r| r.join(USB_FOLDER)).find(|p| p.is_dir())
+/// The backup folder on the picked drive, found by its id whatever its letter is now. Before
+/// a drive was ever picked: a USB drive that carries the folder. Never quietly a partition of
+/// the laptop's own disk: that is no copy for when the laptop is lost.
+fn usb_dir(roots: &[Root], picked: Option<&str>) -> Option<PathBuf> {
+    match picked {
+        Some(id) => roots.iter().find(|r| drive_id(&r.path).as_deref() == Some(id)),
+        None => roots.iter().filter(|r| r.removable).find(|r| r.path.join(USB_FOLDER).is_dir()),
+    }
+    .map(|r| r.path.join(USB_FOLDER))
 }
 
 /// Google Drive's "My Drive" folder, from "Google Drive for desktop" (a drive letter, or a
 /// folder in the user's profile when it mirrors).
-fn gdrive_root(roots: &[PathBuf]) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = roots.iter().map(|r| r.join("My Drive")).collect();
+fn gdrive_root(roots: &[Root]) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = roots.iter().map(|r| r.path.join("My Drive")).collect();
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
         candidates.push(Path::new(&home).join("My Drive"));
         candidates.push(Path::new(&home).join("Google Drive"));
@@ -108,16 +183,25 @@ fn gdrive_root(roots: &[PathBuf]) -> Option<PathBuf> {
 #[derive(Serialize)]
 pub struct Drive {
     root: String,
+    /// The drive picked for backups.
+    picked: bool,
     /// It already has the Pezhohesh-Backup folder.
     prepared: bool,
+    /// A USB stick (Windows says removable); otherwise a disk inside the laptop or a USB hard disk.
+    removable: bool,
 }
 
-fn drives(roots: &[PathBuf], gdrive: Option<&Path>) -> Vec<Drive> {
+fn drives(roots: &[Root], gdrive: Option<&Path>, picked: Option<&str>) -> Vec<Drive> {
     let gdrive = gdrive.and_then(Path::parent);
     roots
         .iter()
-        .filter(|r| Some(r.as_path()) != gdrive)
-        .map(|r| Drive { prepared: r.join(USB_FOLDER).is_dir(), root: r.display().to_string() })
+        .filter(|r| Some(r.path.as_path()) != gdrive)
+        .map(|r| Drive {
+            picked: picked.is_some() && drive_id(&r.path).as_deref() == picked,
+            prepared: r.path.join(USB_FOLDER).is_dir(),
+            root: r.path.display().to_string(),
+            removable: r.removable,
+        })
         .collect()
 }
 
@@ -194,9 +278,10 @@ pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> 
     // Where to: the plan's folders, then the USB stick and Google Drive when they are there.
     let mut targets: Vec<(&str, Result<PathBuf, &str>)> =
         plan.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).map(|f| ("folder", Ok(PathBuf::from(f)))).collect();
-    let (usb, gdrive) = tokio::task::spawn_blocking(|| {
+    let chosen = plan.usb_id.clone();
+    let (usb, gdrive) = tokio::task::spawn_blocking(move || {
         let roots = drive_roots();
-        (usb_dir(&roots), gdrive_root(&roots))
+        (usb_dir(&roots, chosen.as_deref()), gdrive_root(&roots))
     })
     .await
     .unwrap_or((None, None));
@@ -396,13 +481,14 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         None => vec![],
     };
     files.sort_by_key(|f| std::cmp::Reverse(f.modified));
-    let (usb, gdrive, drives) = tokio::task::spawn_blocking(|| {
+    let chosen = plan.usb_id.clone();
+    let (usb, gdrive, drives) = tokio::task::spawn_blocking(move || {
         let roots = drive_roots();
         let gdrive = gdrive_root(&roots);
         (
-            usb_dir(&roots).map(|p| p.display().to_string()),
+            usb_dir(&roots, chosen.as_deref()).map(|p| p.display().to_string()),
             gdrive.as_ref().map(|p| p.join(USB_FOLDER).display().to_string()),
-            drives(&roots, gdrive.as_deref()),
+            drives(&roots, gdrive.as_deref(), chosen.as_deref()),
         )
     })
     .await
@@ -419,16 +505,23 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
     if p.every_hours > 24 * 7 || !(1..=365).contains(&p.keep) {
         return Err(ApiError::bad("bad_backup_plan"));
     }
-    let plan = Plan { folders, usb: p.usb, gdrive: p.gdrive, every_hours: p.every_hours, keep: p.keep };
-    let mut tx = begin_as(&s.db, &user).await?;
+    // The drive is picked with its own button (prepare_usb), so a page opened earlier does not undo it.
+    let stored = plan_of(&s.db).await?;
+    let plan = Plan { folders, usb: p.usb, usb_drive: stored.usb_drive, usb_id: stored.usb_id, gdrive: p.gdrive, every_hours: p.every_hours, keep: p.keep };
+    save_plan(&s.db, &user, &plan).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn save_plan(db: &PgPool, user: &CurrentUser, plan: &Plan) -> Result<(), ApiError> {
+    let mut tx = begin_as(db, user).await?;
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES ('backup_plan', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
     )
-    .bind(serde_json::to_value(&plan).unwrap_or_default())
+    .bind(serde_json::to_value(plan).unwrap_or_default())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -436,15 +529,30 @@ pub struct PrepareUsb {
     root: String,
 }
 
-/// POST /api/v1/backup/usb: makes the Pezhohesh-Backup folder on a drive, so backups find it.
-pub async fn prepare_usb(user: CurrentUser, Json(p): Json<PrepareUsb>) -> Result<StatusCode, ApiError> {
+/// POST /api/v1/backup/usb: picks the drive for the USB copy, and makes the Pezhohesh-Backup
+/// folder on it if it has none yet.
+pub async fn prepare_usb(State(s): State<AppState>, user: CurrentUser, Json(p): Json<PrepareUsb>) -> Result<StatusCode, ApiError> {
     partner(&user)?;
-    let root = tokio::task::spawn_blocking(move || drive_roots().into_iter().find(|r| r.display().to_string() == p.root))
+    let root = tokio::task::spawn_blocking(move || drive_roots().into_iter().find(|r| r.path.display().to_string() == p.root))
         .await
         .ok()
         .flatten()
         .ok_or(ApiError::bad("drive_not_found"))?;
-    tokio::fs::create_dir_all(root.join(USB_FOLDER)).await.map_err(|_| ApiError::bad("drive_not_writable"))?;
+    let dir = root.path.join(USB_FOLDER);
+    tokio::fs::create_dir_all(&dir).await.map_err(|_| ApiError::bad("drive_not_writable"))?;
+    let id = match drive_id(&root.path) {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            tokio::fs::write(dir.join(DRIVE_ID_FILE), &id).await.map_err(|_| ApiError::bad("drive_not_writable"))?;
+            id
+        }
+    };
+    let mut plan = plan_of(&s.db).await?;
+    plan.usb_drive = Some(root.path.display().to_string());
+    plan.usb_id = Some(id);
+    plan.usb = true;
+    save_plan(&s.db, &user, &plan).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -456,6 +564,26 @@ pub async fn backup_now(State(s): State<AppState>, user: CurrentUser) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_drive_choice() {
+        let base = std::env::temp_dir().join(format!("pz-usb-{}", std::process::id()));
+        let root = |n: &str, removable: bool| Root { path: base.join(n), removable };
+        let (d, e, f) = (root("D", false), root("E", true), root("F", true));
+        for r in [&d, &e, &f] {
+            std::fs::create_dir_all(r.path.join(USB_FOLDER)).unwrap();
+        }
+        std::fs::write(f.path.join(USB_FOLDER).join(DRIVE_ID_FILE), "stick-1\n").unwrap();
+        let roots = vec![d.clone(), e.clone(), f.clone()];
+        // Never picked: the first USB drive with the folder, not the laptop's own D:.
+        assert_eq!(usb_dir(&roots, None), Some(e.path.join(USB_FOLDER)));
+        assert_eq!(usb_dir(&[d.clone()], None), None);
+        // Picked: that drive, by its id, under whatever letter.
+        assert_eq!(usb_dir(&roots, Some("stick-1")), Some(f.path.join(USB_FOLDER)));
+        // Picked but not plugged in: no USB copy rather than a copy somewhere else.
+        assert_eq!(usb_dir(&[d.clone(), e.clone()], Some("stick-1")), None);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn names() {

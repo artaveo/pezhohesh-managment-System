@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus } from "../lib/api";
 import { formatDay } from "../lib/solar";
+import { canPickFolder, pickFolder } from "../lib/savedLogin";
+import { useToast } from "../components/Toast";
 
 const EVERY = [
   { h: 6, label: "هر 6 ساعت" },
@@ -32,6 +34,7 @@ function why(error: string) {
  * USB stick or a network folder, taken on a schedule and whenever the button is pressed.
  */
 export function Backup() {
+  const toast = useToast();
   const [s, setS] = useState<BackupStatus | null>(null);
   const [folders, setFolders] = useState<[string, string]>(["", ""]);
   const [usb, setUsb] = useState(true);
@@ -40,7 +43,6 @@ export function Backup() {
   const [keep, setKeep] = useState("30");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -54,21 +56,38 @@ export function Backup() {
     }).catch((e) => setError(errorText(e)));
   }, [tick]);
 
-  async function save() {
+  // Every change is saved at once: a folder typed in and then «پشتیبان بگیر» must not be lost.
+  type Patch = Partial<{ folders: [string, string]; usb: boolean; gdrive: boolean; every: number; keep: string }>;
+  async function persist(p: Patch = {}) {
+    const f = p.folders ?? folders;
+    const k = Number(p.keep ?? keep);
+    if (!f[0].trim()) { setError("پوشهٔ همین لپ‌تاپ را انتخاب کنید."); return false; }
+    if (!(k >= 1 && k <= 365)) { setError("تعداد نسخه‌ها باید بین 1 و 365 باشد."); return false; }
     setError("");
     try {
-      await api.setBackupPlan({ folders: folders.filter((f) => f.trim()), usb, gdrive, every_hours: every, keep: Number(keep) });
-      setSaved(true);
+      await api.setBackupPlan({ folders: f.filter((x) => x.trim()), usb: p.usb ?? usb, gdrive: p.gdrive ?? gdrive, every_hours: p.every ?? every, keep: k });
+      toast("ذخیره شد.");
       setTick((t) => t + 1);
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     }
+  }
+  const dirty = !!s && (folders[0] !== (s.plan.folders[0] ?? "") || folders[1] !== (s.plan.folders[1] ?? "") || keep !== String(s.plan.keep));
+  async function choose(i: 0 | 1) {
+    const picked = await pickFolder(folders[i] || folders[0]);
+    if (!picked) return;
+    const next: [string, string] = i === 0 ? [picked, folders[1]] : [folders[0], picked];
+    setFolders(next);
+    await persist({ folders: next });
   }
   async function prepare(root: string) {
     setError("");
-    try { await api.prepareUsb(root); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); }
+    try { await api.prepareUsb(root); toast(`پشتیبان فلش از این به بعد روی ${root} گرفته می‌شود.`); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); }
   }
   async function now() {
+    if (dirty && !(await persist())) return;
     setBusy(true);
     setError("");
     try { await api.backupNow(); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
@@ -91,27 +110,37 @@ export function Backup() {
           اگر فلش وصل نباشد، بقیه باز هم گرفته می‌شوند.
         </p>
         <div className="form-grid">
-          <label className="field wide span-2"><span>پوشهٔ همین لپ‌تاپ *</span><input dir="ltr" value={folders[0]} onChange={(e) => { setSaved(false); setFolders([e.target.value, folders[1]]); }} /></label>
+          <FolderField label="پوشهٔ همین لپ‌تاپ *" value={folders[0]} onChange={(v) => setFolders([v, folders[1]])}
+            onCommit={() => { if (dirty) void persist(); }} onPick={() => void choose(0)} />
         </div>
 
         <div className="dest">
-          <label className="check big"><input type="checkbox" checked={usb} onChange={(e) => { setSaved(false); setUsb(e.target.checked); }} /> روی فلش هم بگیر</label>
+          <label className="check big"><input type="checkbox" checked={usb} onChange={(e) => { setUsb(e.target.checked); void persist({ usb: e.target.checked }); }} /> روی فلش هم بگیر</label>
           <p className="muted small">
-            برنامه فلش را از پوشهٔ <bdi dir="ltr">Pezhohesh-Backup</bdi> در آن می‌شناسد، پس حرف درایو (E: یا F:) مهم نیست.
-            {s.usb ? <> الان وصل است: <bdi dir="ltr">{s.usb}</bdi></> : " الان فلشِ آماده‌ای وصل نیست."}
+            درایو فلش یا هارد بیرونی را انتخاب کنید. برنامه آن را به یاد می‌سپارد، حتی اگر دفعهٔ بعد حرف دیگری (E: یا F:) بگیرد.
+            {s.usb ? <> پشتیبان فلش الان می‌رود به: <bdi dir="ltr">{s.usb}</bdi></> : s.drives.some((d) => d.picked) ? "" : " هنوز درایوی انتخاب نشده."}
           </p>
-          {s.drives.some((d) => !d.prepared) && (
-            <div className="drive-list">
-              <span className="muted small">برای آماده کردن یک فلش تازه، درایوش را بزنید:</span>
-              {s.drives.filter((d) => !d.prepared).map((d) => (
-                <button key={d.root} className="btn ghost small" onClick={() => void prepare(d.root)}>آماده کن <bdi dir="ltr">{d.root}</bdi></button>
+          {s.drives.length > 0 ? (
+            <ul className="drive-list">
+              {s.drives.map((d) => (
+                <li key={d.root} className={d.picked ? "picked" : ""}>
+                  <bdi dir="ltr"><strong>{d.root}</strong></bdi>
+                  <span className="muted small">{d.removable ? "فلش / هارد USB" : "بخشی از دیسک خود لپ‌تاپ"}</span>
+                  {d.picked
+                    ? <span className="chip">انتخاب شده</span>
+                    : <button className="btn ghost small" onClick={() => void prepare(d.root)}>پشتیبان روی این درایو</button>}
+                  {!d.removable && !d.picked && <span className="muted small">(اگر لپ‌تاپ خراب شود، این هم از دست می‌رود)</span>}
+                </li>
               ))}
-            </div>
+            </ul>
+          ) : <p className="muted small">فلشی وصل نیست. فلش را وصل کنید و صفحه را دوباره باز کنید.</p>}
+          {s.plan.usb_drive && !s.drives.some((d) => d.picked) && (
+            <p className="notice warn">درایو انتخاب‌شده (<bdi dir="ltr">{s.plan.usb_drive}</bdi>) الان وصل نیست؛ تا وصل نشود، پشتیبان فلش گرفته نمی‌شود.</p>
           )}
         </div>
 
         <div className="dest">
-          <label className="check big"><input type="checkbox" checked={gdrive} onChange={(e) => { setSaved(false); setGdrive(e.target.checked); }} /> در گوگل درایو هم بگیر</label>
+          <label className="check big"><input type="checkbox" checked={gdrive} onChange={(e) => { setGdrive(e.target.checked); void persist({ gdrive: e.target.checked }); }} /> در گوگل درایو هم بگیر</label>
           <p className="muted small">
             {s.gdrive
               ? <>گوگل درایو پیدا شد: <bdi dir="ltr">{s.gdrive}</bdi>. فایل‌ها خودشان به حساب گوگل شما بالا می‌روند.</>
@@ -120,21 +149,22 @@ export function Backup() {
         </div>
 
         <div className="form-grid">
-          <label className="field wide span-2"><span>پوشهٔ دیگر (اختیاری، مثلاً کمپیوتر دیگری در شبکه)</span><input dir="ltr" value={folders[1]} onChange={(e) => { setSaved(false); setFolders([folders[0], e.target.value]); }} placeholder="\\PC2\Pezhohesh" /></label>
+          <FolderField label="پوشهٔ دیگر (اختیاری، مثلاً کمپیوتر دیگری در شبکه)" value={folders[1]} placeholder="\\PC2\Pezhohesh"
+            onChange={(v) => setFolders([folders[0], v])} onCommit={() => { if (dirty) void persist(); }} onPick={() => void choose(1)} />
           <label className="field wide">
             <span>پشتیبان خودکار</span>
-            <select value={every} onChange={(e) => { setSaved(false); setEvery(Number(e.target.value)); }}>
+            <select value={every} onChange={(e) => { setEvery(Number(e.target.value)); void persist({ every: Number(e.target.value) }); }}>
               {EVERY.map((o) => <option key={o.h} value={o.h}>{o.label}</option>)}
               {!EVERY.some((o) => o.h === every) && <option value={every}>هر {every} ساعت</option>}
             </select>
           </label>
           <label className="field wide">
             <span>چند نسخهٔ آخر بماند</span>
-            <input dir="ltr" inputMode="numeric" value={keep} onChange={(e) => { setSaved(false); setKeep(e.target.value.replace(/\D/g, "").slice(0, 3)); }} />
+            <input dir="ltr" inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value.replace(/\D/g, "").slice(0, 3))}
+              onBlur={() => { if (dirty) void persist(); }} />
           </label>
         </div>
-        {saved && <p className="form-ok" role="status">ذخیره شد.</p>}
-        <div className="actions"><button className="btn" disabled={!folders[0].trim() || !(Number(keep) >= 1 && Number(keep) <= 365)} onClick={() => void save()}>ذخیره</button></div>
+        {dirty && <div className="actions"><button className="btn" onClick={() => void persist()}>ذخیره</button></div>}
       </section>
 
       <Online />
@@ -159,6 +189,23 @@ export function Backup() {
         برای برگرداندن یک پشتیبان (مثلاً بعد از خرابی لپ‌تاپ) به من خبر بدهید؛ برگرداندن همهٔ اطلاعات فعلی را جایگزین می‌کند، پس با هم انجامش می‌دهیم.
       </p>
     </div>
+  );
+}
+
+/** A folder: typed, or picked in the Windows folder window («انتخاب پوشه…»). */
+function FolderField({ label, value, placeholder, onChange, onCommit, onPick }: {
+  label: string; value: string; placeholder?: string;
+  onChange: (v: string) => void; onCommit: () => void; onPick: () => void;
+}) {
+  return (
+    <label className="field wide span-2">
+      <span>{label}</span>
+      <span className="folder-field">
+        <input dir="ltr" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} onBlur={onCommit}
+          onKeyDown={(e) => { if (e.key === "Enter") onCommit(); }} />
+        {canPickFolder() && <button type="button" className="btn ghost" onClick={onPick}>انتخاب پوشه…</button>}
+      </span>
+    </label>
   );
 }
 
