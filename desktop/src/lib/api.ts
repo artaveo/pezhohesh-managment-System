@@ -49,6 +49,12 @@ export type K50Status = {
   errors: { member_no: number; name: string; error: string; error_at: string }[];
   /** Fingers in the app's own copy, and the last copy from the device. */
   fingers_saved: number; fingers_backup: { at: string; users: number; fingers: number; changed: number } | null;
+  dates_import: { at: string; added: number } | null;
+};
+export type K50DateRow = { no: string; device_name: string; app_name: string; start: string | null; end: string | null; taken: boolean };
+export type K50Dates = {
+  committed: boolean; device_users: number; added: K50DateRow[]; has_dates: number; no_dates: number; not_in_app: number;
+  name_differs: K50DateRow[];
 };
 /** What the device answered (the rest of the fields depend on the question). */
 export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknown };
@@ -467,6 +473,8 @@ export const api = {
   copyK50Sdk: (from = "") => request<K50SdkCopy>("/k50/sdk", { method: "POST", body: { from } }),
   scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
   syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
+  k50Dates: (commit: boolean, includeDiffers: boolean) =>
+    request<{ Ok?: K50Dates; Err?: string }>(`/k50/dates?commit=${commit}&include_differs=${includeDiffers}`, { method: "POST" }),
   backupK50Fingers: () => request<{ Ok?: { at: string; users: number; fingers: number; changed: number }; Err?: string }>("/k50/fingers", { method: "POST" }),
   /** Ok: the comparison; Err: why the device could not be read. */
   compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),

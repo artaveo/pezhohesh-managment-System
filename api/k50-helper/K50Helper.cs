@@ -127,7 +127,7 @@ static class K50Helper
                 return ok ? Obj("ok", true) : Obj("ok", false, "error", "enroll_failed", "code", LastError());
             }
             case "logs": return Logs(Str(o, "since"));
-            case "users": return Users();
+            case "users": return Users(Bool(o, "valid"));
             case "fingers": return Fingers();
             case "put_fingers": return PutFingers(o);
             case "set_time": return Obj("ok", (bool)zk.SetDeviceTime(m));
@@ -297,10 +297,11 @@ static class K50Helper
         return Obj("ok", true, "logs", list);
     }
 
-    // Every user on the device (ID, name, admin or not), to compare with the app.
-    static Dictionary<string, object> Users()
+    // Every user on the device (ID, name, admin or not), to compare with the app; with
+    // `valid`, also the dates each one is let in.
+    static Dictionary<string, object> Users(bool valid)
     {
-        var list = new ArrayList();
+        var list = new List<Dictionary<string, object>>();
         if ((bool)zk.ReadAllUserID(m))
         {
             string no = "", name = "", pw = "";
@@ -309,6 +310,18 @@ static class K50Helper
             while ((bool)zk.SSR_GetAllUserInfo(m, ref no, ref name, ref pw, ref priv, ref en))
                 list.Add(Obj("no", no, "name", name, "privilege", priv, "enabled", en));
         }
+        if (valid)
+            foreach (var u in list)
+            {
+                try
+                {
+                    int exp = 0, cnt = 0;
+                    string s = "", e = "";
+                    if ((bool)zk.GetUserValidDate(m, (string)u["no"], ref exp, ref cnt, ref s, ref e))
+                        u["valid"] = Obj("expires", exp, "start", s, "end", e);
+                }
+                catch { }
+            }
         return Obj("ok", true, "users", list);
     }
 

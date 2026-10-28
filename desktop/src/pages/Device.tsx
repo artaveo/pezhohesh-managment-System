@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Info, type K50Sdk, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Dates, type K50Info, type K50Sdk, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
@@ -19,7 +19,9 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates">("");
+  const [dates, setDates] = useState<K50Dates | null>(null);
+  const [withDiffers, setWithDiffers] = useState(false);
   const [sdk, setSdk] = useState<K50Sdk | null>(null);
   const [sdkFrom, setSdkFrom] = useState("");
   const [sdkError, setSdkError] = useState("");
@@ -82,6 +84,12 @@ export function Device() {
     const r = await api.backupK50Fingers();
     if (r.Ok) toast(`انگشت‌ها ذخیره شد: ${fa(r.Ok.fingers)} انگشت از ${fa(r.Ok.users)} کاربر.`);
     else setError(k50ErrorText(r.Err));
+  });
+  const readDates = (commit: boolean, include = withDiffers) => run("dates", async () => {
+    const r = await api.k50Dates(commit, include);
+    if (!r.Ok) { setError(k50ErrorText(r.Err)); return; }
+    setDates(r.Ok);
+    if (r.Ok.committed) toast(`تاریخ عضویت ${fa(r.Ok.added.length)} عضو از دستگاه ثبت شد.`);
   });
   const fixTime = () => run("time", async () => {
     const r = await api.k50Time();
@@ -203,6 +211,69 @@ export function Device() {
           </div>
         </details>
         {sdkError && <p className="form-error" role="alert">{sdkError}</p>}
+      </section>
+
+      <section className="panel wide">
+        <h2>تاریخ عضویت از دستگاه (یک بار)</h2>
+        <p className="muted">
+          اکسل تاریخ شروع و ختم عضویت ندارد ولی دستگاه دارد. این کار برای اعضایی که در برنامه هیچ تاریخی ندارند، همان
+          تاریخی را که دستگاه برایشان دارد ثبت می‌کند؛ بدون پول و بدون بل. اعضایی که در برنامه تاریخ دارند دست نمی‌خورند.
+          از آن به بعد تاریخ برنامه حرف اول را می‌زند و با تمدید به دستگاه می‌رود. روز شروع کار، بعد از ورود آخرین اکسل،
+          یک بار این را بزنید.
+        </p>
+        {s.dates_import && (
+          <p className="form-ok">آخرین بار {when(s.dates_import.at)}: تاریخ {fa(s.dates_import.added)} عضو از دستگاه ثبت شد.</p>
+        )}
+        <div className="actions">
+          <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void readDates(false)}>
+            {busy === "dates" && !dates ? "در حال خواندن دستگاه…" : "اول ببینم چه ثبت می‌شود"}
+          </button>
+        </div>
+        {dates && (
+          <>
+            <div className="stats-row">
+              <div><span className="muted small">{dates.committed ? "ثبت شد" : "ثبت می‌شود"}</span><strong>{fa(dates.added.length)}</strong></div>
+              <div><span className="muted small">از قبل تاریخ دارند</span><strong>{fa(dates.has_dates)}</strong></div>
+              <div><span className="muted small">در دستگاه تاریخ ندارند</span><strong>{fa(dates.no_dates)}</strong></div>
+              <div><span className="muted small">در برنامه نیستند</span><strong>{fa(dates.not_in_app)}</strong></div>
+            </div>
+            {dates.name_differs.length > 0 && (
+              <>
+                <p className="notice warn">
+                  نام {fa(dates.name_differs.length)} عضو روی دستگاه با نامش در برنامه یکی به نظر نمی‌رسد. این‌ها جدا
+                  نشان داده شده‌اند و تا شما نخواهید تاریخ نمی‌گیرند.
+                </p>
+                <label className="check">
+                  <input type="checkbox" checked={withDiffers} disabled={!!busy || dates.committed} onChange={(e) => { setWithDiffers(e.target.checked); void readDates(false, e.target.checked); }} />
+                  اعضای اکسل در این فهرست هم تاریخ بگیرند (همان آیدی در اکسل و ZKAccess یعنی همان شخص)
+                </label>
+              </>
+            )}
+            <div className="table-wrap flush">
+              <table className="table">
+                <thead><tr><th>آیدی</th><th>نام روی دستگاه</th><th>نام در برنامه</th><th>شروع</th><th>ختم</th></tr></thead>
+                <tbody>
+                  {[...dates.name_differs.filter((r) => !r.taken), ...dates.added].slice(0, 300).map((r) => (
+                    <tr key={r.no} className={r.taken ? "" : "muted"}>
+                      <td><bdi dir="ltr">{r.no}</bdi>{!r.taken && <span className="chip">نام فرق دارد</span>}</td>
+                      <td>{r.device_name || "—"}</td>
+                      <td>{r.app_name}</td>
+                      <td>{r.start ? formatDay(r.start) : "—"}</td>
+                      <td>{r.end ? formatDay(r.end) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!dates.committed && dates.added.length > 0 && (
+              <div className="actions">
+                <button className="btn" disabled={!!busy} onClick={() => void readDates(true)}>
+                  {busy === "dates" ? "در حال ثبت…" : "همین تاریخ‌ها را ثبت کن"}
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       <section className="panel wide">

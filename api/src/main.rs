@@ -323,6 +323,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/fingers", post(k50::fingers_now))
         .route("/api/v1/k50/time", post(k50::set_time))
         .route("/api/v1/k50/compare", post(k50::compare))
+        .route("/api/v1/k50/dates", post(k50::dates_from_device))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

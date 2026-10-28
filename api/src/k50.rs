@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{FromRow, PgPool};
@@ -584,6 +584,8 @@ pub struct Status {
     /// Fingers in the app's own copy, and the last time it was read from the device.
     fingers_saved: i64,
     fingers_backup: Option<Value>,
+    /// When dates were last taken from the device, and for how many members.
+    dates_import: Option<Value>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -611,6 +613,7 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
     let pending = pending_count(&s.db).await?;
     let fingers_saved: i64 = sqlx::query_scalar("SELECT count(*) FROM k50_fingers").fetch_one(&s.db).await?;
     let fingers_backup: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_fingers_at'").fetch_optional(&s.db).await?;
+    let dates_import: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_dates_import'").fetch_optional(&s.db).await?;
     let last = LAST.lock().unwrap().clone();
     Ok(Json(Status {
         config: config(&s.db).await?,
@@ -621,6 +624,7 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         punches_today,
         fingers_saved,
         fingers_backup,
+        dates_import,
     }))
 }
 
@@ -822,7 +826,7 @@ fn sounds(name: &str) -> Vec<String> {
                 let last = i + 1 == w.len();
                 let (class, used) = match (w[i], next) {
                     ('k', Some('h')) | ('x', _) => (Some('k'), 1 + usize::from(w[i] == 'k')),
-                    ('g', Some('h')) => (Some('g'), 2),
+                    ('g', Some('h')) => (Some('k'), 2),
                     ('s', Some('h')) | ('c', Some('h')) if w[i] == 's' => (Some('s'), 2),
                     ('c', Some('h')) => (Some('j'), 2),
                     ('z', Some('h')) | ('d', Some('h')) => (Some('z'), 2),
@@ -852,8 +856,8 @@ fn sound(c: char) -> Option<char> {
         's' | 'c' | 'ث' | 'س' | 'ص' | 'ش' => 's',
         'j' | 'ج' | 'چ' => 'j',
         'h' | 'ح' | 'ه' | 'ة' => 'h',
-        'k' | 'q' | 'خ' | 'ق' | 'ک' => 'k',
-        'g' | 'غ' | 'گ' => 'g',
+        // ق is written Q in Kabul and Gh in Tehran.
+        'k' | 'q' | 'g' | 'خ' | 'ق' | 'ک' | 'غ' | 'گ' => 'k',
         'd' | 'د' => 'd',
         'z' | 'ذ' | 'ز' | 'ض' | 'ظ' | 'ژ' => 'z',
         'r' | 'ر' => 'r',
@@ -881,6 +885,169 @@ pub struct Comparison {
     resend: usize,
     /// Every user whose name differs, then those the app does not know, then up to 300 in all.
     rows: Vec<Compared>,
+}
+
+// ---------------------------------------------------------------------------
+// Dates from the device, once
+
+/// The day in a date the device gives back ("2026-10-26 16:45:50", or digits only).
+fn device_day(s: &str) -> Option<NaiveDate> {
+    let digits: String = s.chars().filter(char::is_ascii_digit).take(8).collect();
+    NaiveDate::parse_from_str(&digits, "%Y%m%d").ok().filter(|d| d.year() >= 2000)
+}
+
+#[derive(Deserialize)]
+struct DatedUser {
+    no: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    valid: Option<Value>,
+}
+
+#[derive(Deserialize)]
+pub struct DatesParams {
+    #[serde(default)]
+    commit: bool,
+    /// Also members from the Excel book whose device name does not look like theirs.
+    #[serde(default)]
+    include_differs: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct DateRow {
+    no: String,
+    device_name: String,
+    app_name: String,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    /// Gets the dates (false only for a name that differs on a member made in the app).
+    taken: bool,
+}
+
+#[derive(Serialize, Default)]
+pub struct DatesReport {
+    committed: bool,
+    device_users: usize,
+    /// Members who get the device's dates (or would, before commit).
+    added: Vec<DateRow>,
+    /// Members the app already has dates for; the app's dates stand.
+    has_dates: usize,
+    /// Device users with no let-in dates, or the app has no member under that number.
+    no_dates: usize,
+    not_in_app: usize,
+    /// Names that do not look alike. They get the dates only when asked, and only members
+    /// from the Excel book (whose numbers are ZKAccess's), never ones made in the app.
+    name_differs: Vec<DateRow>,
+}
+
+/// POST /api/v1/k50/dates?commit=: for members the app has no seat dates for at all (the
+/// Excel book has none), takes the dates the device lets them in on, as a period without
+/// money or bill. Without commit it only shows what it would do. After this the app's
+/// dates are the ones that count; it never reads dates from the device for a member that
+/// has any.
+pub async fn dates_from_device(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    axum::extract::Query(p): axum::extract::Query<DatesParams>,
+) -> Result<Json<Result<DatesReport, String>>, ApiError> {
+    partner(&user)?;
+    let cfg = device_for(&s.db).await?;
+    let answer = match talk(&cfg, vec![json!({ "op": "users", "valid": true })], Duration::from_secs(600)).await {
+        Ok(mut a) => a.remove(0),
+        Err(e) => return Ok(Json(Err(e))),
+    };
+    if answer["ok"] != json!(true) {
+        return Ok(Json(Err(answer_error(&answer))));
+    }
+    let users: Vec<DatedUser> = serde_json::from_value(answer["users"].clone()).unwrap_or_default();
+    let nos: Vec<i32> = users.iter().filter_map(|u| u.no.trim().parse().ok()).collect();
+    // Members under those numbers, and whether they have any seat period already.
+    let members: Vec<(Uuid, i32, String, bool, bool)> = sqlx::query_as(
+        "SELECT m.id, m.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), m.import_batch_id IS NOT NULL, \
+                EXISTS (SELECT 1 FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+                        WHERE ms.member_id = m.id AND ms.deleted_at IS NULL AND p.kind IN ('monthly', 'daily')) \
+         FROM members m WHERE m.deleted_at IS NULL AND m.member_no = ANY($1)",
+    )
+    .bind(&nos)
+    .fetch_all(&s.db)
+    .await?;
+    let by_no: std::collections::HashMap<i32, (Uuid, String, bool, bool)> =
+        members.into_iter().map(|(id, no, name, imported, dated)| (no, (id, name, imported, dated))).collect();
+
+    let mut report = DatesReport { device_users: users.len(), ..Default::default() };
+    let mut take: Vec<(Uuid, NaiveDate, NaiveDate)> = Vec::new();
+    for u in &users {
+        let Some((id, app_name, imported, dated)) = u.no.trim().parse::<i32>().ok().and_then(|n| by_no.get(&n)) else {
+            report.not_in_app += 1;
+            continue;
+        };
+        if *dated {
+            report.has_dates += 1;
+            continue;
+        }
+        let valid = u.valid.as_ref().filter(|v| v["expires"].as_i64() == Some(1));
+        let (start, end) = match valid {
+            Some(v) => (v["start"].as_str().and_then(device_day), v["end"].as_str().and_then(device_day)),
+            None => (None, None),
+        };
+        let (Some(start), Some(end)) = (start, end) else {
+            report.no_dates += 1;
+            continue;
+        };
+        if end < start {
+            report.no_dates += 1;
+            continue;
+        }
+        let row = DateRow { no: u.no.trim().to_string(), device_name: u.name.trim().to_string(), app_name: app_name.clone(), start: Some(start), end: Some(end), taken: true };
+        let alike = row.device_name.is_empty() || same_person(&row.device_name, app_name);
+        if !alike {
+            let taken = *imported && p.include_differs;
+            report.name_differs.push(DateRow { taken, ..row.clone() });
+            if !taken {
+                continue;
+            }
+        }
+        take.push((*id, start, end));
+        report.added.push(row);
+    }
+
+    if p.commit && !take.is_empty() {
+        let plan: Option<Uuid> = sqlx::query_scalar(
+            "SELECT p.id FROM plans p LEFT JOIN memberships ms ON ms.plan_id = p.id AND ms.deleted_at IS NULL \
+             WHERE p.kind = 'monthly' GROUP BY p.id, p.active ORDER BY p.active DESC, count(ms.id) DESC LIMIT 1",
+        )
+        .fetch_optional(&s.db)
+        .await?;
+        let Some(plan) = plan else { return Err(ApiError::bad("no_monthly_plan")) };
+        let ids: Vec<Uuid> = take.iter().map(|t| t.0).collect();
+        let starts: Vec<NaiveDate> = take.iter().map(|t| t.1).collect();
+        let ends: Vec<NaiveDate> = take.iter().map(|t| t.2).collect();
+        let mut tx = crate::auth::begin_as(&s.db, &user).await?;
+        // A member who got dates in the meantime keeps them.
+        sqlx::query(
+            "INSERT INTO memberships (id, member_id, plan_id, start_date, end_date, fee, discount, note, created_by) \
+             SELECT gen_random_uuid(), t.member_id, $4, t.start_date, t.end_date, 0, 0, \
+                    'تاریخ از دستگاه انگشت؛ پولش پیش از برنامه گرفته شده', $5 \
+             FROM UNNEST($1::uuid[], $2::date[], $3::date[]) AS t(member_id, start_date, end_date) \
+             WHERE NOT EXISTS (SELECT 1 FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+                               WHERE ms.member_id = t.member_id AND ms.deleted_at IS NULL AND p.kind IN ('monthly', 'daily'))",
+        )
+        .bind(&ids)
+        .bind(&starts)
+        .bind(&ends)
+        .bind(plan)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        report.committed = true;
+        save_setting(&s.db, "k50_dates_import", json!({ "at": Utc::now(), "added": take.len() })).await?;
+        tracing::info!("k50 dates from device: {} members", take.len());
+        poke();
+    }
+    report.added.sort_by_key(|r| r.no.parse::<i64>().unwrap_or(i64::MAX));
+    Ok(Json(Ok(report)))
 }
 
 /// POST /api/v1/k50/compare: reads every user on the device (nothing is changed) and puts
@@ -1234,6 +1401,8 @@ mod tests {
         assert!(same_person("Khalid", "خالد"));
         assert!(same_person("Shabnam Kari", "شبنم کریمی"));
         assert!(same_person("Sadiq", "صادق"));
+        assert!(same_person("Ghasem", "قاسم"));
+        assert!(same_person("Qasim", "قاسم"));
         assert!(!same_person("SAQIQ", "صادق"));
         assert!(!same_person("Zahra", "محمد"));
         assert!(!same_person("Ali", "احمد علی"));
