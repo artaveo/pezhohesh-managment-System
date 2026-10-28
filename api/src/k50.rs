@@ -4,8 +4,9 @@
 //! the memberships what the device should hold and sends only what changed (`k50_users` is
 //! what it last sent); it also reads the device's punches into `attendance`.
 //!
-//! The device is driven through ZKTeco's own SDK (installed with ZKAccess), by the
-//! PowerShell helper in `k50.ps1`. ZKAccess has to be closed while the app talks to the device.
+//! The device is driven through ZKTeco's own SDK (installed with ZKAccess), by the small
+//! 32-bit helper `pezhohesh-k50.exe` (source in `api/k50-helper`), installed next to this API.
+//! ZKAccess has to be closed while the app talks to the device.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,7 +27,6 @@ use crate::auth::{ApiError, CurrentUser};
 use crate::hall::{hall_only, today};
 use crate::AppState;
 
-const HELPER: &str = include_str!("k50.ps1");
 /// Members sent in one talk with the device.
 const BATCH: i64 = 40;
 
@@ -123,12 +123,7 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
             None => error.to_string(),
         });
     }
-    let results = match &answer["results"] {
-        Value::Array(list) => list.clone(),
-        // PowerShell writes a list of one as the item itself.
-        one @ Value::Object(_) => vec![one.clone()],
-        _ => Vec::new(),
-    };
+    let results = answer["results"].as_array().cloned().unwrap_or_default();
     if results.len() != ops.len() {
         return Err("helper: short answer".into());
     }
@@ -152,8 +147,8 @@ fn ascii_json(v: &Value) -> String {
     out
 }
 
-/// 32-bit PowerShell (the SDK is 32-bit), with the script written next to the app's temp
-/// files once per version. `K50_HELPER` names a stand-in program for tests.
+/// The helper installed next to this API (the SDK is 32-bit, so it is a program of its own).
+/// `K50_HELPER` names a stand-in program for tests.
 fn helper_command() -> Result<tokio::process::Command, String> {
     if let Ok(fake) = std::env::var("K50_HELPER") {
         return Ok(tokio::process::Command::new(fake));
@@ -161,18 +156,13 @@ fn helper_command() -> Result<tokio::process::Command, String> {
     if !cfg!(windows) {
         return Err("not_windows".into());
     }
-    let script = std::env::temp_dir().join(format!("pezhohesh-k50-{}.ps1", env!("CARGO_PKG_VERSION")));
-    if std::fs::read_to_string(&script).ok().as_deref() != Some(HELPER) {
-        std::fs::write(&script, HELPER).map_err(|e| format!("helper: {e}"))?;
-    }
-    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-    let shell = ["SysWOW64", "System32"]
-        .iter()
-        .map(|d| std::path::Path::new(&windir).join(d).join(r"WindowsPowerShell\v1.0\powershell.exe"))
-        .find(|p| p.exists())
-        .ok_or("no_powershell")?;
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]).arg(script);
+    let helper = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("pezhohesh-k50.exe")))
+        .filter(|p| p.exists())
+        .ok_or("no_helper")?;
+    #[allow(unused_mut)]
+    let mut cmd = tokio::process::Command::new(helper);
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;

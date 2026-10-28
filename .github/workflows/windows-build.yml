@@ -43,22 +43,6 @@ jobs:
       - name: Check version
         run: node scripts/check-version.mjs ${{ env.RELEASE_TAG }}
 
-      - name: Check the fingerprint helper script
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\api\src\k50.ps1", [ref]$null, [ref]$errors)
-          foreach ($e in $errors) { Write-Output "::error::k50.ps1 line $($e.Extent.StartLineNumber): $($e.Message)" }
-          if ($errors.Count) { exit 1 }
-          # Without ZKTeco's SDK on the build machine it must still answer, in JSON, from 32-bit PowerShell.
-          $out = '{"ip":"192.0.2.1","port":4370,"machine":1,"key":0,"ops":[{"op":"info"}]}' |
-            & "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File api\src\k50.ps1 2>&1 | Out-String
-          $out = $out -replace "`r?`n", ' '
-          if ($out -notmatch '"error":"sdk_missing"') { Write-Output "::error::k50 helper answered: $out"; exit 1 }
-          Write-Output "::notice::k50 helper answered: $out"
-          exit 0
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,8 +60,18 @@ jobs:
             desktop/src-tauri -> target
           key: ${{ matrix.target }}
 
-      - name: Build API and place it inside the installer
+      - name: Build API and fingerprint helper and place them inside the installer
         run: node scripts/prepare-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Check the fingerprint helper
+        shell: pwsh
+        run: |
+          # Without ZKTeco's SDK on the build machine it must still answer, in JSON, as a 32-bit program.
+          $out = '{"ip":"192.0.2.1","port":4370,"machine":1,"key":0,"ops":[{"op":"info"}]}' |
+            & "desktop\src-tauri\binaries\pezhohesh-k50-${{ matrix.target }}.exe" 2>&1 | Out-String
+          $out = $out -replace "`r?`n", ' '
+          if ($out -notmatch '"error":"sdk_missing","bits":32') { Write-Output "::error::k50 helper answered: $out"; exit 1 }
+          Write-Output "::notice::k50 helper answered: $out"
 
       - name: Install desktop dependencies
         working-directory: desktop

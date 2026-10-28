@@ -570,7 +570,8 @@ export function k50ErrorText(error: string | null | undefined): string {
   if (e === "sdk_missing") return "برنامهٔ ارتباط با دستگاه (zkemkeeper که همراه ZKAccess نصب می‌شود) روی این لپ‌تاپ پیدا نشد.";
   if (e === "timeout") return "دستگاه دیر جواب داد. چند لحظه بعد دوباره امتحان کنید.";
   if (e === "no_ip") return "آدرس دستگاه هنوز تنظیم نشده.";
-  if (e === "not_windows" || e === "no_powershell") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";
+  if (e === "not_windows") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";
+  if (e === "no_helper") return "بخش ارتباط با دستگاه انگشت (pezhohesh-k50.exe) کنار برنامه پیدا نشد. برنامه را دوباره نصب کنید.";
   if (e === "device_admin") return "این آیدی روی دستگاه «مدیر دستگاه» است؛ برنامه به آن دست نمی‌زند.";
   if (e.startsWith("set_user_failed")) return "دستگاه این عضو را نپذیرفت.";
   if (e === "enroll_failed") return "دستگاه برای ثبت انگشت آماده نشد. اگر این انگشت قبلاً ثبت شده، انگشت دیگری را انتخاب کنید.";
