@@ -41,6 +41,22 @@ fn set_database_password(api: tauri::State<'_, Api>, password: String) -> Result
     Ok(())
 }
 
+/// From the offline screen when the central server cannot be reached: this computer goes
+/// back to its own database (it stops working on the server directly) and the API starts
+/// again on it. See api/src/sync.rs.
+#[tauri::command]
+fn use_local_database(api: tauri::State<'_, Api>) -> Result<(), String> {
+    let dir = std::path::Path::new(&std::env::var_os("APPDATA").ok_or("no_appdata")?).join("Pezhohesh");
+    let _ = std::fs::remove_file(dir.join("online-device.txt"));
+    let mut child = api.0.lock().unwrap();
+    if let Some(mut c) = child.take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    *child = start_api();
+    Ok(())
+}
+
 /// The database address with `password` in it: the one there with its password replaced,
 /// or the usual local one.
 fn with_password(old: Option<&str>, password: &str) -> String {
@@ -195,6 +211,7 @@ fn main() {
             postgres::fix_postgres,
             restart_api,
             set_database_password,
+            use_local_database,
             api_log,
             pick_folder,
             firewall::firewall_open,

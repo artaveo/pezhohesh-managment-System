@@ -83,6 +83,11 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     if !b.confirm {
         return Err(ApiError::bad("confirm_required"));
     }
+    // Working on the shared server, this would replace everyone's data with this backup.
+    if crate::sync::online_device().is_some() {
+        return Err(ApiError::bad("restore_online"));
+    }
+    let node = sqlx::query_scalar::<_, String>("SELECT sync_mode()").fetch_one(&s.db).await? == "node";
     // Only a backup this app made, in one of its backup folders.
     let file = points(&s.db).await?.into_iter().find(|p| p.path == b.path).ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
     let url = crate::database_url();
@@ -100,6 +105,20 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
         tracing::error!("restore failed: {e}");
         s.resume();
         return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "restore_failed"));
+    }
+    // A computer that shares the server keeps doing so. It takes again from the server what
+    // came after the backup (from the start, for a backup older than the sync), and sends
+    // what the backup has that it had not sent yet.
+    if node {
+        let kept = sqlx::query(
+            "INSERT INTO settings (key, value) VALUES ('sync_mode', '\"node\"'), ('sync_pulled', '0') \
+             ON CONFLICT (key) DO UPDATE SET value = CASE WHEN settings.key = 'sync_mode' THEN EXCLUDED.value ELSE settings.value END",
+        )
+        .execute(&s.db)
+        .await;
+        if let Err(e) = kept {
+            tracing::error!("restore: sync settings not kept: {e}");
+        }
     }
     // The photos and tazkira scans that were in the backup's files folder. Files of the
     // laptop that the backup does not know stay; nothing points at them any more.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint } from "../lib/api";
+import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncStatus } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { Modal } from "../components/Modal";
 import { formatDay } from "../lib/solar";
@@ -169,6 +169,8 @@ export function Backup() {
         {dirty && <div className="actions"><button className="btn" onClick={() => void persist()}>ذخیره</button></div>}
       </section>
 
+      <Sync />
+
       <Online />
 
       <Restore refresh={tick} />
@@ -214,6 +216,197 @@ function LastOutcome({ last }: { last: BackupOutcome | null }) {
   );
 }
 
+/** What a sync error means for the desk. */
+export function syncWhy(error: string) {
+  if (error === "no_internet") return "اینترنت وصل نیست. کار عادی ادامه دارد؛ تغییرها وقتی اینترنت آمد فرستاده می‌شوند.";
+  if (error === "hub_not_ready") return "همگام‌سازی روی سرور شروع نشده.";
+  if (error.startsWith("hub_migration")) return "جدول‌های سرور تازه نشدند.";
+  if (/password|authentication/i.test(error)) return "سرور رمز را قبول نکرد. آدرس سرور را دوباره بدهید.";
+  return "همگام‌سازی نشد.";
+}
+
+/** The central server: all computers share one set of data through it. */
+function Sync() {
+  const toast = useToast();
+  const [s, setS] = useState<SyncStatus | null>(null);
+  const [tick, setTick] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [ask, setAsk] = useState<"start" | "online" | "local" | null>(null);
+  const [name, setName] = useState("");
+  const [typed, setTyped] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    const load = () => api.sync().then((x) => live && setS(x), (e) => live && setError(errorText(e)));
+    void load();
+    const t = window.setInterval(load, 15_000);
+    return () => { live = false; window.clearInterval(t); };
+  }, [tick]);
+
+  async function act(f: () => Promise<unknown>, ok: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await f();
+      setAsk(null);
+      toast(ok);
+      setTick((t) => t + 1);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!s) return error ? <p className="form-error">{error}</p> : null;
+  const d = s.device;
+  return (
+    <section className="panel wide">
+      <h2>سرور مرکزی (همگام‌سازی)</h2>
+      {s.mode === "off" && (
+        <>
+          <p className="muted">
+            با سرور مرکزی، همهٔ کمپیوترها یک اطلاعات مشترک دارند. کمپیوتر قرائت‌خانه بی‌اینترنت هم کار می‌کند و هر وقت اینترنت آمد،
+            تغییرهایش را می‌فرستد و تغییرهای دیگران را می‌گیرد. لپ‌تاپ شرکا مستقیم روی سرور کار می‌کند.
+          </p>
+          {!s.host && <p className="form-error">اول آدرس سرور را در بخش «نسخهٔ آنلاین» پایین همین صفحه بدهید.</p>}
+          <div className="actions">
+            <button className="btn" disabled={!s.host || busy} onClick={() => { setAsk("start"); setTyped(""); setError(""); }}>شروع با همین کمپیوتر…</button>
+            <button className="btn ghost" disabled={!s.host || busy} onClick={() => { setAsk("online"); setError(""); }}>این کمپیوتر مستقیم روی سرور کار کند…</button>
+          </div>
+        </>
+      )}
+      {s.mode === "node" && (
+        <>
+          <p className="muted">این کمپیوتر بی‌اینترنت هم کار می‌کند و تغییرهایش را به سرور <bdi dir="ltr">{s.host}</bdi> می‌فرستد.</p>
+          <SyncLine s={s} />
+          <div className="actions">
+            <button className="btn ghost" disabled={busy} onClick={() => void act(() => api.syncNow(), "همگام شد.")}>{busy ? "در حال همگام‌سازی…" : "همین حالا همگام کن"}</button>
+          </div>
+        </>
+      )}
+      {s.mode === "online" && (
+        <>
+          <p className="muted">این کمپیوتر مستقیم روی سرور <bdi dir="ltr">{s.host}</bdi> کار می‌کند. بی‌اینترنت، برنامه تا وصل شدن دوباره صبر می‌کند.</p>
+          <div className="actions">
+            <button className="btn ghost" disabled={busy} onClick={() => setAsk("local")}>برگشت به دیتابیس خود این کمپیوتر…</button>
+          </div>
+        </>
+      )}
+      {d && s.mode !== "off" && (
+        <p className="muted small">
+          این کمپیوتر: <b>{d.name}</b> · حرف بل‌ها: <b dir="ltr">{d.receipt_prefix}</b>
+          {d.member_no_from !== null && <> · شمارهٔ عضوهای تازه از <bdi dir="ltr">{d.member_no_from}</bdi> تا <bdi dir="ltr">{d.member_no_to}</bdi></>}
+        </p>
+      )}
+      {error && !ask && <p className="form-error" role="alert">{error}</p>}
+
+      {ask === "start" && (
+        <Modal label="شروع همگام‌سازی" onClose={() => !busy && setAsk(null)}>
+          <h2>شروع با همین کمپیوتر</h2>
+          <p>همهٔ اطلاعات این کمپیوتر به سرور فرستاده می‌شود و از این به بعد هر تغییری اینجا، به سرور هم می‌رود.</p>
+          <p className="muted small">این کار فقط یک بار و فقط روی کمپیوتری انجام می‌شود که همهٔ اطلاعات را دارد، یعنی کمپیوتر قرائت‌خانه. اگر روی سرور یک نسخهٔ آنلاین قدیمی باشد، جای آن را می‌گیرد.</p>
+          <label className="field">
+            <span>برای اطمینان بنویسید: <b>شروع</b></span>
+            <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="actions">
+            <button className="btn" disabled={busy || typed.trim() !== "شروع"} onClick={() => void act(() => api.syncStart(), "اطلاعات به سرور رفت. همگام‌سازی روشن شد.")}>
+              {busy ? "در حال فرستادن…" : "شروع"}
+            </button>
+            <button className="btn ghost" disabled={busy} onClick={() => setAsk(null)}>لغو</button>
+          </div>
+        </Modal>
+      )}
+      {ask === "online" && (
+        <Modal label="کار مستقیم روی سرور" onClose={() => !busy && setAsk(null)}>
+          <h2>این کمپیوتر مستقیم روی سرور کار کند</h2>
+          <p>برنامه دوباره شروع می‌شود و از این به بعد اطلاعات سرور را نشان می‌دهد. اطلاعات خود این کمپیوتر دست نمی‌خورد و می‌شود بعداً به آن برگشت.</p>
+          <p className="muted small">این کمپیوتر حرف بل جدا و شمارهٔ عضو جدا می‌گیرد، تا با هیچ کمپیوتر دیگری تکراری نشود. بی‌اینترنت کار نمی‌کند.</p>
+          <label className="field">
+            <span>نام این کمپیوتر</span>
+            <input value={name} placeholder="مثلاً لپ‌تاپ ناصری" onChange={(e) => setName(e.target.value)} autoFocus />
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="actions">
+            <button className="btn" disabled={busy || !name.trim()} onClick={() => void act(() => api.syncGoOnline(name.trim()), "وصل شد. برنامه چند لحظه دوباره شروع می‌شود؛ بعد دوباره وارد شوید.")}>
+              {busy ? "در حال وصل شدن…" : "وصل شو"}
+            </button>
+            <button className="btn ghost" disabled={busy} onClick={() => setAsk(null)}>لغو</button>
+          </div>
+        </Modal>
+      )}
+      {ask === "local" && (
+        <Modal label="برگشت به دیتابیس این کمپیوتر" onClose={() => !busy && setAsk(null)}>
+          <h2>برگشت به دیتابیس خود این کمپیوتر</h2>
+          <p>برنامه دوباره شروع می‌شود و اطلاعاتی را نشان می‌دهد که پیش از وصل شدن روی همین کمپیوتر بود. چیزی روی سرور پاک نمی‌شود.</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="actions">
+            <button className="btn" disabled={busy} onClick={() => void act(() => api.syncGoLocal(), "برنامه چند لحظه دوباره شروع می‌شود.")}>برگرد</button>
+            <button className="btn ghost" disabled={busy} onClick={() => setAsk(null)}>لغو</button>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+/** The last round, what waits, and problems, in one line. */
+function SyncLine({ s }: { s: SyncStatus }) {
+  const [list, setList] = useState<SyncProblem[] | null>(null);
+  const [seen, setSeen] = useState(false);
+  return (
+    <>
+      <p className={s.error ? "form-error" : "form-ok"}>
+        {s.error ? syncWhy(s.error) : s.ok_at ? <>همگام است. آخرین بار: {when(s.ok_at)}</> : "هنوز همگام نشده."}
+        {s.error && <small dir="ltr"> ({s.error})</small>}
+      </p>
+      {s.clock_off_minutes !== null && (
+        <p className="form-error">
+          ساعت این کمپیوتر با سرور {Math.abs(s.clock_off_minutes)} دقیقه {s.clock_off_minutes > 0 ? "جلوتر" : "عقب‌تر"} است.
+          تاریخ بل‌ها و دوره‌ها از همین ساعت گرفته می‌شود؛ ساعت و تاریخ ویندوز را درست کنید.
+        </p>
+      )}
+      {(s.waiting > 0 || (s.problems > 0 && !seen)) && (
+        <p className="muted small">
+          {s.waiting > 0 && <>{s.waiting} تغییر منتظر فرستادن است. </>}
+          {s.problems > 0 && !seen && (
+            <>
+              <span className="form-error inline">{s.problems} تغییر از کمپیوترهای دیگر اینجا ثبت نشد.</span>{" "}
+              <button className="btn ghost small" onClick={() => void api.syncProblems().then(setList, () => setList([]))}>دیدن</button>
+            </>
+          )}
+        </p>
+      )}
+      {list && (
+        <Modal label="تغییرهایی که ثبت نشد" onClose={() => setList(null)}>
+          <h2>تغییرهایی که ثبت نشد</h2>
+          <p className="muted small">
+            معمولاً یعنی دو کمپیوتر هم‌زمان یک چیز تکراری ساخته‌اند (مثلاً یک نام دسته با دو شکل). همان مورد را در برنامه بررسی و با دست درست کنید،
+            بعد «دیدم» را بزنید.
+          </p>
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>زمان</th><th>بخش</th><th>علت</th></tr></thead>
+              <tbody>
+                {list.map((p) => (
+                  <tr key={p.id}><td>{when(p.at)}</td><td dir="ltr">{p.tbl ?? "—"}</td><td><small dir="ltr">{p.error}</small></td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="actions">
+            <button className="btn" onClick={() => void api.syncProblemsSeen().then(() => { setSeen(true); setList(null); })}>دیدم</button>
+            <button className="btn ghost" onClick={() => setList(null)}>بستن</button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 const ONLINE_EVERY = [
   { h: 3, label: "هر 3 ساعت" },
   { h: 6, label: "هر 6 ساعت" },
@@ -233,6 +426,7 @@ function onlineWhy(error: string) {
 /** The copy of the database in Neon: where, how often, and the last result. */
 function Online() {
   const [s, setS] = useState<OnlineStatus | null>(null);
+  const [shared, setShared] = useState(false);
   const [every, setEvery] = useState(6);
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -242,6 +436,7 @@ function Online() {
 
   useEffect(() => {
     api.online().then((o) => { setS(o); setEvery(o.every_hours); }).catch((e) => setError(errorText(e)));
+    api.sync().then((x) => setShared(x.mode !== "off"), () => {});
   }, [tick]);
 
   async function save() {
@@ -265,20 +460,24 @@ function Online() {
   const last = s.last;
   return (
     <section className="panel wide">
-      <h2>نسخهٔ آنلاین (Neon)</h2>
-      <p className="muted">
-        اصل اطلاعات روی همین لپ‌تاپ است. هر چند ساعت یک کپی کامل به Neon (اینترنت) فرستاده می‌شود، تا بیرون از دفتر هم در دسترس باشد.
-        عکس‌ها و تذکره‌ها فرستاده نمی‌شوند.
-      </p>
+      <h2>{shared ? "آدرس سرور (Neon)" : "نسخهٔ آنلاین (Neon)"}</h2>
+      {shared ? (
+        <p className="muted">همگام‌سازی روشن است و کپی کامل دیگر فرستاده نمی‌شود. اینجا فقط آدرس سرور است.</p>
+      ) : (
+        <p className="muted">
+          اصل اطلاعات روی همین لپ‌تاپ است. هر چند ساعت یک کپی کامل به Neon (اینترنت) فرستاده می‌شود، تا بیرون از دفتر هم در دسترس باشد.
+          عکس‌ها و تذکره‌ها فرستاده نمی‌شوند.
+        </p>
+      )}
       <p>{s.host ? <>سرور: <bdi dir="ltr">{s.host}</bdi></> : <span className="form-error">آدرس دیتابیس آنلاین هنوز داده نشده.</span>}</p>
-      {last?.at && (
+      {!shared && last?.at && (
         <p className={last.ok ? "form-ok" : "form-error"}>
           {last.ok ? "آخرین کپی فرستاده شد" : "آخرین کپی فرستاده نشد"}: {when(last.at)}
           {!last.ok && last.error && <> · {onlineWhy(last.error)} <small dir="ltr">({last.error})</small></>}
         </p>
       )}
       <div className="form-grid">
-        <label className="field wide">
+        <label className="field wide" hidden={shared}>
           <span>ارسال خودکار</span>
           <select value={every} onChange={(e) => { setSaved(false); setEvery(Number(e.target.value)); }}>
             {ONLINE_EVERY.map((o) => <option key={o.h} value={o.h}>{o.label}</option>)}
@@ -294,7 +493,7 @@ function Online() {
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="actions">
         <button className="btn" onClick={() => void save()}>ذخیره</button>
-        <button className="btn ghost" disabled={busy || !s.host} onClick={() => void now()}>{busy ? "در حال فرستادن…" : "همین حالا بفرست"}</button>
+        {!shared && <button className="btn ghost" disabled={busy || !s.host} onClick={() => void now()}>{busy ? "در حال فرستادن…" : "همین حالا بفرست"}</button>}
       </div>
     </section>
   );

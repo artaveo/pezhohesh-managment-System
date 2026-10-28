@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AuthCard } from "./Login";
-import { apiLog, canFixPostgres, fixPostgres, health, postgresService, restartApi, setDatabasePassword, type Health, type PgService } from "../lib/core";
+import { apiLog, canFixPostgres, fixPostgres, health, postgresService, restartApi, setDatabasePassword, useLocalDatabase, type Health, type PgService } from "../lib/core";
 
 type Diag = { health: Health | null; service: PgService | null; log: string };
 
@@ -91,6 +91,11 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
         </button>
       )}
       <button className={e.fix ? "btn ghost" : "btn big"} onClick={onRetry}>دوباره امتحان کن</button>
+      {diag?.health?.problem === "server_down" && canFixPostgres() && (
+        <button className="btn ghost" onClick={() => void useLocalDatabase().then(onRetry, () => setFixError("نشد. برنامه را ببندید و دوباره باز کنید."))}>
+          فعلاً با دیتابیس خود این کمپیوتر کار کن
+        </button>
+      )}
       <p className="muted small">برنامه هر چند ثانیه خودش دوباره امتحان می‌کند و به محض درست شدن، ادامه می‌دهد.</p>
       {diag?.health?.problem === "postgres_down" && (
         <details className="offline-details">
@@ -137,6 +142,11 @@ function explain(d: Diag | null): { title: string; text: string; fix?: boolean }
         };
       }
       return { title: "PostgreSQL روشن است ولی جواب نمی‌دهد", text: "برنامه دوباره امتحان می‌کند. اگر درست نشد، کمپیوتر را یک بار ری‌استارت کنید." };
+    case "server_down":
+      return {
+        title: "سرور مرکزی در دسترس نیست",
+        text: "این کمپیوتر مستقیم روی سرور کار می‌کند و الان به آن وصل نمی‌شود. اینترنت را بررسی کنید؛ برنامه به محض وصل شدن خودش ادامه می‌دهد.",
+      };
     case "db_login":
       return {
         title: "رمز دیتابیس درست نیست",

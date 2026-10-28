@@ -241,6 +241,14 @@ export type BackupOutcome = {
 };
 export type OnlineOutcome = { at: string | null; ok: boolean; error: string | null; seconds: number | null };
 export type OnlineStatus = { host: string | null; every_hours: number; last: OnlineOutcome | null };
+export type SyncDevice = { id: string; name: string; receipt_prefix: string; member_no_from: number | null; member_no_to: number | null };
+/** Sharing the data through the server: off, an offline computer that sends and takes (node), or working on the server. */
+export type SyncStatus = {
+  mode: "off" | "node" | "online"; host: string | null; device: SyncDevice | null;
+  waiting: number; problems: number; ok_at: string | null; tried_at: string | null; error: string | null; sent: number; taken: number;
+  clock_off_minutes: number | null;
+};
+export type SyncProblem = { id: number; at: string; tbl: string | null; op: string | null; error: string };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
   usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean; picked: boolean; removable: boolean }[];
@@ -466,6 +474,13 @@ export const api = {
   /** A QR code (SVG) for the sticker. */
   qr: (text: string) => request<Blob>(`/qr?${new URLSearchParams({ text })}`, { blob: true }),
   online: () => request<OnlineStatus>("/online"),
+  sync: () => request<SyncStatus>("/sync"),
+  syncNow: () => request<SyncStatus>("/sync", { method: "POST" }),
+  syncStart: () => request<void>("/sync/start", { method: "POST" }),
+  syncProblems: () => request<SyncProblem[]>("/sync/problems"),
+  syncProblemsSeen: () => request<void>("/sync/problems", { method: "POST" }),
+  syncGoOnline: (name: string) => request<SyncDevice>("/sync/online", { method: "POST", body: { name } }),
+  syncGoLocal: () => request<void>("/sync/local", { method: "POST" }),
   k50: () => request<K50Status>("/k50"),
   setK50: (c: K50Config) => request<void>("/k50", { method: "PUT", body: c }),
   testK50: (c: K50Config) => request<K50Info>("/k50/test", { method: "POST", body: c }),
@@ -557,6 +572,18 @@ export function errorText(e: unknown): string {
     case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";
     case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
     case "bad_online_plan": return "زمان ارسال درست نیست.";
+    case "restore_online": return "این کمپیوتر مستقیم روی سرور کار می‌کند؛ برگرداندن پشتیبان این‌جا اطلاعات همه را عوض می‌کرد. برگرداندن را روی کمپیوتر قرائت‌خانه انجام دهید.";
+    case "no_server": return "آدرس سرور (Neon) هنوز داده نشده. آن را در پایین همین صفحه بدهید.";
+    case "bad_server": return "به سرور وصل نشد. آدرس سرور را دوباره بررسی کنید.";
+    case "no_internet": return "به سرور وصل نشد. اینترنت وصل است؟";
+    case "server_in_use": return "روی این سرور همگام‌سازی از قبل شروع شده. این کار فقط یک بار، روی کمپیوتر قرائت‌خانه انجام می‌شود.";
+    case "hub_not_ready": return "همگام‌سازی روی سرور هنوز شروع نشده. اول روی کمپیوتر قرائت‌خانه «شروع با همین کمپیوتر» را بزنید.";
+    case "sync_already_on": return "همگام‌سازی روی این کمپیوتر از قبل روشن است.";
+    case "is_node": return "این کمپیوتر اطلاعات خودش را به سرور می‌فرستد و باید همین‌طور بماند.";
+    case "sync_off": return "همگام‌سازی روی این کمپیوتر روشن نیست.";
+    case "sync_start_failed": return "فرستادن اطلاعات به سرور نشد. چیزی عوض نشد؛ دوباره امتحان کنید.";
+    case "no_letter": return "حرف تازه‌ای برای بل‌های این کمپیوتر نمانده.";
+    case "bad_name": return "یک نام برای این کمپیوتر بنویسید.";
     case "bad_range": return "بازهٔ تاریخ درست نیست: «تا» نباید پیش از «از» باشد.";
     case "still_active": return "این عضو هنوز بیشتر از 5 روز عضویت دارد. اگر واقعاً پیش‌پرداخت ماه بعد است، تیک «پیش‌پرداخت» را بزنید.";
     case "period_overlap": return "این دوره با دورهٔ قبلی همین عضو روی هم می‌افتد؛ تاریخ شروع باید بعد از ختم دورهٔ قبلی باشد.";

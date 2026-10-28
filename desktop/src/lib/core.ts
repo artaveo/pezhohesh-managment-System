@@ -5,7 +5,7 @@ import { API_BASE } from "./api";
 // and from the desktop shell the PostgreSQL service and the API's log.
 
 /** Why the database is not ready (see Core in api/src/main.rs). */
-export type Problem = "starting" | "postgres_down" | "db_login" | "migration" | "db_error" | "restoring";
+export type Problem = "starting" | "postgres_down" | "db_login" | "migration" | "db_error" | "restoring" | "server_down";
 export type Health = { database: boolean; problem: Problem | null; detail: string | null; version: string };
 export type PgService = { name: string; running: boolean; pending: boolean; auto_start: boolean };
 
@@ -33,6 +33,8 @@ export async function restartApi() {
 
 /** Saves the PostgreSQL password for the core and starts it again with it (desktop app only). */
 export const setDatabasePassword = (password: string) => invoke<void>("set_database_password", { password });
+/** Stop working on the central server and use this computer's own database again. */
+export const useLocalDatabase = () => invoke<void>("use_local_database");
 
 export async function apiLog(): Promise<string> {
   if (!isTauri()) return "";

@@ -200,6 +200,7 @@ fn problem_of(e: &anyhow::Error) -> &'static str {
         return "migration";
     }
     match e.downcast_ref::<sqlx::Error>() {
+        Some(e) if auth::is_unreachable(e) && sync::online_device().is_some() => "server_down",
         Some(e) if auth::is_unreachable(e) => "postgres_down",
         // invalid_password, invalid_authorization_specification
         Some(sqlx::Error::Database(d)) if matches!(d.code().as_deref(), Some("28P01" | "28000")) => "db_login",
@@ -324,6 +325,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/online", get(online::status).put(online::set_plan).post(online::copy_now))
         .route("/api/v1/sync", get(sync::status).post(sync::now))
         .route("/api/v1/sync/start", post(sync::start))
+        .route("/api/v1/sync/problems", get(sync::problems).post(sync::problems_seen))
         .route("/api/v1/sync/online", post(sync::go_online))
         .route("/api/v1/sync/local", post(sync::go_local))
         .route("/api/v1/loans", get(lists::loans))

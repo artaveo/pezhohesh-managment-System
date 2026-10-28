@@ -207,7 +207,10 @@ BEGIN
     PERFORM set_config('pezhohesh.applying', 'on', true);
     FOR e IN SELECT x FROM jsonb_array_elements(entries) x ORDER BY (x ->> 'hub_seq')::BIGINT LOOP
         last := (e ->> 'hub_seq')::BIGINT;
-        CONTINUE WHEN (e ->> 'origin')::UUID IS NOT DISTINCT FROM me;
+        -- This computer's own change, already here. (After a restore from an older backup
+        -- it may not be: then it is taken back from the hub like any other.)
+        CONTINUE WHEN (e ->> 'origin')::UUID IS NOT DISTINCT FROM me
+                  AND EXISTS (SELECT 1 FROM sync_log l WHERE l.hub_seq = last AND l.origin = me);
         CONTINUE WHEN EXISTS (SELECT 1 FROM sync_log l
                               WHERE l.tbl = e ->> 'tbl' AND l.pk = e -> 'pk' AND l.origin IS NOT DISTINCT FROM me
                                 AND (l.hub_seq IS NULL OR l.hub_seq > last));

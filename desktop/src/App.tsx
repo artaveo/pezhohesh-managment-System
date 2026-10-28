@@ -24,6 +24,7 @@ import { useAuth } from "./auth/AuthProvider";
 import { useTheme } from "./theme/ThemeProvider";
 import { api, ROLE_LABEL, type Section, type User } from "./lib/api";
 import { Inbox } from "./pages/Inbox";
+import { SyncChip } from "./components/SyncChip";
 
 /**
  * The menu. A section with `section` is shown to the roles a partner gave it to on the users
@@ -145,6 +146,7 @@ function Shell() {
             </button>
           ))}
         </nav>
+        <SyncChip onOpen={nav.some((n) => n.id === "backup") ? () => setPage("backup") : undefined} />
         <div className="side-user">
           <span className="avatar" aria-hidden="true">{user!.full_name.trim().charAt(0)}</span>
           <div>

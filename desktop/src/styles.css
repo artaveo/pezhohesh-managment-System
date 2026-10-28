@@ -235,6 +235,14 @@ button, input { font: inherit; color: inherit; }
 
 /* Signed-in person at the bottom of the sidebar */
 .side nav { flex: 1; }
+.sync-chip { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 7px 12px; border: 0; border-radius: 10px; font: inherit; font-size: .8rem; text-align: start; color: var(--muted); background: color-mix(in srgb, var(--glass-strong) 60%, transparent); }
+button.sync-chip { cursor: pointer; }
+button.sync-chip:hover { color: var(--fg); }
+.sync-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--good); }
+.sync-chip.warn { color: var(--warn); background: var(--warn-soft); }
+.sync-chip.warn .dot { background: var(--warn); }
+.sync-chip.bad { color: var(--bad); background: var(--bad-soft); }
+.sync-chip.bad .dot { background: var(--bad); }
 .side-user { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 10px; border-radius: 14px; background: color-mix(in srgb, var(--glass-strong) 70%, transparent); }
 .side-user strong { display: block; font-size: .9rem; line-height: 1.4; }
 .side-user span { font-size: .75rem; color: var(--muted); }

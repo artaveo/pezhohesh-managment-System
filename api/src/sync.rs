@@ -57,9 +57,12 @@ pub struct Live {
     error: Option<String>,
     sent: u64,
     taken: u64,
+    /// This computer's clock against the server's, when they differ by more than 5 minutes
+    /// (dates of bills and periods come from this clock).
+    clock_off_minutes: Option<i64>,
 }
 
-static LIVE: RwLock<Live> = RwLock::new(Live { ok_at: None, tried_at: None, error: None, sent: 0, taken: 0 });
+static LIVE: RwLock<Live> = RwLock::new(Live { ok_at: None, tried_at: None, error: None, sent: 0, taken: 0, clock_off_minutes: None });
 static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -177,6 +180,9 @@ async fn round(db: &PgPool, hub: &PgPool, migrated: &mut bool) -> Result<(u64, u
     if hub_mode.as_deref() != Some("hub") {
         return Err("hub_not_ready".into());
     }
+    let hub_now: DateTime<Utc> = sqlx::query_scalar("SELECT now()").fetch_one(hub).await.map_err(hub_error)?;
+    let off = (Utc::now() - hub_now).num_minutes();
+    LIVE.write().unwrap().clock_off_minutes = (off.abs() > 5).then_some(off);
     if !*migrated {
         migrate_hub(hub).await?;
         *migrated = true;
@@ -319,6 +325,35 @@ pub async fn now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Li
     Ok(Json(LIVE.read().unwrap().clone()))
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Problem {
+    id: i64,
+    at: DateTime<Utc>,
+    tbl: Option<String>,
+    op: Option<String>,
+    error: String,
+}
+
+/// Changes from other computers that could not be written here (or that the server refused).
+pub async fn problems(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Problem>>, ApiError> {
+    partner(&user)?;
+    Ok(Json(
+        sqlx::query_as(
+            "SELECT id, at, entry ->> 'tbl' AS tbl, entry ->> 'op' AS op, error FROM sync_problems \
+             WHERE resolved_at IS NULL ORDER BY id DESC LIMIT 200",
+        )
+        .fetch_all(&s.db)
+        .await?,
+    ))
+}
+
+/// "Seen": the partners looked at them and fixed what was needed by hand.
+pub async fn problems_seen(State(s): State<AppState>, user: CurrentUser) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    sqlx::query("UPDATE sync_problems SET resolved_at = now() WHERE resolved_at IS NULL").execute(&s.db).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Starting: this computer's data becomes the hub's
 
@@ -343,14 +378,15 @@ async fn hub_state(url: &str) -> Result<&'static str, ApiError> {
     Ok(if running { "hub" } else if has_settings { "copy" } else { "empty" })
 }
 
-/// The roles the policies and grants name, and this login's right to act as them.
+/// The roles the policies and grants name, and this login's right to act as them. On Neon
+/// (PostgreSQL 16) the role's creator may not SET it until it grants itself that, as tried.
 async fn prepare_roles(url: &str) -> Result<(), String> {
     let mut c = sqlx::PgConnection::connect(url).await.map_err(|e| format!("connect: {e}"))?;
     sqlx::query(
         "DO $$ DECLARE r TEXT; BEGIN \
            FOREACH r IN ARRAY ARRAY['pz_partner', 'pz_manager', 'pz_pec'] LOOP \
              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('CREATE ROLE %I NOLOGIN', r); END IF; \
-             IF NOT pg_has_role(current_user, r, 'MEMBER') THEN EXECUTE format('GRANT %I TO %I', r, current_user); END IF; \
+             IF NOT pg_has_role(current_user, r, 'SET') THEN EXECUTE format('GRANT %I TO %I WITH SET TRUE', r, current_user); END IF; \
            END LOOP; END $$",
     )
     .execute(&mut c)
