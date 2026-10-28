@@ -435,8 +435,8 @@ pub async fn issue(
     book_loan: Option<Uuid>,
 ) -> Result<Uuid, ApiError> {
     let day = today();
-    let device: Uuid = sqlx::query_scalar("SELECT (value #>> '{}')::uuid FROM settings WHERE key = 'this_device_id'")
-        .fetch_optional(&mut *tx)
+    let device: Uuid = sqlx::query_scalar::<_, Option<Uuid>>("SELECT current_device()")
+        .fetch_one(&mut *tx)
         .await?
         .ok_or(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "no_device"))?;
     let id = Uuid::new_v4();

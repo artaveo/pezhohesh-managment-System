@@ -33,7 +33,7 @@ fn url_file() -> Option<PathBuf> {
     std::env::var("APPDATA").ok().map(|d| PathBuf::from(d).join("Pezhohesh").join("online-url.txt"))
 }
 
-fn target_url() -> Option<String> {
+pub fn target_url() -> Option<String> {
     if let Ok(u) = std::env::var("ONLINE_DATABASE_URL") {
         return Some(u);
     }
@@ -90,7 +90,11 @@ async fn copy(local: &str, target: &str) -> Result<(), String> {
 pub async fn run_copy(db: &PgPool, local: &str) -> Result<Outcome, sqlx::Error> {
     let _one = RUNNING.lock().await;
     let started = std::time::Instant::now();
+    // Once the computers share the server, it is no longer a copy to overwrite.
+    let shared = crate::sync::online_device().is_some()
+        || sqlx::query_scalar::<_, String>("SELECT sync_mode()").fetch_one(db).await? != "off";
     let result = match target_url() {
+        _ if shared => Err("sync_on".to_string()),
         Some(target) => copy(local, &target).await,
         None => Err("not_set".to_string()),
     };
@@ -117,7 +121,10 @@ pub async fn schedule(db: PgPool, url: String) {
     loop {
         tokio::time::sleep(wait).await;
         wait = Duration::from_secs(600);
-        if target_url().is_none() {
+        if target_url().is_none() || crate::sync::online_device().is_some() {
+            continue;
+        }
+        if sqlx::query_scalar::<_, String>("SELECT sync_mode()").fetch_one(&db).await.map_or(true, |m| m != "off") {
             continue;
         }
         let (Ok(hours), Ok(last)) = (every_hours(&db).await, last(&db).await) else { continue };

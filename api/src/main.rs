@@ -45,6 +45,7 @@ mod reports;
 mod restore;
 mod salaries;
 mod solar;
+mod sync;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -110,9 +111,20 @@ async fn run() -> anyhow::Result<()> {
     // The API answers right away even when PostgreSQL is not running yet (after a restart,
     // or when its service was stopped); it keeps trying in the background and starts
     // serving as soon as the database is there, so the app never needs restarting for it.
+    // A computer that works on the server directly names itself on every connection, so
+    // its changes, bills and member numbers are its own (see sync.rs).
+    let online = sync::online_device();
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .acquire_timeout(Duration::from_secs(5))
+        .acquire_timeout(Duration::from_secs(if online.is_some() { 30 } else { 5 }))
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                if let Some(id) = online {
+                    sqlx::query("SELECT set_config('app.device_id', $1, false)").bind(id.to_string()).execute(conn).await?;
+                }
+                Ok(())
+            })
+        })
         .connect_lazy(&database_url)?;
     let core = Arc::new(RwLock::new(Core { problem: Some("starting"), ..Default::default() }));
     tokio::spawn(prepare_database(database_url, db.clone(), core.clone()));
@@ -152,6 +164,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
                 tokio::spawn(backup::schedule(db.clone(), url.clone()));
                 tokio::spawn(salaries::schedule(db.clone()));
                 tokio::spawn(k50::schedule(db.clone()));
+                tokio::spawn(sync::schedule(db.clone()));
                 tokio::spawn(online::schedule(db, url));
                 return;
             }
@@ -174,7 +187,9 @@ async fn prepare_once(url: &str, db: &PgPool) -> anyhow::Result<()> {
         sqlx::Postgres::create_database(url).await?;
         tracing::info!("created database");
     }
-    let migrator = sqlx::migrate!("../db/migrations");
+    let mut migrator = sqlx::migrate!("../db/migrations");
+    // On the shared server another computer may already run a newer app.
+    migrator.set_ignore_missing(sync::online_device().is_some());
     repair_crlf_checksums(db, &migrator).await?;
     migrator.run(db).await?;
     Ok(())
@@ -307,6 +322,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/backup/usb", post(backup::prepare_usb))
         .route("/api/v1/backup/restore", get(restore::list).post(restore::restore))
         .route("/api/v1/online", get(online::status).put(online::set_plan).post(online::copy_now))
+        .route("/api/v1/sync", get(sync::status).post(sync::now))
+        .route("/api/v1/sync/start", post(sync::start))
+        .route("/api/v1/sync/online", post(sync::go_online))
+        .route("/api/v1/sync/local", post(sync::go_local))
         .route("/api/v1/loans", get(lists::loans))
         .route("/api/v1/inbox", get(phone::inbox))
         .route("/api/v1/inbox/count", get(phone::count))
@@ -357,6 +376,11 @@ async fn brand_color(State(s): State<AppState>) -> Result<Json<serde_json::Value
 /// DATABASE_URL from the environment, else the first line of
 /// `%APPDATA%\\Pezhohesh\\database-url.txt` (written by the app's setup screen later).
 fn database_url() -> String {
+    if sync::online_device().is_some() {
+        if let Some(url) = sync::hub_url() {
+            return url;
+        }
+    }
     if let Ok(url) = std::env::var("DATABASE_URL") {
         return url;
     }
