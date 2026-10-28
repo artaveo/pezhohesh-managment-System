@@ -31,6 +31,9 @@ export async function restartApi() {
   if (isTauri()) await invoke<boolean>("restart_api").catch(() => false);
 }
 
+/** Saves the PostgreSQL password for the core and starts it again with it (desktop app only). */
+export const setDatabasePassword = (password: string) => invoke<void>("set_database_password", { password });
+
 export async function apiLog(): Promise<string> {
   if (!isTauri()) return "";
   try { return await invoke<string>("api_log"); } catch { return ""; }

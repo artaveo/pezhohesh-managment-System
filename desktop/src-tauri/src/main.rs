@@ -22,6 +22,45 @@ fn restart_api(api: tauri::State<'_, Api>) -> bool {
     keep_running(&api)
 }
 
+/// From the offline screen ("database password is wrong"): writes the PostgreSQL password
+/// into `%APPDATA%\Pezhohesh\database-url.txt`, keeping the rest of the address that is
+/// there, and starts the API again so it connects with it. The password is never logged.
+#[tauri::command]
+fn set_database_password(api: tauri::State<'_, Api>, password: String) -> Result<(), String> {
+    let dir = std::path::Path::new(&std::env::var_os("APPDATA").ok_or("no_appdata")?).join("Pezhohesh");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join("database-url.txt");
+    let old = std::fs::read_to_string(&file).ok().and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+    std::fs::write(&file, with_password(old.as_deref(), &password)).map_err(|e| e.to_string())?;
+    let mut child = api.0.lock().unwrap();
+    if let Some(mut c) = child.take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    *child = start_api();
+    Ok(())
+}
+
+/// The database address with `password` in it: the one there with its password replaced,
+/// or the usual local one.
+fn with_password(old: Option<&str>, password: &str) -> String {
+    let encoded: String = password
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    let rest = old.and_then(|u| u.strip_prefix("postgres://").or_else(|| u.strip_prefix("postgresql://")));
+    match rest.and_then(|r| r.rsplit_once('@')) {
+        Some((userinfo, host)) => {
+            let user = userinfo.split(':').next().unwrap_or("postgres");
+            format!("postgres://{user}:{encoded}@{host}")
+        }
+        None => format!("postgres://postgres:{encoded}@localhost:5432/pezhohesh"),
+    }
+}
+
 /// Set when the app is closing, so the watchdog does not start the API again.
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
@@ -155,6 +194,7 @@ fn main() {
             postgres::postgres_service,
             postgres::fix_postgres,
             restart_api,
+            set_database_password,
             api_log,
             pick_folder,
             firewall::firewall_open,
@@ -187,4 +227,17 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_password;
+
+    #[test]
+    fn database_password_goes_into_the_address() {
+        assert_eq!(with_password(None, "abc"), "postgres://postgres:abc@localhost:5432/pezhohesh");
+        assert_eq!(with_password(Some("postgres://postgres:old@localhost:5433/pz"), "n@w:1/"), "postgres://postgres:n%40w%3A1%2F@localhost:5433/pz");
+        assert_eq!(with_password(Some("postgres://me@localhost/pezhohesh"), "x y"), "postgres://me:x%20y@localhost/pezhohesh");
+        assert_eq!(with_password(Some("junk"), "a"), "postgres://postgres:a@localhost:5432/pezhohesh");
+    }
 }

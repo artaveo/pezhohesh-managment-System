@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AuthCard } from "./Login";
-import { apiLog, canFixPostgres, fixPostgres, health, postgresService, restartApi, type Health, type PgService } from "../lib/core";
+import { apiLog, canFixPostgres, fixPostgres, health, postgresService, restartApi, setDatabasePassword, type Health, type PgService } from "../lib/core";
 
 type Diag = { health: Health | null; service: PgService | null; log: string };
 
@@ -13,6 +13,9 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
   const [diag, setDiag] = useState<Diag | null>(null);
   const [fixing, setFixing] = useState(false);
   const [fixError, setFixError] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [triedAt, setTriedAt] = useState(0);
   const retry = useRef(onRetry);
   retry.current = onRetry;
 
@@ -49,6 +52,21 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
     }
   }
 
+  async function savePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setFixError("");
+    try {
+      await setDatabasePassword(password);
+      setPassword("");
+      setTriedAt(Date.now());
+    } catch {
+      setFixError("رمز ذخیره نشد. برنامه را ببندید و دوباره باز کنید.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading) return <AuthCard title="در حال وصل شدن…" subtitle="چند لحظه صبر کنید." >{null}</AuthCard>;
 
   const e = explain(diag);
@@ -56,6 +74,17 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
   return (
     <AuthCard title={e.title} subtitle={e.text}>
       {fixError && <p className="form-error" role="alert">{fixError}</p>}
+      {diag?.health?.problem === "db_login" && canFixPostgres() && (
+        <form className="auth-form" onSubmit={(ev) => void savePassword(ev)}>
+          {triedAt > 0 && <p className="form-error" role="alert">با این رمز هم وصل نشد. رمزی را بنویسید که هنگام نصب PostgreSQL گذاشتید.</p>}
+          <label className="field">
+            <span>رمز PostgreSQL (کاربر postgres)</span>
+            <input type="password" dir="ltr" autoComplete="off" value={password} onChange={(ev) => setPassword(ev.target.value)} autoFocus />
+          </label>
+          <button className="btn big" disabled={saving || !password}>{saving ? "در حال ذخیره…" : "ذخیره و وصل شدن"}</button>
+          <p className="muted small">رمز فقط روی همین لپ‌تاپ، در تنظیمات برنامه، نگه داشته می‌شود.</p>
+        </form>
+      )}
       {e.fix && canFixPostgres() && (
         <button className="btn big" onClick={() => void fix()} disabled={fixing}>
           {fixing ? "در حال روشن کردن…" : "روشن کردن PostgreSQL"}
@@ -109,7 +138,12 @@ function explain(d: Diag | null): { title: string; text: string; fix?: boolean }
       }
       return { title: "PostgreSQL روشن است ولی جواب نمی‌دهد", text: "برنامه دوباره امتحان می‌کند. اگر درست نشد، کمپیوتر را یک بار ری‌استارت کنید." };
     case "db_login":
-      return { title: "رمز دیتابیس درست نیست", text: "رمز PostgreSQL که در تنظیمات برنامه (فایل database-url.txt) نوشته شده، با رمز خود PostgreSQL یکی نیست." };
+      return {
+        title: "رمز دیتابیس درست نیست",
+        text: canFixPostgres()
+          ? "رمزی را که هنگام نصب PostgreSQL برای کاربر postgres گذاشتید، این‌جا بنویسید. برنامه آن را نگه می‌دارد و دوباره وصل می‌شود."
+          : "رمز PostgreSQL که در تنظیمات برنامه (فایل database-url.txt) نوشته شده، با رمز خود PostgreSQL یکی نیست.",
+      };
     case "migration":
       return { title: "به‌روزرسانی دیتابیس انجام نشد", text: "نسخهٔ جدید نتوانست جدول‌های دیتابیس را به‌روز کند. هیچ اطلاعاتی پاک نشده است. جزئیات زیر را برای پشتیبانی بفرستید." };
     case "starting":
