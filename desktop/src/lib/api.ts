@@ -48,6 +48,9 @@ export type K50Status = {
 };
 /** What the device answered (the rest of the fields depend on the question). */
 export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknown };
+/** Which copy of ZKTeco's SDK the helper loads: "app" is the app's own copy. */
+export type K50Sdk = K50Answer & { loaded?: boolean; app_copy?: boolean; app_version?: string | null; system?: string | null; sdk?: string };
+export type K50SdkCopy = K50Answer & { from?: string; files?: string[]; version?: string | null };
 export type K50Info = K50Answer & { serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string };
 export type K50User = K50Answer & {
   exists?: boolean; name?: string; enabled?: boolean; privilege?: number; fingers?: number;
@@ -456,6 +459,8 @@ export const api = {
   k50: () => request<K50Status>("/k50"),
   setK50: (c: K50Config) => request<void>("/k50", { method: "PUT", body: c }),
   testK50: (c: K50Config) => request<K50Info>("/k50/test", { method: "POST", body: c }),
+  k50Sdk: () => request<K50Sdk>("/k50/sdk"),
+  copyK50Sdk: (from = "") => request<K50SdkCopy>("/k50/sdk", { method: "POST", body: { from } }),
   scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
   syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
   /** Ok: the comparison; Err: why the device could not be read. */
@@ -574,7 +579,12 @@ export function errorText(e: unknown): string {
 export function k50ErrorText(error: string | null | undefined): string {
   const e = error ?? "";
   if (e.startsWith("connect_failed")) return "به دستگاه وصل نشد. دستگاه روشن و به سویچ وصل است؟ آدرس IP درست است؟ ZKAccess بسته است؟";
-  if (e === "sdk_missing") return "برنامهٔ ارتباط با دستگاه (zkemkeeper که همراه ZKAccess نصب می‌شود) روی این لپ‌تاپ پیدا نشد.";
+  if (e === "sdk_missing") return "برنامهٔ ارتباط با دستگاه (SDK شرکت ZKTeco) روی این لپ‌تاپ پیدا نشد. در صفحهٔ «دستگاه انگشت» آن را در پوشهٔ برنامه کپی کنید.";
+  if (e === "sdk_not_found") return "در این پوشه فایل zkemkeeper.dll پیدا نشد. پوشهٔ 32bit از SDK شرکت ZKTeco را بدهید.";
+  if (e === "sdk_not_32bit") return "این zkemkeeper.dll نسخهٔ 64 بیتی است. پوشهٔ 32bit را بدهید.";
+  if (e === "sdk_unknown_class") return "این فایل zkemkeeper.dll آشنا نیست (نسخهٔ دیگری از SDK). پوشهٔ SDK رسمی ZKTeco را بدهید.";
+  if (e === "sdk_same_folder") return "این همان پوشهٔ خود برنامه است.";
+  if (e === "sdk_copy_failed") return "کپی SDK کامل نشد. دوباره امتحان کنید؛ جزئیات در api.log است.";
   if (e === "timeout") return "دستگاه دیر جواب داد. چند لحظه بعد دوباره امتحان کنید.";
   if (e === "no_ip") return "آدرس دستگاه هنوز تنظیم نشده.";
   if (e === "not_windows") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";

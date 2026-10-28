@@ -31,6 +31,7 @@ mod books;
 mod dashboard;
 mod documents;
 mod hall;
+mod history;
 mod hotspot;
 mod import_excel;
 mod k50;
@@ -147,6 +148,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
             Ok(()) => {
                 *core.write().unwrap() = Core { ready: true, ..Default::default() };
                 tracing::info!("database ready");
+                history::ensure_1404(&db).await;
                 tokio::spawn(backup::schedule(db.clone(), url.clone()));
                 tokio::spawn(salaries::schedule(db.clone()));
                 tokio::spawn(k50::schedule(db.clone()));
@@ -315,6 +317,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/qr", get(phone::qr))
         .route("/api/v1/k50", get(k50::status).put(k50::set_config))
         .route("/api/v1/k50/test", post(k50::test))
+        .route("/api/v1/k50/sdk", get(k50::sdk_status).post(k50::sdk_install))
         .route("/api/v1/k50/scan", post(k50::scan))
         .route("/api/v1/k50/sync", post(k50::sync_now))
         .route("/api/v1/k50/time", post(k50::set_time))

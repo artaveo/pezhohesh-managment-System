@@ -102,20 +102,7 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
     }
     let _one = DEVICE.lock().await;
     let request = json!({ "ip": cfg.ip.trim(), "port": cfg.port, "machine": cfg.machine, "key": cfg.comm_key, "ops": ops });
-    let mut cmd = helper_command()?;
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("helper: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(ascii_json(&request).as_bytes()).await.map_err(|e| format!("helper: {e}"))?;
-    }
-    let output = tokio::time::timeout(wait, child.wait_with_output()).await.map_err(|_| "timeout".to_string())?.map_err(|e| format!("helper: {e}"))?;
-    let answer: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
-        let err = String::from_utf8_lossy(&output.stderr);
-        format!("helper: {}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no answer").trim())
-    })?;
+    let answer = ask_helper(&request, wait).await?;
     if answer["ok"] != json!(true) {
         let error = answer["error"].as_str().unwrap_or("failed");
         return Err(match answer["code"].as_i64() {
@@ -128,6 +115,24 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
         return Err("helper: short answer".into());
     }
     Ok(results)
+}
+
+/// Starts the helper with one request and reads its one answer. Callers hold `DEVICE`.
+async fn ask_helper(request: &Value, wait: Duration) -> Result<Value, String> {
+    let mut cmd = helper_command()?;
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("helper: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(ascii_json(request).as_bytes()).await.map_err(|e| format!("helper: {e}"))?;
+    }
+    let output = tokio::time::timeout(wait, child.wait_with_output()).await.map_err(|_| "timeout".to_string())?.map_err(|e| format!("helper: {e}"))?;
+    serde_json::from_slice(&output.stdout).map_err(|_| {
+        let err = String::from_utf8_lossy(&output.stderr);
+        format!("helper: {}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no answer").trim())
+    })
 }
 
 /// JSON with every letter outside ASCII written as a \u escape, so the helper reads it the
@@ -584,6 +589,32 @@ pub async fn test(State(s): State<AppState>, user: CurrentUser, Json(mut c): Jso
     if let Ok(info) = &r {
         tracing::info!("k50 test: {info}");
     }
+    Ok(DeviceAnswer::from(r))
+}
+
+/// GET /api/v1/k50/sdk: which copy of ZKTeco's SDK the helper loads ("sdk": "app" when it is
+/// the app's own copy), whether the app has its own copy, and the one ZKAccess registered.
+pub async fn sdk_status(user: CurrentUser) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    let _one = DEVICE.lock().await;
+    Ok(DeviceAnswer::from(ask_helper(&json!({ "sdk": "status" }), Duration::from_secs(30)).await))
+}
+
+#[derive(Deserialize, Default)]
+pub struct SdkFrom {
+    #[serde(default)]
+    from: String,
+}
+
+/// POST /api/v1/k50/sdk: copies the SDK into the app's own folder, from `from` (a folder of
+/// ZKTeco's SDK download) or, when empty, from where ZKAccess installed it. After this the app
+/// no longer needs ZKAccess.
+pub async fn sdk_install(user: CurrentUser, body: Option<Json<SdkFrom>>) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    let from = body.map(|Json(b)| b.from).unwrap_or_default();
+    let _one = DEVICE.lock().await;
+    let r = ask_helper(&json!({ "sdk": "install", "from": from.trim() }), Duration::from_secs(60)).await;
+    tracing::info!("k50 sdk copy: {r:?}");
     Ok(DeviceAnswer::from(r))
 }
 

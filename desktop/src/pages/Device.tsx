@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Info, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Info, type K50Sdk, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
@@ -19,7 +19,10 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk">("");
+  const [sdk, setSdk] = useState<K50Sdk | null>(null);
+  const [sdkFrom, setSdkFrom] = useState("");
+  const [sdkError, setSdkError] = useState("");
   const [cmp, setCmp] = useState<K50Comparison | null>(null);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(300);
@@ -34,6 +37,9 @@ export function Device() {
   useEffect(() => {
     api.k50().then((x) => { setS(x); setForm((f) => f ?? x.config); }).catch((e) => setError(errorText(e)));
   }, [tick]);
+  useEffect(() => {
+    api.k50Sdk().then(setSdk).catch(() => setSdk(null));
+  }, []);
   // The rounds run in the background; keep the numbers fresh while the page is open.
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 20000);
@@ -62,6 +68,15 @@ export function Device() {
   const compare = () => run("compare", async () => {
     const r = await api.compareK50();
     if (r.Ok) setCmp(r.Ok); else setError(k50ErrorText(r.Err));
+  });
+  const copySdk = (from: string) => run("sdk", async () => {
+    setSdkError("");
+    const r = await api.copyK50Sdk(from);
+    if (!r.ok) { setSdkError(k50ErrorText(r.error)); return; }
+    const now = await api.k50Sdk();
+    setSdk(now);
+    if (now.sdk === "app") toast(`SDK در پوشهٔ برنامه کپی شد (${fa(r.files?.length ?? 0)} فایل).`);
+    else setSdkError("فایل‌ها کپی شد ولی برنامه هنوز از نسخهٔ خودش استفاده نمی‌کند. جزئیات در api.log است.");
   });
   const fixTime = () => run("time", async () => {
     const r = await api.k50Time();
@@ -148,6 +163,41 @@ export function Device() {
             {info.time && <> · ساعت دستگاه <bdi dir="ltr">{info.time}</bdi></>}
           </p>
         ) : <p className="form-error">{k50ErrorText(info.error)}</p>)}
+      </section>
+
+      <section className="panel wide">
+        <h2>برنامهٔ ارتباط با دستگاه (SDK)</h2>
+        {!sdk ? <p className="muted">در حال بررسی…</p>
+          : !sdk.ok ? <p className={sdk.error === "sdk_missing" ? "notice warn" : "form-error"}>{k50ErrorText(sdk.error)}</p>
+          : sdk.sdk === "app" ? (
+            <p className="form-ok">
+              برنامه از نسخهٔ خودش استفاده می‌کند{sdk.app_version && <> (نسخهٔ <bdi dir="ltr">{sdk.app_version}</bdi>)</>}.
+              ZKAccess دیگر لازم نیست؛ حذف کردنش یا پاک کردن اطلاعاتش به این برنامه آسیبی نمی‌زند.
+            </p>
+          ) : (
+            <p className="notice warn">
+              فعلاً از نسخه‌ای استفاده می‌شود که ZKAccess نصب کرده. یک بار «کپی در پوشهٔ برنامه» را بزنید؛ بعد از آن
+              ZKAccess را می‌شود حذف کرد.
+            </p>
+          )}
+        <div className="actions">
+          <button className={sdk?.sdk === "app" ? "btn ghost" : "btn"} disabled={!!busy || !sdk?.system} onClick={() => void copySdk("")}>
+            {busy === "sdk" ? "در حال کپی…" : sdk?.sdk === "app" ? "دوباره کپی کن از ZKAccess" : "کپی در پوشهٔ برنامه"}
+          </button>
+        </div>
+        <details>
+          <summary className="muted small">ZKAccess نصب نیست؟ از پوشهٔ SDK که از سایت ZKTeco گرفته‌اید</summary>
+          <div className="form-grid">
+            <label className="field">
+              <span>آدرس پوشه (همان که zkemkeeper.dll در آن است)</span>
+              <input dir="ltr" value={sdkFrom} placeholder={"C:\\Users\\...\\Standalone SDK\\32bit"} onChange={(e) => setSdkFrom(e.target.value)} />
+            </label>
+          </div>
+          <div className="actions">
+            <button className="btn ghost" disabled={!!busy || !sdkFrom.trim()} onClick={() => void copySdk(sdkFrom.trim())}>کپی از این پوشه</button>
+          </div>
+        </details>
+        {sdkError && <p className="form-error" role="alert">{sdkError}</p>}
       </section>
 
       <section className="panel wide">

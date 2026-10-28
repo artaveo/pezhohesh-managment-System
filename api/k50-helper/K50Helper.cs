@@ -1,9 +1,13 @@
-// Talks to the ZKTeco K50 through ZKTeco's own Standalone SDK (zkemkeeper.dll, the same one
-// ZKAccess uses). It is a small 32-bit program of its own, installed next to the core API,
-// because the SDK is a 32-bit COM library. It reads one JSON request on stdin and writes one
+// Talks to the ZKTeco K50 through ZKTeco's own Standalone SDK (zkemkeeper.dll). It is a small
+// 32-bit program of its own, installed next to the core API, because the SDK is a 32-bit COM
+// library. The app keeps its own copy of the SDK (see "The SDK" below), so ZKAccess can be
+// removed; until that copy exists the one ZKAccess registered is used. It reads one JSON request on stdin and writes one
 // JSON answer on stdout:
 //   { "ip": "...", "port": 4370, "machine": 1, "key": 0, "ops": [ { "op": "info" }, ... ] }
 //   { "ok": true, "results": [ { "ok": true, ... }, ... ] }   or   { "ok": false, "error": "..." }
+// Once the SDK loads, every answer also says which copy: "sdk": "app" or the file's path.
+// { "sdk": "install", "from": "<folder or empty>" } copies the SDK into the app's folder and
+// { "sdk": "status" } says which copy loads; neither reaches the device.
 // Nothing here deletes a user or a finger; a member who should not come in is disabled.
 //
 // Built with the C# compiler that ships with Windows (.NET Framework 4), which knows only
@@ -15,6 +19,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using ComTypes = System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -43,15 +48,15 @@ static class K50Helper
             return Answer(Obj("ok", false, "error", "bad_request", "detail", e.Message));
         }
 
-        foreach (var id in new[] { "zkemkeeper.ZKEM.1", "zkemkeeper.ZKEM", "zkemkeeper.CZKEM" })
+        // Copying the SDK into the app's own folder happens before any copy of it is loaded.
+        var sdk = Str(req, "sdk");
+        if (sdk == "install")
         {
-            try
-            {
-                var type = Type.GetTypeFromProgID(id);
-                if (type != null) { zk = Activator.CreateInstance(type); break; }
-            }
-            catch { }
+            try { return Answer(InstallSdk(Str(req, "from"))); }
+            catch (Exception e) { return Answer(Obj("ok", false, "error", "sdk_copy_failed", "detail", e.Message)); }
         }
+        LoadSdk();
+        if (sdk == "status") return Answer(SdkStatus());
         if (zk == null) return Answer(Obj("ok", false, "error", "sdk_missing", "bits", IntPtr.Size * 8));
 
         try
@@ -337,6 +342,275 @@ static class K50Helper
     }
 
     // ---------------------------------------------------------------------------
+    // The SDK
+    //
+    // The app keeps its own copy of ZKTeco's SDK in %APPDATA%\Pezhohesh\zk, copied once from
+    // the files ZKAccess installed (or from a folder of ZKTeco's SDK download). A manifest
+    // written next to it lets this program use it without registering anything in Windows, so
+    // removing ZKAccess, or registering another SDK version, changes nothing here.
+
+    const string ZkClass = "{00853A19-BD51-419B-9269-2DABE57EB61F}";
+
+    // The SDK's own files (Standalone SDK 6.3.1.x); zkemkeeper.dll loads them by name.
+    static readonly string[] SdkFiles = {
+        "zkemkeeper.dll", "zkemsdk.dll", "commpro.dll", "comms.dll", "rscagent.dll", "rscomm.dll",
+        "tcpcomm.dll", "usbcomm.dll", "usbstd.dll", "plcommpro.dll", "plcomms.dll", "plrscagent.dll",
+        "plrscomm.dll", "pltcpcomm.dll", "plusbcomm.dll" };
+
+    static string AppSdkDir()
+    {
+        return Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Pezhohesh"), "zk");
+    }
+
+    static void LoadSdk()
+    {
+        var dir = AppSdkDir();
+        var manifest = Path.Combine(dir, "zk.manifest");
+        if (File.Exists(manifest) && File.Exists(Path.Combine(dir, "zkemkeeper.dll")))
+        {
+            SetDllDirectory(dir);
+            var ctx = new ActCtx
+            {
+                cbSize = Marshal.SizeOf(typeof(ActCtx)),
+                dwFlags = 0x4, // ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID
+                lpSource = manifest,
+                lpAssemblyDirectory = dir,
+            };
+            var handle = CreateActCtxW(ref ctx);
+            IntPtr cookie;
+            // Stays active for the life of this short program.
+            if (handle != new IntPtr(-1)) ActivateActCtx(handle, out cookie);
+            try { zk = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid(ZkClass), true)); }
+            catch { }
+        }
+        foreach (var id in new[] { "zkemkeeper.ZKEM.1", "zkemkeeper.ZKEM", "zkemkeeper.CZKEM" })
+        {
+            if (zk != null) break;
+            try
+            {
+                var type = Type.GetTypeFromProgID(id);
+                if (type != null) zk = Activator.CreateInstance(type);
+            }
+            catch { }
+        }
+    }
+
+    static Dictionary<string, object> SdkStatus()
+    {
+        var dir = AppSdkDir();
+        var copy = Path.Combine(dir, "zkemkeeper.dll");
+        return Obj("ok", true, "loaded", zk != null,
+            "app_copy", File.Exists(copy) && File.Exists(Path.Combine(dir, "zk.manifest")),
+            "app_version", File.Exists(copy) ? FileVersion(copy) : null,
+            "system", RegisteredSdk());
+    }
+
+    // "app" when the loaded zkemkeeper.dll is the app's own copy, otherwise its path.
+    static string SdkFile()
+    {
+        try
+        {
+            foreach (System.Diagnostics.ProcessModule mod in System.Diagnostics.Process.GetCurrentProcess().Modules)
+                if (string.Equals(mod.ModuleName, "zkemkeeper.dll", StringComparison.OrdinalIgnoreCase))
+                    return SameDir(Path.GetDirectoryName(mod.FileName), AppSdkDir()) ? "app" : mod.FileName;
+        }
+        catch { }
+        return "unknown";
+    }
+
+    // The zkemkeeper.dll Windows has registered (ZKAccess's), if any.
+    static string RegisteredSdk()
+    {
+        try
+        {
+            using (var key = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey("CLSID\\" + ZkClass + "\\InprocServer32"))
+            {
+                var path = key == null ? null : key.GetValue("") as string;
+                if (string.IsNullOrEmpty(path)) return null;
+                path = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+                return File.Exists(path) ? path : null;
+            }
+        }
+        catch { return null; }
+    }
+
+    static Dictionary<string, object> InstallSdk(string from)
+    {
+        // Where the files come from: the folder given, or the copy ZKAccess registered.
+        from = (from ?? "").Trim().Trim('"');
+        string source;
+        if (from.Length == 0)
+        {
+            var registered = RegisteredSdk();
+            if (registered == null) return Obj("ok", false, "error", "sdk_not_found");
+            source = Path.GetDirectoryName(registered);
+        }
+        else if (File.Exists(from)) source = Path.GetDirectoryName(from);
+        else if (File.Exists(Path.Combine(Path.Combine(from, "32bit"), "zkemkeeper.dll"))) source = Path.Combine(from, "32bit");
+        else source = from;
+        var main = Path.Combine(source, "zkemkeeper.dll");
+        if (!File.Exists(main)) return Obj("ok", false, "error", "sdk_not_found", "from", source);
+        if (Machine(main) != 0x14c) return Obj("ok", false, "error", "sdk_not_32bit", "from", source);
+        var dir = AppSdkDir();
+        if (SameDir(source, dir)) return Obj("ok", false, "error", "sdk_same_folder");
+
+        // The class and type library ids and version, read from the file itself.
+        ComTypes.ITypeLib lib;
+        LoadTypeLibEx(main, 2 /* REGKIND_NONE */, out lib);
+        IntPtr p;
+        lib.GetLibAttr(out p);
+        var attr = (ComTypes.TYPELIBATTR)Marshal.PtrToStructure(p, typeof(ComTypes.TYPELIBATTR));
+        lib.ReleaseTLibAttr(p);
+        var hasClass = false;
+        for (var i = 0; i < lib.GetTypeInfoCount() && !hasClass; i++)
+        {
+            ComTypes.TYPEKIND kind;
+            lib.GetTypeInfoType(i, out kind);
+            if (kind != ComTypes.TYPEKIND.TKIND_COCLASS) continue;
+            ComTypes.ITypeInfo info;
+            lib.GetTypeInfo(i, out info);
+            IntPtr t;
+            info.GetTypeAttr(out t);
+            var ta = (ComTypes.TYPEATTR)Marshal.PtrToStructure(t, typeof(ComTypes.TYPEATTR));
+            info.ReleaseTypeAttr(t);
+            hasClass = ta.guid == new Guid(ZkClass);
+        }
+        if (!hasClass) return Obj("ok", false, "error", "sdk_unknown_class", "from", source);
+
+        // The SDK's files, plus any other ZKTeco library they need from the same folder.
+        var names = new List<string>();
+        foreach (var n in SdkFiles)
+            if (File.Exists(Path.Combine(source, n))) names.Add(n);
+        for (var i = 0; i < names.Count; i++)
+            foreach (var n in Imports(Path.Combine(source, names[i])))
+                if (!names.Contains(n, StringComparer.OrdinalIgnoreCase) && File.Exists(Path.Combine(source, n)) && FromZk(Path.Combine(source, n)))
+                    names.Add(n);
+
+        // Written to a new folder first, so a failed copy leaves the old one working.
+        var fresh = dir + ".new";
+        if (Directory.Exists(fresh)) Directory.Delete(fresh, true);
+        Directory.CreateDirectory(fresh);
+        foreach (var n in names) File.Copy(Path.Combine(source, n), Path.Combine(fresh, n), true);
+        var files = new StringBuilder();
+        foreach (var n in names)
+            if (!string.Equals(n, "zkemkeeper.dll", StringComparison.OrdinalIgnoreCase))
+                files.AppendFormat("  <file name=\"{0}\"/>\r\n", System.Security.SecurityElement.Escape(n));
+        var lib_id = attr.guid.ToString("B").ToUpperInvariant();
+        File.WriteAllText(Path.Combine(fresh, "zk.manifest"), string.Format(CultureInfo.InvariantCulture,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
+            "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\r\n" +
+            "  <assemblyIdentity name=\"Pezhohesh.ZKTecoSDK\" version=\"1.0.0.0\" type=\"win32\" processorArchitecture=\"x86\"/>\r\n" +
+            "  <file name=\"zkemkeeper.dll\">\r\n" +
+            "    <comClass clsid=\"{0}\" threadingModel=\"Apartment\" tlbid=\"{1}\"/>\r\n" +
+            "    <typelib tlbid=\"{1}\" version=\"{2}.{3}\" helpdir=\"\"/>\r\n" +
+            "  </file>\r\n{4}</assembly>\r\n", ZkClass, lib_id, attr.wMajorVerNum, attr.wMinorVerNum, files), new UTF8Encoding(false));
+        var old = dir + ".old";
+        if (Directory.Exists(old)) Directory.Delete(old, true);
+        if (Directory.Exists(dir)) Directory.Move(dir, old);
+        Directory.Move(fresh, dir);
+        if (Directory.Exists(old)) try { Directory.Delete(old, true); } catch { }
+        return Obj("ok", true, "from", source, "files", names, "version", FileVersion(Path.Combine(dir, "zkemkeeper.dll")));
+    }
+
+    static bool SameDir(string a, string b)
+    {
+        try { return string.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    static string FileVersion(string path)
+    {
+        try
+        {
+            var v = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            return string.Format(CultureInfo.InvariantCulture, "{0}.{1}.{2}.{3}", v.FileMajorPart, v.FileMinorPart, v.FileBuildPart, v.FilePrivatePart);
+        }
+        catch { return null; }
+    }
+
+    static bool FromZk(string path)
+    {
+        try
+        {
+            var v = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            return ((v.CompanyName ?? "") + " " + (v.ProductName ?? "")).IndexOf("ZK", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return false; }
+    }
+
+    // The PE file's machine (0x14c is 32-bit x86).
+    static int Machine(string path)
+    {
+        var d = File.ReadAllBytes(path);
+        if (d.Length < 0x40 || d[0] != 'M' || d[1] != 'Z') return 0;
+        var pe = BitConverter.ToInt32(d, 0x3c);
+        if (pe < 0 || pe + 6 > d.Length || BitConverter.ToUInt32(d, pe) != 0x4550) return 0;
+        return BitConverter.ToUInt16(d, pe + 4);
+    }
+
+    // The DLL names in a 32-bit PE file's import table.
+    static List<string> Imports(string path)
+    {
+        var names = new List<string>();
+        try
+        {
+            var d = File.ReadAllBytes(path);
+            var pe = BitConverter.ToInt32(d, 0x3c);
+            int sections = BitConverter.ToUInt16(d, pe + 6), optSize = BitConverter.ToUInt16(d, pe + 20);
+            var opt = pe + 24;
+            if (BitConverter.ToUInt16(d, opt) != 0x10b) return names;
+            var importRva = BitConverter.ToInt32(d, opt + 96 + 8);
+            Func<int, int> at = rva =>
+            {
+                for (var i = 0; i < sections; i++)
+                {
+                    var sh = opt + optSize + i * 40;
+                    int va = BitConverter.ToInt32(d, sh + 12), size = BitConverter.ToInt32(d, sh + 16), raw = BitConverter.ToInt32(d, sh + 20);
+                    if (rva >= va && rva < va + size) return raw + rva - va;
+                }
+                return -1;
+            };
+            for (var desc = at(importRva); desc > 0 && desc + 20 <= d.Length; desc += 20)
+            {
+                var nameRva = BitConverter.ToInt32(d, desc + 12);
+                if (nameRva == 0) break;
+                var o = at(nameRva);
+                if (o < 0) break;
+                var end = Array.IndexOf(d, (byte)0, o);
+                if (end > o) names.Add(Encoding.ASCII.GetString(d, o, end - o));
+            }
+        }
+        catch { }
+        return names;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct ActCtx
+    {
+        public int cbSize;
+        public uint dwFlags;
+        public string lpSource;
+        public ushort wProcessorArchitecture;
+        public ushort wLangId;
+        public string lpAssemblyDirectory;
+        public string lpResourceName;
+        public string lpApplicationName;
+        public IntPtr hModule;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateActCtxW(ref ActCtx ctx);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ActivateActCtx(IntPtr ctx, out IntPtr cookie);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool SetDllDirectory(string dir);
+
+    [DllImport("oleaut32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void LoadTypeLibEx(string file, int regKind, out ComTypes.ITypeLib lib);
+
+    // ---------------------------------------------------------------------------
     // JSON
 
     static JavaScriptSerializer Json()
@@ -347,6 +621,7 @@ static class K50Helper
     // The answer goes out as raw UTF-8 bytes, whatever code page the console has (names are Persian).
     static int Answer(Dictionary<string, object> o)
     {
+        if (zk != null) o["sdk"] = SdkFile();
         var bytes = new UTF8Encoding(false).GetBytes(Json().Serialize(o));
         using (var output = Console.OpenStandardOutput())
         {

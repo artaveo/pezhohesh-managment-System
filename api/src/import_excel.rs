@@ -552,6 +552,7 @@ pub async fn import(
     let report = store(&mut tx, &user, &p, &sha, book).await?;
     if p.commit {
         tx.commit().await?;
+        crate::history::ensure_1404(&s.db).await;
     } else {
         tx.rollback().await?;
     }
