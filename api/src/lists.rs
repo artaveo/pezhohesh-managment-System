@@ -177,8 +177,16 @@ pub struct OwedRow {
     receipt_no: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct OwedPage {
+    total: i64,
+    /// Owed on all matching periods, not only this page.
+    sum: f64,
+    rows: Vec<OwedRow>,
+}
+
 /// Periods paid in parts whose rest is still owed, oldest first.
-pub async fn owed(State(s): State<AppState>, user: CurrentUser, Query(p): Query<ListParams>) -> Result<Json<Page<OwedRow>>, ApiError> {
+pub async fn owed(State(s): State<AppState>, user: CurrentUser, Query(p): Query<ListParams>) -> Result<Json<OwedPage>, ApiError> {
     if !user.sees_hall() {
         return Err(ApiError::FORBIDDEN);
     }
@@ -193,7 +201,10 @@ pub async fn owed(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
           AND ($1::text IS NULL OR m.first_name ILIKE $1 OR m.last_name ILIKE $1 OR ms.guest_name ILIKE $1 \
                OR m.phone ILIKE $1 OR m.member_no::text LIKE $1)";
     let mut tx = begin_as(&s.db, &user).await?;
-    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM ({rows_sql}) t")).bind(&q).fetch_one(&mut *tx).await?;
+    let (total, sum): (i64, f64) = sqlx::query_as(&format!("SELECT count(*), COALESCE(sum(owed), 0)::float8 FROM ({rows_sql}) t"))
+        .bind(&q)
+        .fetch_one(&mut *tx)
+        .await?;
     let rows: Vec<OwedRow> = sqlx::query_as(&format!("{rows_sql} ORDER BY ms.start_date, name LIMIT $2 OFFSET $3"))
         .bind(&q)
         .bind(limit)
@@ -201,5 +212,5 @@ pub async fn owed(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(Page { total, rows }))
+    Ok(Json(OwedPage { total, sum, rows }))
 }

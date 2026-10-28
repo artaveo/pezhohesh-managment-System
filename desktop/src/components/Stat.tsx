@@ -39,7 +39,7 @@ export function Kpi({ icon, label, value, unit, compare = [], hero, upIsGood = t
         <span className="kpi-icon"><Icon name={icon} /></span>
         <span className="kpi-label">{label}</span>
       </div>
-      <div className="kpi-value">{fa(value)} <small>{unit}</small></div>
+      <div className="kpi-value">{Number.isNaN(value) ? "—" : fa(value)} <small>{unit}</small></div>
       {compare.map((c) => (
         <div className="kpi-foot" key={c.vs}><Delta value={value} prev={c.prev} upIsGood={upIsGood} /> <span className="muted small">{c.vs}</span></div>
       ))}

@@ -125,7 +125,7 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
 /** Periods paid in parts whose rest is still owed. */
 function OwedList({ open, action }: { open: (id: string) => void; action: ReactNode }) {
   const [q, setQ] = useState("");
-  const [page, setPage] = useState<Page<OwedRow> | null>(null);
+  const [page, setPage] = useState<(Page<OwedRow> & { sum: number }) | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const ctl = new AbortController();
@@ -134,7 +134,7 @@ function OwedList({ open, action }: { open: (id: string) => void; action: ReactN
     }, q ? 250 : 0);
     return () => { window.clearTimeout(t); ctl.abort(); };
   }, [q]);
-  const sum = page?.rows.reduce((t, r) => t + r.owed, 0) ?? 0;
+  const sum = page?.sum ?? 0;
   return (
     <div className="page">
       <div className="list-tools">
@@ -154,7 +154,7 @@ function OwedList({ open, action }: { open: (id: string) => void; action: ReactN
               const go = r.member_id ? () => open(r.member_id!) : undefined;
               return (
                 <tr key={r.membership_id} className={go ? "clickable" : ""} onClick={go} tabIndex={go ? 0 : undefined}
-                  onKeyDown={go ? (e) => { if (e.key === "Enter") go(); } : undefined}>
+                  onKeyDown={go ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } } : undefined}>
                   <td className="num">{r.member_no ?? "—"}</td>
                   <td><strong>{r.name}</strong></td>
                   <td><bdi dir="ltr">{r.phone ?? "—"}</bdi></td>
@@ -171,6 +171,7 @@ function OwedList({ open, action }: { open: (id: string) => void; action: ReactN
         {page && !page.rows.length && <p className="muted empty">{q ? "چیزی پیدا نشد." : "هیچ کسی باقی ندارد."}</p>}
         {!page && !error && <p className="muted empty">در حال بارگذاری…</p>}
       </div>
+      {page && page.rows.length < page.total && <p className="muted small">فقط {fa(page.rows.length)} دورهٔ قدیمی‌تر نشان داده شده؛ برای بقیه جستجو کنید.</p>}
     </div>
   );
 }

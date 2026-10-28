@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  addDays, fa, formatDay, iso, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
+  addDays, daysBetween, fa, formatDay, iso, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
   sameMonthLastYear, toSolar, yearNumber, yearStart,
 } from "../lib/solar";
 import { balance, loadRanges, total, type Range, type Sum } from "../lib/reports";
@@ -89,18 +89,22 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   const current = end < next;
   const pm = prevMonth(ms);
   const ly = sameMonthLastYear(ms);
+  // While the month runs, the other months are compared over the same first days only.
+  const span = daysBetween(ms, end);
+  const upTo = (from: Date, cap: Date) => (current ? (addDays(from, span) < cap ? addDays(from, span) : cap) : cap);
+  const days = current ? ` (1 تا ${span})` : "";
   const { data, failed, retry } = useLoad(async (signal) => {
     const ranges: Range[] = [
       { from: iso(ms), to: iso(end) },
-      { from: iso(pm), to: iso(ms) },
-      { from: iso(ly), to: iso(nextMonth(ly)) },
+      { from: iso(pm), to: iso(upTo(pm, ms)) },
+      { from: iso(ly), to: iso(upTo(ly, nextMonth(ly))) },
     ];
     const a = await loadRanges(ranges, true, signal);
     const salaries = await api.salaries({ from: iso(ms), to: iso(addDays(next, -1)) }, signal).catch(() => null);
-    const owed = await api.owed({ scope: "all", q: "", limit: 500 }, signal).catch(() => null);
+    const owed = await api.owed({ scope: "all", q: "", limit: 1 }, signal).catch(() => null);
     return {
       cur: a.sum(ranges[0]), prev: a.sum(ranges[1]), last: a.sum(ranges[2]), expenseOrder: a.res.expense_order, salaries,
-      owed: owed ? { n: owed.total, sum: owed.rows.reduce((t, r) => t + r.owed, 0) } : null,
+      owed: owed ? { n: owed.total, sum: owed.sum } : null,
     };
   }, [iso(ms), iso(end)]);
 
@@ -109,20 +113,20 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   const title = `${monthName(ms)} ${yearNumber(ms)}`;
   const sheet = (
     <MonthSheet title={title} current={current} cur={data.cur} prev={data.prev} last={data.last}
-      prevLabel={monthName(pm)} lastLabel={`${monthName(ly)} ${yearNumber(ly)}`}
+      prevLabel={`${monthName(pm)}${days}`} lastLabel={`${monthName(ly)} ${yearNumber(ly)}${days}`}
       expenseOrder={data.expenseOrder} salaries={data.salaries} ms={ms} canShares={canShares} />
   );
   return (
     <>
       <section className="kpis four">
-        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={vs(data.prev.income, `نسبت به ${monthName(pm)}`)} />
-        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={vs(data.prev.expenses, `نسبت به ${monthName(pm)}`)} />
-        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={vs(balance(data.prev), `نسبت به ${monthName(pm)}`)} />
+        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={vs(data.prev.income, `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={vs(data.prev.expenses, `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={vs(balance(data.prev), `نسبت به ${monthName(pm)}${days}`)} />
         {data.owed
           ? <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={data.owed.sum} unit="؋" note={`${fa(data.owed.n)} دوره با پرداخت ناتمام`} />
-          : <Kpi icon="users" label="عضو جدید" value={data.cur.new_members} unit="نفر" />}
+          : <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={NaN} unit="" note={<button className="link" onClick={retry}>خوانده نشد؛ دوباره</button>} />}
       </section>
-      {current && <p className="muted small">ماه {monthName(ms)} هنوز تمام نشده؛ این گزارش تا امروز است.</p>}
+      {current && <p className="muted small">ماه {monthName(ms)} هنوز تمام نشده؛ این گزارش تا امروز است و ماه‌های دیگر هم فقط در همین {span} روز اول مقایسه شده‌اند.</p>}
       <div className="glass report-sheet">{sheet}</div>
       <PrintCopy on={printing} onDone={onPrinted}>{sheet}</PrintCopy>
     </>
@@ -219,8 +223,12 @@ function YearReport({ ys, canShares, printing, onPrinted }: { ys: Date; canShare
       ranges.push({ from: iso(months[i]), to: iso(months[i + 1] < tomorrow ? months[i + 1] : tomorrow) });
     }
     const a = await loadRanges(ranges.length ? ranges : [{ from: iso(ys), to: iso(addDays(ys, 1)) }], true, signal);
-    const lastYear = await loadRanges([{ from: iso(prevYear(ys)), to: iso(ys) }], false, signal);
-    return { byMonth: ranges.map(a.sum), year: total(a.res.periods), expenseOrder: a.res.expense_order, prev: lastYear.sum({ from: iso(prevYear(ys)), to: iso(ys) }) };
+    // While the year runs, last year is compared over the same days only.
+    const py0 = prevYear(ys);
+    const pyEnd = nextYear(ys) > tomorrow && addDays(py0, daysBetween(ys, tomorrow)) < ys ? addDays(py0, daysBetween(ys, tomorrow)) : ys;
+    const prevRange = { from: iso(py0), to: iso(pyEnd) };
+    const lastYear = await loadRanges([prevRange], false, signal);
+    return { byMonth: ranges.map(a.sum), year: total(a.res.periods), expenseOrder: a.res.expense_order, prev: lastYear.sum(prevRange) };
   }, [iso(ys), iso(tomorrow)]);
 
   if (failed) return <Failed retry={retry} />;
@@ -232,9 +240,9 @@ function YearReport({ ys, canShares, printing, onPrinted }: { ys: Date; canShare
   return (
     <>
       <section className="kpis four">
-        <Kpi hero icon="wallet" label={`درآمد سال ${y}`} value={data.year.income} unit="؋" compare={vs(data.prev.income, `نسبت به کل سال ${py}`)} />
-        <Kpi icon="receipt" label="مصارف" value={data.year.expenses} unit="؋" upIsGood={false} compare={vs(data.prev.expenses, `نسبت به کل سال ${py}`)} />
-        <Kpi icon="chart" label="سود خالص" value={balance(data.year)} unit="؋" compare={vs(balance(data.prev), `نسبت به کل سال ${py}`)} />
+        <Kpi hero icon="wallet" label={`درآمد سال ${y}`} value={data.year.income} unit="؋" compare={vs(data.prev.income, (done ? `نسبت به کل سال ${py}` : `نسبت به همین مدت سال ${py}`))} />
+        <Kpi icon="receipt" label="مصارف" value={data.year.expenses} unit="؋" upIsGood={false} compare={vs(data.prev.expenses, (done ? `نسبت به کل سال ${py}` : `نسبت به همین مدت سال ${py}`))} />
+        <Kpi icon="chart" label="سود خالص" value={balance(data.year)} unit="؋" compare={vs(balance(data.prev), (done ? `نسبت به کل سال ${py}` : `نسبت به همین مدت سال ${py}`))} />
         <Kpi icon="users" label="عضو جدید" value={data.year.new_members} unit="نفر" />
       </section>
       <div className="glass report-sheet">{sheet}</div>

@@ -183,7 +183,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
           {removing.plan_name}، از {formatDay(removing.start_date)} تا {formatDay(removing.end_date)}.
         </DeleteDialog>
       )}
-      {paying && <PayRest period={paying} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
+      {paying && <PayRest first={paying} owing={owing} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
       {dates && <PeriodDates period={dates} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("تاریخ دوره اصلاح شد."); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
@@ -331,8 +331,9 @@ function ExcelMonths({ months }: { months: MemberDetail["excel_months"] }) {
 }
 
 /** The rest of a period paid in parts: a second bill. */
-function PayRest({ period, onClose }: { period: Period; onClose: (billId: string | null) => void }) {
-  const [amount, setAmount] = useState(String(period.owed));
+function PayRest({ first, owing, onClose }: { first: Period; owing: Period[]; onClose: (billId: string | null) => void }) {
+  const [period, setPeriod] = useState(first);
+  const [amount, setAmount] = useState(String(first.owed));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const n = Number(amount);
@@ -342,7 +343,17 @@ function PayRest({ period, onClose }: { period: Period; onClose: (billId: string
   }
   return (
     <Modal label="پرداخت باقی" onClose={() => !busy && onClose(null)}>
-      <h2>پرداخت باقی</h2>
+      <h2>پرداخت باقی · {period.plan_name}</h2>
+      {owing.length > 1 && (
+        <label className="field">
+          <span>کدام دوره؟ ({fa(owing.length)} دوره باقی دارد)</span>
+          <select value={period.id} onChange={(e) => { const p = owing.find((x) => x.id === e.target.value)!; setPeriod(p); setAmount(String(p.owed)); }}>
+            {[...owing].reverse().map((p) => (
+              <option key={p.id} value={p.id}>{formatDay(p.start_date)} تا {formatDay(p.end_date)} · باقی {fa(p.owed)}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <p className="muted">
         {period.plan_name}، {formatDay(period.start_date)} تا {formatDay(period.end_date)}. مبلغ {fa(period.fee - period.discount)}، پرداخت‌شده {fa(period.paid)}، باقی <strong className="owed">{fa(period.owed)}</strong> افغانی.
       </p>
@@ -351,6 +362,7 @@ function PayRest({ period, onClose }: { period: Period; onClose: (billId: string
         <input dir="ltr" inputMode="numeric" value={amount} autoFocus onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ""))} />
       </label>
       {n > 0 && n < period.owed && <p className="muted small">بعد از این، {fa(period.owed - n)} افغانی باقی می‌ماند.</p>}
+      {n > period.owed && <p className="form-error" role="alert">بیشتر از باقی است. حداکثر {fa(period.owed)} افغانی.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="actions">
         <button className="btn" disabled={busy || !(n > 0 && n <= period.owed)} onClick={() => void pay()}>{busy ? "در حال ثبت…" : "ثبت و بل"}</button>

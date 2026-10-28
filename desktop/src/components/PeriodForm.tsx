@@ -76,7 +76,7 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
               <span>پرداخت شد</span>
               <input dir="ltr" inputMode="numeric" value={paid} placeholder={String(due)} aria-describedby="paid-hint"
                 onChange={(e) => setPaid(e.target.value.replace(/[^\d.]/g, ""))} />
-              <small id="paid-hint" className="muted">اگر کمتر بنویسید، بقیه «باقی» می‌ماند.</small>
+              <small id="paid-hint" className="muted">خالی بماند یعنی همه را داده. اگر کمتر بنویسید، بقیه «باقی» می‌ماند.</small>
             </label>}
           </>
         )}

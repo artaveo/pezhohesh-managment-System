@@ -538,7 +538,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .chip.kind-daily { background: var(--warn-soft); color: var(--warn); }
 .chip.kind-internet { background: var(--info-soft); color: var(--info); }
 .chip.kind-monthly.new { background: var(--good-soft); color: var(--good); }
-.chip.excel { background: var(--warn-soft); color: var(--warn); font-size: .72rem; padding: 0 8px; }
+.chip.excel { background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: .72rem; padding: 0 8px; }
 .owed { color: var(--bad); font-weight: 600; }
 .bill-lines .bill-rest th { font-weight: 700; border-top: 1px dashed currentColor; }
 .owed-badge.small-badge { font-size: .72rem; padding: 0 7px; margin-inline-start: 6px; vertical-align: 1px; }
@@ -735,7 +735,9 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
   .print-only.report-print { color: #111; font-family: var(--font); }
   .report-print .report { gap: 4mm; }
   .report-print .report-head h1 { font-size: 15pt; }
-  .report-print .table-wrap { overflow: visible; }
+  .report-print .table-wrap { overflow: visible; max-height: none; }
+  .report-print .table.sheet thead { display: table-header-group; }
+  .report-print .table.sheet tr { break-inside: avoid; }
   .report-print .table.sheet { width: 100%; font-size: 8.5pt; border-collapse: collapse; }
   .report-print .table.sheet th, .report-print .table.sheet td { padding: 1.4mm 1.6mm; border-bottom: .2mm solid #ccd3c8; }
   .report-print .table.sheet th:first-child { position: static; background: none; }

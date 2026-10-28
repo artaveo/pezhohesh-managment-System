@@ -27,7 +27,8 @@ export function Device() {
   const [sdkError, setSdkError] = useState("");
   // Copies of the SDK in backups or on a USB stick (from the computer that had ZKAccess).
   const [copies, setCopies] = useState<string[]>([]);
-  useEffect(() => { api.k50SdkCopies().then(setCopies).catch(() => {}); }, []);
+  const [copy, setCopy] = useState("");
+  useEffect(() => { api.k50SdkCopies().then((c) => { setCopies(c); setCopy(c[0] ?? ""); }).catch(() => {}); }, []);
   const [cmp, setCmp] = useState<K50Comparison | null>(null);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(300);
@@ -201,13 +202,22 @@ export function Device() {
             {busy === "sdk" ? "در حال کپی…" : sdk?.sdk === "app" ? "دوباره کپی کن از ZKAccess" : "کپی در پوشهٔ برنامه"}
           </button>
           {sdk?.sdk !== "app" && copies.length > 0 && (
-            <button className={sdk?.system ? "btn ghost" : "btn"} disabled={!!busy} onClick={() => void copySdk(copies[0])} title={copies[0]}>
+            <button className={sdk?.system ? "btn ghost" : "btn"} disabled={!!busy} onClick={() => void copySdk(copy)} title={copy}>
               کپی از پشتیبان یا فلش
             </button>
           )}
         </div>
         {sdk?.sdk !== "app" && copies.length > 0 && (
-          <p className="muted small">یک نسخهٔ SDK در پشتیبان پیدا شد: <bdi dir="ltr">{copies[0]}</bdi></p>
+          copies.length === 1
+            ? <p className="muted small">یک نسخهٔ SDK در پشتیبان پیدا شد: <bdi dir="ltr">{copy}</bdi></p>
+            : (
+              <label className="field">
+                <span>{fa(copies.length)} نسخهٔ SDK پیدا شد؛ از کدام کپی شود؟</span>
+                <select dir="ltr" value={copy} onChange={(e) => setCopy(e.target.value)}>
+                  {copies.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+            )
         )}
         {sdk?.sdk === "app" && <p className="muted small">هر پشتیبان یک نسخه از آن را هم در پوشهٔ <bdi dir="ltr">zk</bdi> نگه می‌دارد، تا کمپیوتر تازه آن را از فلش یا پشتیبان بردارد.</p>}
         <details>
