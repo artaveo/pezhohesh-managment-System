@@ -73,7 +73,7 @@ pub struct Live {
 }
 
 static LIVE: RwLock<Live> = RwLock::new(Live { ok_at: None, tried_at: None, error: None, sent: 0, taken: 0, clock_off_minutes: None });
-static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 async fn mode(db: &PgPool) -> Result<String, sqlx::Error> {

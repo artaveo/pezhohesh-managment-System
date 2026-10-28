@@ -104,6 +104,8 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     let before_name = points(&s.db).await?.into_iter().next().map(|p| p.name);
 
     let _one = backup::RUNNING.lock().await;
+    // No sync round between the swap and the sync settings being put right below.
+    let _sync = crate::sync::RUNNING.lock().await;
     s.pause("restoring");
     tracing::warn!("restoring {} for {}", file.path, user.username);
     if let Err(e) = replace_database(&url, Path::new(&file.path)).await {
@@ -114,6 +116,14 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     // A computer that shares the server keeps doing so. It takes again from the server what
     // came after the backup (from the start, for a backup older than the sync), and sends
     // what the backup has that it had not sent yet.
+    if !node {
+        // A copy of another computer's backup (the hall laptop's, say) carries that computer's
+        // sync settings; kept, this computer would start sending as if it were that one.
+        let off = sqlx::query("DELETE FROM settings WHERE key IN ('sync_mode', 'sync_pulled')").execute(&s.db).await;
+        if let Err(e) = off {
+            tracing::error!("restore: sync settings not cleared: {e}");
+        }
+    }
     if node {
         let kept = sqlx::query(
             "INSERT INTO settings (key, value) VALUES ('sync_mode', '\"node\"'), ('sync_pulled', '0') \
