@@ -21,9 +21,15 @@ export function Device() {
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
   const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare">("");
   const [cmp, setCmp] = useState<K50Comparison | null>(null);
+  const [q, setQ] = useState("");
+  const [shown, setShown] = useState(300);
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
+
+  const needle = q.trim().toLowerCase();
+  const rows = !cmp ? [] : !needle ? cmp.rows
+    : cmp.rows.filter((r) => r.no.includes(needle) || r.device_name.toLowerCase().includes(needle) || (r.app_name ?? "").includes(needle));
 
   useEffect(() => {
     api.k50().then((x) => { setS(x); setForm((f) => f ?? x.config); }).catch((e) => setError(errorText(e)));
@@ -168,11 +174,16 @@ export function Device() {
             {cmp.zero_padded > 0 && (
               <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
             )}
+            <div className="list-more">
+              <input className="search" type="search" placeholder="جستجوی آیدی یا نام" value={q} aria-label="جستجو در مقایسه"
+                onChange={(e) => { setQ(e.target.value); setShown(300); }} />
+              <span className="muted small">{fa(rows.length)} ردیف</span>
+            </div>
             <div className="table-wrap flush">
               <table className="table">
                 <thead><tr><th>وضع</th><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
                 <tbody>
-                  {cmp.rows.map((r) => (
+                  {rows.slice(0, shown).map((r) => (
                     <tr key={r.no}>
                       <td>
                         <span className={`status ${r.state === "differs" ? "bad" : r.state === "missing" ? "off" : "on"}`}>
@@ -187,7 +198,12 @@ export function Device() {
                 </tbody>
               </table>
             </div>
-            {cmp.rows.length < cmp.device_users && <p className="muted small">همهٔ آیدی‌هایی که نام‌شان فرق دارد نشان داده شده؛ از بقیه {fa(cmp.rows.length)} نفر اول.</p>}
+            {rows.length > shown && (
+              <div className="list-more">
+                <span className="muted small">{fa(shown)} از {fa(rows.length)} ردیف</span>
+                <button className="btn ghost small" onClick={() => setShown((n) => n + 300)}>نمایش بیشتر</button>
+              </div>
+            )}
           </>
         )}
       </section>

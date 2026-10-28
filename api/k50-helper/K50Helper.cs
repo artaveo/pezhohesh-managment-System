@@ -112,6 +112,10 @@ static class K50Helper
             {
                 var no = Str(o, "no");
                 var f = Int(o, "finger");
+                // A finger already stored for this ID is never replaced.
+                string tmp = "";
+                int len = 0;
+                try { if ((bool)zk.SSR_GetUserTmpStr(m, no, f, ref tmp, ref len)) return Obj("ok", false, "error", "finger_taken"); } catch { }
                 zk.CancelOperation();
                 bool ok = zk.StartEnrollEx(no, f, 1);
                 if (!ok) ok = zk.StartEnroll(int.Parse(no, CultureInfo.InvariantCulture), f);
@@ -120,6 +124,12 @@ static class K50Helper
             case "logs": return Logs(Str(o, "since"));
             case "users": return Users();
             case "set_time": return Obj("ok", (bool)zk.SetDeviceTime(m));
+            case "time":
+            {
+                int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
+                zk.GetDeviceTime(m, ref y, ref mo, ref d, ref h, ref mi, ref se);
+                return Obj("ok", true, "time", Stamp(y, mo, d, h, mi, se));
+            }
             default: return Obj("ok", false, "error", "unknown_op");
         }
     }
@@ -164,7 +174,30 @@ static class K50Helper
             if ((bool)zk.GetUserValidDate(m, no, ref exp, ref cnt, ref s, ref e)) valid = Obj("expires", exp, "start", s, "end", e);
         }
         catch { }
-        return Obj("ok", true, "exists", true, "name", name, "enabled", en, "privilege", priv, "fingers", fingers, "valid", valid);
+        object group = null;
+        try
+        {
+            int g = 0;
+            if ((bool)zk.GetUserGroup(m, int.Parse(no, CultureInfo.InvariantCulture), ref g)) group = g;
+        }
+        catch { }
+        object zones = null;
+        try
+        {
+            string tz = "";
+            if ((bool)zk.SSR_GetUserTZStr(m, no, ref tz)) zones = tz;
+        }
+        catch
+        {
+            try
+            {
+                string tz = "";
+                if ((bool)zk.GetUserTZStr(m, int.Parse(no, CultureInfo.InvariantCulture), ref tz)) zones = tz;
+            }
+            catch { }
+        }
+        return Obj("ok", true, "exists", true, "name", name, "enabled", en, "privilege", priv, "fingers", fingers, "valid", valid,
+            "group", group, "zones", zones);
     }
 
     static Dictionary<string, object> SetUser(Dictionary<string, object> o)
@@ -177,39 +210,67 @@ static class K50Helper
         bool had = zk.SSR_GetUserInfo(m, no, ref name, ref pw, ref priv, ref en);
         // The device's own administrators are left as they are.
         if (had && priv > 0) return Obj("ok", false, "error", "device_admin");
+        // `owner`: the name this ID should carry if it is already on the device. A different
+        // name means the number belongs to someone else there, and nothing is written.
+        var owner = Str(o, "owner");
+        if (had && owner != "" && name.Trim() != owner.Trim())
+            return Obj("ok", false, "error", "taken", "device_name", name);
+        // Closing an ID the device does not have is nothing to do.
+        if (!had && Bool(o, "existing")) return Obj("ok", true, "created", false, "absent", true);
         if (!had) { name = Str(o, "name"); pw = ""; priv = 0; }
         if (!(bool)zk.SSR_SetUserInfo(m, no, name, pw, priv, Bool(o, "enabled")))
             return Obj("ok", false, "error", "set_user_failed", "code", LastError());
         object dates = null;
+        object read = null;
         var start = Str(o, "start");
         var end = Str(o, "end");
-        if (start != "" && end != "") dates = SetValid(no, start, end);
-        return Obj("ok", true, "created", !had, "valid_dates", dates, "date_form", dateForm);
+        if (start != "" && end != "") dates = SetValid(no, start, end, out read);
+        return Obj("ok", true, "created", !had, "valid_dates", dates, "date_form", dateForm, "valid_read", read);
     }
 
-    static bool SetValid(string no, string start, string end)
+    // A form counts only when the device gives the same days back (some take a form and
+    // store something else). Without a read-back call the first form it takes is kept.
+    static bool SetValid(string no, string start, string end, out object read)
     {
+        read = null;
         var forms = new List<string[]>
         {
-            new[] { start, end },
             new[] { start + " 00:00:00", end + " 23:59:59" },
+            new[] { start, end },
             new[] { start.Replace("-", ""), end.Replace("-", "") },
         };
         var order = Enumerable.Range(0, forms.Count).ToList();
         if (dateForm.HasValue) order.Insert(0, dateForm.Value);
         foreach (var i in order)
         {
+            bool taken;
+            try { taken = zk.SetUserValidDate(m, no, 1, 0, forms[i][0], forms[i][1]); }
+            catch { return false; }  // this SDK has no such call
+            if (!taken) continue;
+            bool? same = null;
             try
             {
-                if ((bool)zk.SetUserValidDate(m, no, 1, 0, forms[i][0], forms[i][1]))
+                int exp = 0, cnt = 0;
+                string s = "", e = "";
+                if ((bool)zk.GetUserValidDate(m, no, ref exp, ref cnt, ref s, ref e))
                 {
-                    if (!dateForm.HasValue) dateForm = i;
-                    return true;
+                    read = Obj("expires", exp, "start", s, "end", e);
+                    same = exp != 0 && Day(s) == Day(start) && Day(e) == Day(end);
                 }
             }
-            catch { return false; }  // this SDK has no such call
+            catch { }
+            if (same == false) continue;
+            if (!dateForm.HasValue) dateForm = i;
+            return true;
         }
         return false;
+    }
+
+    // The first eight digits of a date written any of these ways: 2026-10-28, 20261028, 2026/10/28 00:00:00.
+    static string Day(string text)
+    {
+        var digits = new string((text ?? "").Where(char.IsDigit).ToArray());
+        return digits.Length >= 8 ? digits.Substring(0, 8) : digits;
     }
 
     // Every punch after `since` ("yyyy-MM-dd HH:mm:ss", the device's own clock).

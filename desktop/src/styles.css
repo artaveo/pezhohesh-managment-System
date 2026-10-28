@@ -654,6 +654,9 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .stats-row > div { display: grid; gap: 2px; min-width: 140px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; }
 .stats-row strong { font-size: 1.3rem; }
 .k50-state { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.k50-device { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: .92rem; }
+.k50-device dt { color: var(--muted); }
+.k50-device dd { margin: 0; }
 .k50-visits { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
 .k50-visits li { padding: 2px 10px; border: 1px solid var(--line); border-radius: 99px; font-size: .85rem; }
 .finger-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 10px 0; }

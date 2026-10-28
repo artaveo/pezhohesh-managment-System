@@ -49,11 +49,17 @@ export type K50Status = {
 /** What the device answered (the rest of the fields depend on the question). */
 export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknown };
 export type K50Info = K50Answer & { serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string };
-export type K50User = K50Answer & { exists?: boolean; enabled?: boolean; fingers?: number; valid?: { start: string; end: string } | null };
+export type K50User = K50Answer & {
+  exists?: boolean; name?: string; enabled?: boolean; privilege?: number; fingers?: number;
+  valid?: { expires?: number; start: string; end: string } | null; group?: number | null; zones?: string | null; device_time?: string | null;
+  /** With error "taken": the name the device has under this number. */
+  device_name?: string;
+};
 export type MemberK50 = {
   configured: boolean; auto: boolean; enabled: boolean; start_date: string | null; end_date: string | null;
   sent: { member_no: number; pushed_start: string | null; pushed_end: string | null; pushed_enabled: boolean | null; pushed_at: string | null;
-    valid_dates: boolean | null; fingers: number | null; error: string | null; error_at: string | null } | null;
+    valid_dates: boolean | null; device_read: { expires: number; start: string; end: string } | null;
+    fingers: number | null; error: string | null; error_at: string | null } | null;
   visits: string[];
 };
 export type RestorePoint = { path: string; name: string; kind: "folder" | "usb" | "gdrive"; folder: string; size: number; modified: string | null };
@@ -457,7 +463,8 @@ export const api = {
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
   memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
   checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),
-  pushMemberK50: (id: string) => request<K50Answer>(`/members/${id}/k50/push`, { method: "POST" }),
+  pushMemberK50: (id: string, samePerson = false) =>
+    request<K50Answer>(`/members/${id}/k50/push`, { method: "POST", body: { same_person: samePerson } }),
   enrollK50: (id: string, finger: number) => request<K50Answer>(`/members/${id}/k50/enroll`, { method: "POST", body: { finger } }),
   setOnline: (p: { every_hours: number; url?: string }) => request<void>("/online", { method: "PUT", body: p }),
   onlineNow: () => request<OnlineOutcome>("/online", { method: "POST" }),
@@ -572,6 +579,11 @@ export function k50ErrorText(error: string | null | undefined): string {
   if (e === "no_ip") return "آدرس دستگاه هنوز تنظیم نشده.";
   if (e === "not_windows") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";
   if (e === "no_helper") return "بخش ارتباط با دستگاه انگشت (pezhohesh-k50.exe) کنار برنامه پیدا نشد. برنامه را دوباره نصب کنید.";
+  if (e.startsWith("taken")) {
+    const who = e.slice("taken:".length).trim();
+    return `این آیدی روی دستگاه به نام «${who || "بی‌نام"}» ثبت است. اگر او کس دیگری است، شمارهٔ این عضو را عوض کنید. برنامه چیزی روی دستگاه ننوشت.`;
+  }
+  if (e === "finger_taken") return "این انگشت از قبل روی همین آیدی ثبت است و برنامه آن را عوض نمی‌کند. انگشت دیگری را انتخاب کنید.";
   if (e === "device_admin") return "این آیدی روی دستگاه «مدیر دستگاه» است؛ برنامه به آن دست نمی‌زند.";
   if (e.startsWith("set_user_failed")) return "دستگاه این عضو را نپذیرفت.";
   if (e === "enroll_failed") return "دستگاه برای ثبت انگشت آماده نشد. اگر این انگشت قبلاً ثبت شده، انگشت دیگری را انتخاب کنید.";

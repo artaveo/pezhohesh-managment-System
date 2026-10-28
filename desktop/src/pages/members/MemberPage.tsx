@@ -124,7 +124,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
       )}
 
       <Documents memberId={id} docs={d.documents} onChange={() => void load()} />
-      <Fingerprint memberId={id} reload={d.periods.length + fingerDone} onLoaded={setK50} onEnroll={() => setEnrolling(true)} />
+      <Fingerprint memberId={id} name={name} reload={d.periods.length + fingerDone} onLoaded={setK50} onEnroll={() => setEnrolling(true)} />
 
       <section className="glass table-wrap">
         <table className="table">

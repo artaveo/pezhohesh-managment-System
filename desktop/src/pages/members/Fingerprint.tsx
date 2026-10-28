@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type MemberK50 } from "../../lib/api";
+import { api, errorText, k50ErrorText, type K50User, type MemberK50 } from "../../lib/api";
 import { fa, formatDay } from "../../lib/solar";
 import { Modal } from "../../components/Modal";
 import { Icon } from "../../components/Icon";
@@ -20,12 +20,15 @@ const time = (at: string) => {
  * The member on the fingerprint device: open until when, their fingers, their last visits.
  * Enrolling a finger is the page's own dialog (it is also offered at the top of the page).
  */
-export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
-  memberId: string; reload: number; onLoaded: (k: MemberK50) => void; onEnroll: () => void;
+export function Fingerprint({ memberId, name, reload, onLoaded, onEnroll }: {
+  memberId: string; name: string; reload: number; onLoaded: (k: MemberK50) => void; onEnroll: () => void;
 }) {
   const toast = useToast();
   const [k, setK] = useState<MemberK50 | null>(null);
   const [fingers, setFingers] = useState<number | null>(null);
+  // What the device itself holds for this ID, after «از دستگاه بپرس».
+  const [dev, setDev] = useState<K50User | null>(null);
+  const [claiming, setClaiming] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
@@ -33,6 +36,7 @@ export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
   // A renewal sends the new dates a few seconds later; look again then.
   useEffect(() => {
     setFingers(null);
+    setDev(null);
     void load();
     const t = setTimeout(() => void load(), 6000);
     return () => clearTimeout(t);
@@ -56,15 +60,17 @@ export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
   }
   const check = () => act("check", async () => {
     const r = await api.checkMemberK50(memberId);
-    if (r.ok) setFingers(r.exists ? r.fingers ?? 0 : 0);
+    if (r.ok) { setFingers(r.exists ? r.fingers ?? 0 : 0); setDev(r); }
     return r;
   }, "از دستگاه پرسیده شد.");
+  const claim = () => act("push", () => api.pushMemberK50(memberId, true), "به دستگاه فرستاده شد.").then(() => setClaiming(false));
 
   if (!k) return error ? <p className="form-error">{error}</p> : null;
   if (!k.configured) return null;
   const s = k.sent;
   const onDevice = s?.pushed_at != null;
   const upToDate = onDevice && s.pushed_enabled === k.enabled && s.pushed_end === k.end_date && s.pushed_start === k.start_date;
+  const taken = s?.error?.startsWith("taken") ? s.error.slice("taken:".length).trim() : null;
   return (
     <>
     <section className="panel wide">
@@ -78,6 +84,28 @@ export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
         {fingers != null && <span className="muted">انگشت ثبت‌شده: {fa(fingers)}</span>}
         {s?.error && <span className="form-error inline">{k50ErrorText(s.error)}</span>}
       </div>
+      {s?.device_read && (
+        <p className="muted small">دستگاه تاریخ را این‌طور پس داد: <bdi dir="ltr">{s.device_read.start}</bdi> تا <bdi dir="ltr">{s.device_read.end}</bdi></p>
+      )}
+      {taken != null && (
+        <div className="actions">
+          <button className="btn ghost small" disabled={!!busy} onClick={() => setClaiming(true)}>«{taken || "بی‌نام"}» روی دستگاه همین {name} است</button>
+        </div>
+      )}
+      {dev && (
+        <dl className="k50-device" aria-label="روی دستگاه">
+          {!dev.exists ? <><dt>روی دستگاه</dt><dd>این آیدی روی دستگاه نیست.</dd></> : (
+            <>
+              <dt>نام روی دستگاه</dt><dd><bdi>{dev.name || "—"}</bdi></dd>
+              <dt>وضع</dt><dd>{dev.enabled ? "باز" : "بسته"}{dev.privilege ? " (مدیر دستگاه)" : ""}</dd>
+              <dt>اعتبار روی دستگاه</dt><dd>{dev.valid ? <><bdi dir="ltr">{dev.valid.start}</bdi> تا <bdi dir="ltr">{dev.valid.end}</bdi>{dev.valid.expires === 0 ? " (بدون ختم)" : ""}</> : "تاریخی ندارد"}</dd>
+              <dt>گروه</dt><dd><bdi dir="ltr">{dev.group ?? "—"}</bdi></dd>
+              <dt>بازهٔ زمانی</dt><dd><bdi dir="ltr">{dev.zones ?? "—"}</bdi></dd>
+            </>
+          )}
+          <dt>ساعت دستگاه</dt><dd><bdi dir="ltr">{dev.device_time ?? "—"}</bdi></dd>
+        </dl>
+      )}
       <div className="actions">
         <button className="btn" disabled={!!busy || !k.enabled} onClick={onEnroll}
           title={k.enabled ? undefined : "اول عضویت را تمدید کنید"}>ثبت انگشت</button>
@@ -88,6 +116,18 @@ export function Fingerprint({ memberId, reload, onLoaded, onEnroll }: {
       </div>
       {!k.enabled && <p className="muted small">عضویت سالن این عضو الان فعال نیست؛ دستگاه انگشتش را قبول نمی‌کند.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
+      {claiming && taken != null && (
+        <Modal label="همین شخص است؟" onClose={() => setClaiming(false)}>
+          <h2>همین شخص است؟</h2>
+          <p>روی دستگاه، آیدی <bdi dir="ltr">{s?.member_no}</bdi> به نام «<bdi>{taken || "بی‌نام"}</bdi>» ثبت است.</p>
+          <p>اگر این همان {name} است (مثلاً اسمش در ZKAccess با حروف انگلیسی نوشته شده)، تأیید کنید تا برنامه تاریخ‌هایش را روی همان آیدی بنویسد. اسم و انگشت‌هایش روی دستگاه عوض نمی‌شود.</p>
+          <p className="form-error">اگر آدم دیگری است، تأیید نکنید. شمارهٔ عضویت این عضو را عوض کنید.</p>
+          <div className="actions">
+            <button className="btn" disabled={!!busy} onClick={() => void claim()}>{busy === "push" ? "در حال فرستادن…" : "بله، همین شخص است"}</button>
+            <button className="btn ghost" onClick={() => setClaiming(false)}>نه</button>
+          </div>
+        </Modal>
+      )}
       {k.visits.length > 0 && (
         <>
           <p className="muted small">آخرین آمدن‌ها:</p>

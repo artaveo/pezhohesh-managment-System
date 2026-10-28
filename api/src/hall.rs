@@ -150,11 +150,18 @@ fn member_no_taken(e: sqlx::Error) -> ApiError {
     }
 }
 
-/// The number the next new member gets unless another is typed: one more than the highest.
+/// One more than the highest member number, stepping over numbers the fingerprint device
+/// already gives someone (people added in ZKAccess who are not in the app).
+pub const NEXT_NO: &str = "
+SELECT min(n)::int FROM generate_series((SELECT COALESCE(max(member_no), 0) + 1 FROM members),
+                                       (SELECT COALESCE(max(member_no), 0) + 100000 FROM members)) n
+WHERE NOT EXISTS (SELECT 1 FROM k50_device_ids d WHERE d.no = n)";
+
+/// The number the next new member gets unless another is typed (see NEXT_NO).
 pub async fn next_member_no(State(s): State<AppState>, user: CurrentUser) -> Result<Json<i32>, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
-    let n: i32 = sqlx::query_scalar("SELECT COALESCE(max(member_no), 0) + 1 FROM members").fetch_one(&mut *tx).await?;
+    let n: i32 = sqlx::query_scalar(NEXT_NO).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(n))
 }
@@ -166,7 +173,7 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
     let mut tx = begin_as(&s.db, &user).await?;
     let no: i32 = match m.member_no {
         Some(n) => n,
-        None => sqlx::query_scalar("SELECT COALESCE(max(member_no), 0) + 1 FROM members").fetch_one(&mut *tx).await?,
+        None => sqlx::query_scalar(NEXT_NO).fetch_one(&mut *tx).await?,
     };
     let id = Uuid::new_v4();
     sqlx::query(

@@ -184,6 +184,11 @@ struct Wanted {
     end_date: Option<NaiveDate>,
     /// The number it was sent under before, when that has changed since.
     old_no: Option<i32>,
+    /// From the Excel book: its number is the one ZKAccess gave the same person.
+    imported: bool,
+    /// The device's user under this number is this member (made by the app, or checked).
+    claimed: Option<bool>,
+    pushed_name: Option<String>,
 }
 
 /// Per member: let in while a monthly or daily seat covers today, from the start of that
@@ -194,7 +199,7 @@ WITH seat AS (
     FROM memberships ms JOIN plans p ON p.id = ms.plan_id
     WHERE ms.deleted_at IS NULL AND ms.member_id IS NOT NULL AND p.kind IN ('monthly', 'daily')
 ), want AS (
-    SELECT m.id AS member_id, m.member_no,
+    SELECT m.id AS member_id, m.member_no, m.import_batch_id IS NOT NULL AS imported,
            trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name,
            (m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date)) AS enabled,
            COALESCE((SELECT min(s.start_date) FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date),
@@ -203,7 +208,8 @@ WITH seat AS (
     FROM members m
 )
 SELECT w.member_id, w.member_no, w.name, w.enabled, w.start_date, w.end_date,
-       CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no
+       CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no,
+       w.imported, k.claimed, k.pushed_name
 FROM want w LEFT JOIN k50_users k ON k.member_id = w.member_id
 ";
 
@@ -249,16 +255,31 @@ fn device_no(cfg: &Config, no: i32) -> String {
     format!("{no:0width$}", width = cfg.digits as usize)
 }
 
-fn set_user_ops(cfg: &Config, w: &Wanted) -> Vec<Value> {
+/// `same_person`: a partner has said the device's user under this number is this member.
+fn set_user_ops(cfg: &Config, w: &Wanted, same_person: bool) -> Vec<Value> {
+    // A member made in the app owns a device ID only once that is known; until then the
+    // helper writes it only if the device has no one there, or has them under this name.
+    let checked = w.imported || w.claimed == Some(true) || same_person;
     let mut ops = Vec::new();
     if let Some(old) = w.old_no {
-        ops.push(json!({ "op": "set_user", "no": device_no(cfg, old), "enabled": false }));
+        let owner = if checked { String::new() } else { w.pushed_name.clone().unwrap_or_else(|| short_name(&w.name)) };
+        ops.push(json!({ "op": "set_user", "no": device_no(cfg, old), "enabled": false, "existing": true, "owner": owner }));
     }
     ops.push(json!({
         "op": "set_user", "no": device_no(cfg, w.member_no), "name": short_name(&w.name), "enabled": w.enabled,
         "start": w.start_date.map(|d| d.to_string()), "end": w.end_date.map(|d| d.to_string()),
+        "owner": if checked { String::new() } else { short_name(&w.name) },
     }));
     ops
+}
+
+/// The error kept for a member: "taken:<name on the device>" when the number is someone else's there.
+fn answer_error(answer: &Value) -> String {
+    let error = answer["error"].as_str().unwrap_or("failed");
+    match answer["device_name"].as_str() {
+        Some(name) if error == "taken" => format!("taken:{}", name.trim()),
+        _ => error.to_string(),
+    }
 }
 
 /// Writes what the device answered for one member.
@@ -266,10 +287,10 @@ async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::E
     let ok = answer["ok"] == json!(true);
     if ok {
         sqlx::query(
-            "INSERT INTO k50_users (member_id, member_no, pushed_name, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates) \
-             VALUES ($1, $2, $3, $4, $5, $6, now(), $7) \
+            "INSERT INTO k50_users (member_id, member_no, pushed_name, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates, claimed, device_read) \
+             VALUES ($1, $2, $3, $4, $5, $6, now(), $7, true, $8) \
              ON CONFLICT (member_id) DO UPDATE SET member_no = $2, pushed_name = $3, pushed_start = $4, pushed_end = $5, \
-               pushed_enabled = $6, pushed_at = now(), valid_dates = $7, error = NULL, error_at = NULL",
+               pushed_enabled = $6, pushed_at = now(), valid_dates = $7, claimed = true, device_read = $8, error = NULL, error_at = NULL",
         )
         .bind(w.member_id)
         .bind(w.member_no)
@@ -278,10 +299,11 @@ async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::E
         .bind(w.end_date)
         .bind(w.enabled)
         .bind(answer["valid_dates"].as_bool())
+        .bind(answer.get("valid_read").filter(|v| !v.is_null()).cloned())
         .execute(db)
         .await?;
     } else {
-        let error = answer["error"].as_str().unwrap_or("failed").to_string();
+        let error = answer_error(answer);
         sqlx::query(
             "INSERT INTO k50_users (member_id, member_no, error, error_at) VALUES ($1, $2, $3, now()) \
              ON CONFLICT (member_id) DO UPDATE SET error = $3, error_at = now()",
@@ -300,7 +322,7 @@ async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), 
     let mut ops = Vec::new();
     let mut own = Vec::new();
     for w in list {
-        ops.extend(set_user_ops(cfg, w));
+        ops.extend(set_user_ops(cfg, w, false));
         own.push(ops.len() - 1);
     }
     let answers = talk(cfg, ops, Duration::from_secs(30 + list.len() as u64 * 2)).await?;
@@ -537,7 +559,7 @@ impl DeviceAnswer {
     fn from(r: Result<Value, String>) -> Json<DeviceAnswer> {
         Json(match r {
             Ok(v) if v["ok"] == json!(true) => DeviceAnswer { ok: true, error: None, result: Some(without_ok(v)) },
-            Ok(v) => DeviceAnswer { ok: false, error: Some(v["error"].as_str().unwrap_or("failed").to_string()), result: Some(without_ok(v)) },
+            Ok(v) => DeviceAnswer { ok: false, error: Some(answer_error(&v)), result: Some(without_ok(v)) },
             Err(e) => DeviceAnswer { ok: false, error: Some(e), result: None },
         })
     }
@@ -666,6 +688,17 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         list => serde_json::from_value(list.clone()).unwrap_or_default(),
     };
     let nos: Vec<i32> = users.iter().filter_map(|u| u.no.trim().parse().ok()).collect();
+    // New member numbers step over these (see hall::NEXT_NO).
+    let device_names: Vec<String> =
+        users.iter().filter(|u| u.no.trim().parse::<i32>().is_ok()).map(|u| u.name.trim().to_string()).collect();
+    let mut tx = s.db.begin().await?;
+    sqlx::query("DELETE FROM k50_device_ids").execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO k50_device_ids (no, name) SELECT * FROM UNNEST($1::int[], $2::text[]) ON CONFLICT (no) DO NOTHING")
+        .bind(&nos)
+        .bind(&device_names)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     let names: Vec<(i32, String)> = sqlx::query_as(
         "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)",
     )
@@ -710,8 +743,6 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
                 _ => 2,
             };
             rows.sort_by_key(|r| (rank(r), r.no.trim_start_matches('0').parse::<i64>().unwrap_or(i64::MAX)));
-            let keep = rows.iter().filter(|r| r.state == "differs").count().max(300);
-            rows.truncate(keep);
             rows
         },
     };
@@ -778,6 +809,8 @@ pub struct Sent {
     pushed_enabled: Option<bool>,
     pushed_at: Option<DateTime<Utc>>,
     valid_dates: Option<bool>,
+    /// The dates as the device gave them back after writing them.
+    device_read: Option<Value>,
     fingers: Option<i32>,
     error: Option<String>,
     error_at: Option<DateTime<Utc>>,
@@ -802,7 +835,7 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
     let cfg = config(&s.db).await?;
     let sent: Option<Sent> = sqlx::query_as(
-        "SELECT member_no, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates, fingers, error, error_at FROM k50_users WHERE member_id = $1",
+        "SELECT member_no, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates, device_read, fingers, error, error_at FROM k50_users WHERE member_id = $1",
     )
     .bind(id)
     .fetch_optional(&s.db)
@@ -831,12 +864,18 @@ async fn device_for(db: &PgPool) -> Result<Config, ApiError> {
     Ok(cfg)
 }
 
-/// POST /api/v1/members/:id/k50/check: what the device holds for this member (fingers too).
+/// POST /api/v1/members/:id/k50/check: what the device holds for this member (fingers,
+/// dates, group and time zones as the device has them), with the device's clock.
 pub async fn check(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<DeviceAnswer>, ApiError> {
     hall_only(&user)?;
     let cfg = device_for(&s.db).await?;
     let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
-    let r = talk(&cfg, vec![json!({ "op": "user", "no": device_no(&cfg, w.member_no) })], Duration::from_secs(40)).await.map(|mut a| a.remove(0));
+    let ops = vec![json!({ "op": "user", "no": device_no(&cfg, w.member_no) }), json!({ "op": "time" })];
+    let r = talk(&cfg, ops, Duration::from_secs(40)).await.map(|a| {
+        let mut user = a[0].clone();
+        user["device_time"] = a[1]["time"].clone();
+        user
+    });
     if let Ok(v) = &r {
         if let Some(f) = v["fingers"].as_i64() {
             sqlx::query("UPDATE k50_users SET fingers = $2 WHERE member_id = $1").bind(id).bind(f as i32).execute(&s.db).await?;
@@ -845,17 +884,33 @@ pub async fn check(State(s): State<AppState>, user: CurrentUser, Path(id): Path<
     Ok(DeviceAnswer::from(r))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct Push {
+    /// The person the device has under this number is this member (said after a `taken`).
+    same_person: bool,
+}
+
 /// POST /api/v1/members/:id/k50/push: sends this member's dates now.
-pub async fn push_member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<DeviceAnswer>, ApiError> {
+pub async fn push_member(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    b: Option<Json<Push>>,
+) -> Result<Json<DeviceAnswer>, ApiError> {
     hall_only(&user)?;
     let cfg = device_for(&s.db).await?;
     let w = wanted(&s.db, id).await?.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
-    let r = send_one(&s.db, &cfg, &w).await;
+    let same_person = b.map(|Json(b)| b.same_person).unwrap_or(false);
+    if same_person {
+        tracing::info!("k50: {} said member {} is the device user under that number", user.username, w.member_no);
+    }
+    let r = send_one(&s.db, &cfg, &w, same_person).await;
     Ok(DeviceAnswer::from(r))
 }
 
-async fn send_one(db: &PgPool, cfg: &Config, w: &Wanted) -> Result<Value, String> {
-    let mut answers = talk(cfg, set_user_ops(cfg, w), Duration::from_secs(40)).await?;
+async fn send_one(db: &PgPool, cfg: &Config, w: &Wanted, same_person: bool) -> Result<Value, String> {
+    let mut answers = talk(cfg, set_user_ops(cfg, w, same_person), Duration::from_secs(40)).await?;
     let answer = answers.pop().unwrap_or_default();
     record(db, w, &answer).await.map_err(|e| e.to_string())?;
     Ok(answer)
@@ -885,7 +940,7 @@ pub async fn enroll(
     if !w.enabled {
         return Err(ApiError::bad("no_active_seat"));
     }
-    let sent = send_one(&s.db, &cfg, &w).await;
+    let sent = send_one(&s.db, &cfg, &w, false).await;
     if let Err(e) = &sent {
         return Ok(DeviceAnswer::from(Err(e.clone())));
     }
