@@ -42,7 +42,17 @@ pub fn hub_url() -> Option<String> {
 
 /// Set on a computer that works on the hub directly: its id in the devices table.
 pub fn online_device() -> Option<Uuid> {
-    let text = std::fs::read_to_string(app_file("online-device.txt")?).ok()?;
+    device_in("online-device.txt")
+}
+
+/// Set while such a computer works on its own database for a while (no internet). What
+/// is entered then stays on this computer only.
+fn paused_device() -> Option<Uuid> {
+    device_in("online-device-paused.txt")
+}
+
+fn device_in(name: &str) -> Option<Uuid> {
+    let text = std::fs::read_to_string(app_file(name)?).ok()?;
     text.lines().next()?.trim().parse().ok()
 }
 
@@ -271,7 +281,8 @@ pub fn poke() {
 
 #[derive(Serialize)]
 pub struct Status {
-    /// "off", "node" or "online" (works on the hub directly).
+    /// "off", "node", "online" (works on the hub directly), or "paused" (an online computer
+    /// on its own database for now: nothing entered here reaches the server).
     mode: String,
     /// Only the server's name; the address with its password never leaves this computer.
     host: Option<String>,
@@ -292,7 +303,13 @@ pub struct DeviceRow {
 }
 
 pub async fn status(State(s): State<AppState>, _user: CurrentUser) -> Result<Json<Status>, ApiError> {
-    let mode = if online_device().is_some() { "online".to_string() } else { mode(&s.db).await? };
+    let mode = if online_device().is_some() {
+        "online".to_string()
+    } else if paused_device().is_some() {
+        "paused".to_string()
+    } else {
+        mode(&s.db).await?
+    };
     let host = hub_url().and_then(|u| url::Url::parse(&u).ok()?.host_str().map(String::from));
     let device = sqlx::query_as("SELECT id, name, receipt_prefix, member_no_from, member_no_to FROM devices WHERE id = current_device()")
         .fetch_optional(&s.db)
@@ -347,10 +364,19 @@ pub async fn problems(State(s): State<AppState>, user: CurrentUser) -> Result<Js
     ))
 }
 
-/// "Seen": the partners looked at them and fixed what was needed by hand.
-pub async fn problems_seen(State(s): State<AppState>, user: CurrentUser) -> Result<StatusCode, ApiError> {
+#[derive(Deserialize)]
+pub struct SeenInput {
+    /// One problem; left out = all of them.
+    id: Option<i64>,
+}
+
+/// "Fixed": a partner looked at it and put right by hand what was needed.
+pub async fn problems_seen(State(s): State<AppState>, user: CurrentUser, Json(i): Json<SeenInput>) -> Result<StatusCode, ApiError> {
     partner(&user)?;
-    sqlx::query("UPDATE sync_problems SET resolved_at = now() WHERE resolved_at IS NULL").execute(&s.db).await?;
+    sqlx::query("UPDATE sync_problems SET resolved_at = now() WHERE resolved_at IS NULL AND ($1::BIGINT IS NULL OR id = $1)")
+        .bind(i.id)
+        .execute(&s.db)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -426,7 +452,7 @@ async fn copy_to_hub(local: &str, hub: &str) -> Result<(), String> {
 /// changes are sent there. Only once, on the computer that has all the data (the hall's).
 pub async fn start(State(s): State<AppState>, user: CurrentUser) -> Result<StatusCode, ApiError> {
     partner(&user)?;
-    if online_device().is_some() || mode(&s.db).await? != "off" {
+    if online_device().is_some() || paused_device().is_some() || mode(&s.db).await? != "off" {
         return Err(ApiError::bad("sync_already_on"));
     }
     let url = hub_url().ok_or(ApiError::bad("no_server"))?;
@@ -472,7 +498,7 @@ pub async fn go_online(State(s): State<AppState>, user: CurrentUser, Json(i): Js
     if name.is_empty() || name.chars().count() > 60 {
         return Err(ApiError::bad("bad_name"));
     }
-    if online_device().is_some() {
+    if online_device().is_some() || paused_device().is_some() {
         return Err(ApiError::bad("sync_already_on"));
     }
     if mode(&s.db).await? == "node" {
@@ -492,6 +518,13 @@ pub async fn go_online(State(s): State<AppState>, user: CurrentUser, Json(i): Js
         .bind(user.id.to_string())
         .execute(&mut *tx)
         .await?;
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE lower(name) = lower($1))")
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
+    if taken {
+        return Err(ApiError::bad("name_taken"));
+    }
     let used: Vec<String> = sqlx::query_scalar("SELECT receipt_prefix FROM devices").fetch_all(&mut *tx).await?;
     let letter = LETTERS.chars().map(String::from).find(|l| !used.contains(l)).ok_or(ApiError::bad("no_letter"))?;
     // Blocks of 50 000 from 900 001, far above the hall's numbers.
@@ -527,8 +560,53 @@ pub async fn go_local(_s: State<AppState>, user: CurrentUser) -> Result<StatusCo
     if let Some(file) = app_file("online-device.txt") {
         let _ = std::fs::remove_file(file);
     }
+    if let Some(file) = app_file("online-device-paused.txt") {
+        let _ = std::fs::remove_file(file);
+    }
     restart_soon();
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Back on the server after working on this computer's own database for a while.
+pub async fn resume_online(_s: State<AppState>, user: CurrentUser) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    let (Some(from), Some(to)) = (app_file("online-device-paused.txt"), app_file("online-device.txt")) else {
+        return Err(ApiError::bad("no_appdata"));
+    };
+    if paused_device().is_none() {
+        return Err(ApiError::bad("sync_off"));
+    }
+    std::fs::rename(from, to).map_err(|_| ApiError::bad("no_appdata"))?;
+    restart_soon();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct ServerState {
+    /// "empty", "copy" (an old one-way copy, replaced on start) or "hub" (sync already runs).
+    state: &'static str,
+    server_members: Option<i64>,
+    here_members: i64,
+    /// For "hub": the computers already on it.
+    devices: Vec<String>,
+}
+
+/// What «شروع» would replace, shown before it is pressed.
+pub async fn server_state(State(s): State<AppState>, user: CurrentUser) -> Result<Json<ServerState>, ApiError> {
+    partner(&user)?;
+    let url = hub_url().ok_or(ApiError::bad("no_server"))?;
+    let state = hub_state(&url).await?;
+    let (mut server_members, mut devices) = (None, vec![]);
+    if state != "empty" {
+        let mut c = sqlx::PgConnection::connect(&url).await.map_err(|_| ApiError::bad("no_internet"))?;
+        server_members = sqlx::query_scalar("SELECT count(*) FROM members WHERE deleted_at IS NULL").fetch_one(&mut c).await.ok();
+        if state == "hub" {
+            devices = sqlx::query_scalar("SELECT name FROM devices ORDER BY created_at").fetch_all(&mut c).await.unwrap_or_default();
+        }
+        let _ = c.close().await;
+    }
+    let here_members = sqlx::query_scalar("SELECT count(*) FROM members WHERE deleted_at IS NULL").fetch_one(&s.db).await?;
+    Ok(Json(ServerState { state, server_members, here_members, devices }))
 }
 
 /// The desktop app starts the API again within seconds when it stops; it then connects

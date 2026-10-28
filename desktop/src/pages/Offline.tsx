@@ -14,6 +14,7 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
   const [fixing, setFixing] = useState(false);
   const [fixError, setFixError] = useState("");
   const [password, setPassword] = useState("");
+  const [goLocal, setGoLocal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [triedAt, setTriedAt] = useState(0);
   const retry = useRef(onRetry);
@@ -91,10 +92,18 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
         </button>
       )}
       <button className={e.fix ? "btn ghost" : "btn big"} onClick={onRetry}>دوباره امتحان کن</button>
-      {diag?.health?.problem === "server_down" && canFixPostgres() && (
-        <button className="btn ghost" onClick={() => void useLocalDatabase().then(onRetry, () => setFixError("نشد. برنامه را ببندید و دوباره باز کنید."))}>
-          فعلاً با دیتابیس خود این کمپیوتر کار کن
-        </button>
+      {diag?.health?.problem === "server_down" && canFixPostgres() && !goLocal && (
+        <button className="btn ghost" onClick={() => setGoLocal(true)}>فعلاً با دیتابیس خود این کمپیوتر کار کن…</button>
+      )}
+      {diag?.health?.problem === "server_down" && canFixPostgres() && goLocal && (
+        <div className="notice warn">
+          <p>هر چه از این به بعد ثبت کنید فقط روی همین کمپیوتر می‌ماند و به سرور نمی‌رود، و اطلاعات این کمپیوتر از آخرین بار تازه نیست.</p>
+          <p>برای برگشت: «پشتیبان» ← «سرور مرکزی» ← «دوباره روی سرور کار کن».</p>
+          <div className="actions">
+            <button className="btn" onClick={() => void useLocalDatabase().then(onRetry, () => setFixError("نشد. برنامه را ببندید و دوباره باز کنید."))}>بله، روی همین کمپیوتر کار کن</button>
+            <button className="btn ghost" onClick={() => setGoLocal(false)}>لغو</button>
+          </div>
+        </div>
       )}
       <p className="muted small">برنامه هر چند ثانیه خودش دوباره امتحان می‌کند و به محض درست شدن، ادامه می‌دهد.</p>
       {diag?.health?.problem === "postgres_down" && (

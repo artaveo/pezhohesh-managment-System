@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncStatus } from "../lib/api";
+import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncServerState, type SyncStatus } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { Modal } from "../components/Modal";
 import { formatDay } from "../lib/solar";
@@ -216,6 +216,21 @@ function LastOutcome({ last }: { last: BackupOutcome | null }) {
   );
 }
 
+/** Typed on any keyboard: Arabic ي and ك count as the Persian ی and ک. */
+function sameWord(typed: string, word: string) {
+  const norm = (t: string) => t.trim().replace(/\u064A/g, "\u06CC").replace(/\u0643/g, "\u06A9").replace(/\u200C/g, "");
+  return norm(typed) === norm(word);
+}
+
+const TABLE_LABEL: Record<string, string> = {
+  members: "اعضا", memberships: "دوره‌های عضویت", receipts: "بل‌ها", expenses: "مصارف", expense_categories: "دستهٔ مصارف",
+  withdrawals: "برداشت‌ها", salary_accruals: "معاش‌ها", staff: "کارمندان", books: "کتاب‌ها", book_loans: "امانت کتاب",
+  loan_deposits: "ضمانت‌ها", hotspot_cards: "کارت هاتسپات", hotspot_buys: "خرید هاتسپات", hotspot_sales: "فروش هاتسپات",
+  hotspot_purchases: "خرید هاتسپات", plans: "قیمت‌ها", settings: "تنظیمات", app_users: "کاربران", devices: "کمپیوترها",
+  member_documents: "عکس و تذکره", month_summaries: "خلاصهٔ ماه‌ها", partner_shares: "سهم شرکا", attendance: "حاضری",
+  pec_clients: "خدمات تحصیلی", pec_contracts: "خدمات تحصیلی", pec_services: "خدمات تحصیلی", import_batches: "ورود از اکسل",
+};
+
 /** What a sync error means for the desk. */
 export function syncWhy(error: string) {
   if (error === "no_internet") return "اینترنت وصل نیست. کار عادی ادامه دارد؛ تغییرها وقتی اینترنت آمد فرستاده می‌شوند.";
@@ -235,6 +250,7 @@ function Sync() {
   const [ask, setAsk] = useState<"start" | "online" | "local" | null>(null);
   const [name, setName] = useState("");
   const [typed, setTyped] = useState("");
+  const [server, setServer] = useState<SyncServerState | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -252,6 +268,7 @@ function Sync() {
       setAsk(null);
       toast(ok);
       setTick((t) => t + 1);
+      window.dispatchEvent(new Event("sync-changed"));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -272,7 +289,10 @@ function Sync() {
           </p>
           {!s.host && <p className="form-error">اول آدرس سرور را در بخش «نسخهٔ آنلاین» پایین همین صفحه بدهید.</p>}
           <div className="actions">
-            <button className="btn" disabled={!s.host || busy} onClick={() => { setAsk("start"); setTyped(""); setError(""); }}>شروع با همین کمپیوتر…</button>
+            <button className="btn" disabled={!s.host || busy} onClick={() => {
+              setAsk("start"); setTyped(""); setError(""); setServer(null);
+              api.syncServer().then(setServer, (e) => setError(errorText(e)));
+            }}>شروع با همین کمپیوتر…</button>
             <button className="btn ghost" disabled={!s.host || busy} onClick={() => { setAsk("online"); setError(""); }}>این کمپیوتر مستقیم روی سرور کار کند…</button>
           </div>
         </>
@@ -294,7 +314,18 @@ function Sync() {
           </div>
         </>
       )}
-      {d && s.mode !== "off" && (
+      {s.mode === "paused" && (
+        <>
+          <p className="notice warn">
+            این کمپیوتر فعلاً جدا از سرور، روی دیتابیس خودش کار می‌کند. هر چه این‌جا ثبت شود فقط روی همین کمپیوتر می‌ماند و به سرور نمی‌رود.
+            وقتی اینترنت آمد، دوباره به سرور وصل شوید.
+          </p>
+          <div className="actions">
+            <button className="btn" disabled={busy} onClick={() => void act(() => api.syncResume(), "برنامه چند لحظه دوباره شروع می‌شود و به سرور وصل می‌شود.")}>دوباره روی سرور کار کن</button>
+          </div>
+        </>
+      )}
+      {d && s.mode !== "off" && s.mode !== "paused" && (
         <p className="muted small">
           این کمپیوتر: <b>{d.name}</b> · حرف بل‌ها: <b dir="ltr">{d.receipt_prefix}</b>
           {d.member_no_from !== null && <> · شمارهٔ عضوهای تازه از <bdi dir="ltr">{d.member_no_from}</bdi> تا <bdi dir="ltr">{d.member_no_to}</bdi></>}
@@ -305,17 +336,34 @@ function Sync() {
       {ask === "start" && (
         <Modal label="شروع همگام‌سازی" onClose={() => !busy && setAsk(null)}>
           <h2>شروع با همین کمپیوتر</h2>
-          <p>همهٔ اطلاعات این کمپیوتر به سرور فرستاده می‌شود و از این به بعد هر تغییری اینجا، به سرور هم می‌رود.</p>
-          <p className="muted small">این کار فقط یک بار و فقط روی کمپیوتری انجام می‌شود که همهٔ اطلاعات را دارد، یعنی کمپیوتر قرائت‌خانه. اگر روی سرور یک نسخهٔ آنلاین قدیمی باشد، جای آن را می‌گیرد.</p>
-          <label className="field">
-            <span>برای اطمینان بنویسید: <b>شروع</b></span>
-            <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
-          </label>
+          <p>همهٔ اطلاعات این کمپیوتر به سرور فرستاده می‌شود و از این به بعد هر تغییری این‌جا، به سرور هم می‌رود.</p>
+          {!server && !error && <p className="muted">در حال پرسیدن از سرور…</p>}
+          {server?.state === "hub" && (
+            <p className="notice bad">
+              روی این سرور همگام‌سازی از قبل روشن است ({server.devices.join("، ")}). این کار فقط یک بار انجام می‌شود و دوباره زدنش ممکن نیست.
+            </p>
+          )}
+          {server && server.state !== "hub" && (
+            <div className="notice warn">
+              <p><b>فقط روی کمپیوتر قرائت‌خانه</b>، که همهٔ اطلاعات را دارد. این کمپیوتر: {server.here_members} عضو.</p>
+              {server.state === "copy"
+                ? <p>روی سرور یک نسخهٔ آنلاین قدیمی با {server.server_members ?? "?"} عضو هست. اطلاعات این کمپیوتر جای آن را می‌گیرد.</p>
+                : <p>سرور خالی است.</p>}
+            </div>
+          )}
+          {server && server.state !== "hub" && (
+            <label className="field">
+              <span>برای اطمینان بنویسید: <b>شروع</b></span>
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+            </label>
+          )}
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="actions">
-            <button className="btn" disabled={busy || typed.trim() !== "شروع"} onClick={() => void act(() => api.syncStart(), "اطلاعات به سرور رفت. همگام‌سازی روشن شد.")}>
-              {busy ? "در حال فرستادن…" : "شروع"}
-            </button>
+            {server && server.state !== "hub" && (
+              <button className="btn danger" disabled={busy || sameWord(typed, "شروع") === false} onClick={() => void act(() => api.syncStart(), "اطلاعات به سرور رفت. همگام‌سازی روشن شد.")}>
+                {busy ? "در حال فرستادن…" : "شروع و فرستادن به سرور"}
+              </button>
+            )}
             <button className="btn ghost" disabled={busy} onClick={() => setAsk(null)}>لغو</button>
           </div>
         </Modal>
@@ -328,6 +376,7 @@ function Sync() {
           <label className="field">
             <span>نام این کمپیوتر</span>
             <input value={name} placeholder="مثلاً لپ‌تاپ ناصری" onChange={(e) => setName(e.target.value)} autoFocus />
+            <small className="muted">در «چه کسی چه کرد» کنار هر تغییر این کمپیوتر دیده می‌شود.</small>
           </label>
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="actions">
@@ -361,8 +410,13 @@ function SyncLine({ s }: { s: SyncStatus }) {
     <>
       <p className={s.error ? "form-error" : "form-ok"}>
         {s.error ? syncWhy(s.error) : s.ok_at ? <>همگام است. آخرین بار: {when(s.ok_at)}</> : "هنوز همگام نشده."}
-        {s.error && <small dir="ltr"> ({s.error})</small>}
       </p>
+      {s.error && (
+        <details className="offline-details">
+          <summary>جزئیات برای پشتیبانی</summary>
+          <pre dir="ltr">{s.error}</pre>
+        </details>
+      )}
       {s.clock_off_minutes !== null && (
         <p className="form-error">
           ساعت این کمپیوتر با سرور {Math.abs(s.clock_off_minutes)} دقیقه {s.clock_off_minutes > 0 ? "جلوتر" : "عقب‌تر"} است.
@@ -385,21 +439,30 @@ function SyncLine({ s }: { s: SyncStatus }) {
           <h2>تغییرهایی که ثبت نشد</h2>
           <p className="muted small">
             معمولاً یعنی دو کمپیوتر هم‌زمان یک چیز تکراری ساخته‌اند (مثلاً یک نام دسته با دو شکل). همان مورد را در برنامه بررسی و با دست درست کنید،
-            بعد «دیدم» را بزنید.
+            بعد «درست شد» را بزنید.
           </p>
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>زمان</th><th>بخش</th><th>علت</th></tr></thead>
+              <thead><tr><th>زمان</th><th>بخش</th><th>علت</th><th><span className="sr-only">کارها</span></th></tr></thead>
               <tbody>
                 {list.map((p) => (
-                  <tr key={p.id}><td>{when(p.at)}</td><td dir="ltr">{p.tbl ?? "—"}</td><td><small dir="ltr">{p.error}</small></td></tr>
+                  <tr key={p.id}>
+                    <td>{when(p.at)}</td>
+                    <td>{(p.tbl && TABLE_LABEL[p.tbl]) ?? p.tbl ?? "—"}</td>
+                    <td>
+                      {p.error === "hub_refused" ? "سرور این تغییرِ این کمپیوتر را نپذیرفت."
+                        : p.error.startsWith("23505") ? "همین چیز در کمپیوتر دیگری هم ساخته شده (تکراری)."
+                        : "این تغییر این‌جا نوشته نشد."}
+                      <details><summary className="muted small">جزئیات</summary><small dir="ltr">{p.error}</small></details>
+                    </td>
+                    <td><button className="btn ghost small" onClick={() => void api.syncProblemsSeen(p.id).then(() => setList((l) => l && l.filter((x) => x.id !== p.id)))}>درست شد</button></td>
+                  </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div className="actions">
-            <button className="btn" onClick={() => void api.syncProblemsSeen().then(() => { setSeen(true); setList(null); })}>دیدم</button>
-            <button className="btn ghost" onClick={() => setList(null)}>بستن</button>
+            <button className="btn ghost" onClick={() => { if (list.length === 0) setSeen(true); setList(null); window.dispatchEvent(new Event("sync-changed")); }}>بستن</button>
           </div>
         </Modal>
       )}

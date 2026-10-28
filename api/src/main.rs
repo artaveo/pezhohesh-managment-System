@@ -328,6 +328,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/sync/problems", get(sync::problems).post(sync::problems_seen))
         .route("/api/v1/sync/online", post(sync::go_online))
         .route("/api/v1/sync/local", post(sync::go_local))
+        .route("/api/v1/sync/resume", post(sync::resume_online))
+        .route("/api/v1/sync/server", get(sync::server_state))
         .route("/api/v1/loans", get(lists::loans))
         .route("/api/v1/inbox", get(phone::inbox))
         .route("/api/v1/inbox/count", get(phone::count))

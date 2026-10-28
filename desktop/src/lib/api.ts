@@ -244,10 +244,11 @@ export type OnlineStatus = { host: string | null; every_hours: number; last: Onl
 export type SyncDevice = { id: string; name: string; receipt_prefix: string; member_no_from: number | null; member_no_to: number | null };
 /** Sharing the data through the server: off, an offline computer that sends and takes (node), or working on the server. */
 export type SyncStatus = {
-  mode: "off" | "node" | "online"; host: string | null; device: SyncDevice | null;
+  mode: "off" | "node" | "online" | "paused"; host: string | null; device: SyncDevice | null;
   waiting: number; problems: number; ok_at: string | null; tried_at: string | null; error: string | null; sent: number; taken: number;
   clock_off_minutes: number | null;
 };
+export type SyncServerState = { state: "empty" | "copy" | "hub"; server_members: number | null; here_members: number; devices: string[] };
 export type SyncProblem = { id: number; at: string; tbl: string | null; op: string | null; error: string };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
@@ -478,7 +479,9 @@ export const api = {
   syncNow: () => request<SyncStatus>("/sync", { method: "POST" }),
   syncStart: () => request<void>("/sync/start", { method: "POST" }),
   syncProblems: () => request<SyncProblem[]>("/sync/problems"),
-  syncProblemsSeen: () => request<void>("/sync/problems", { method: "POST" }),
+  syncProblemsSeen: (id?: number) => request<void>("/sync/problems", { method: "POST", body: { id } }),
+  syncServer: () => request<SyncServerState>("/sync/server"),
+  syncResume: () => request<void>("/sync/resume", { method: "POST" }),
   syncGoOnline: (name: string) => request<SyncDevice>("/sync/online", { method: "POST", body: { name } }),
   syncGoLocal: () => request<void>("/sync/local", { method: "POST" }),
   k50: () => request<K50Status>("/k50"),
@@ -584,6 +587,7 @@ export function errorText(e: unknown): string {
     case "sync_start_failed": return "فرستادن اطلاعات به سرور نشد. چیزی عوض نشد؛ دوباره امتحان کنید.";
     case "no_letter": return "حرف تازه‌ای برای بل‌های این کمپیوتر نمانده.";
     case "bad_name": return "یک نام برای این کمپیوتر بنویسید.";
+    case "name_taken": return "کمپیوتر دیگری روی سرور همین نام را دارد. نام دیگری بنویسید.";
     case "bad_range": return "بازهٔ تاریخ درست نیست: «تا» نباید پیش از «از» باشد.";
     case "still_active": return "این عضو هنوز بیشتر از 5 روز عضویت دارد. اگر واقعاً پیش‌پرداخت ماه بعد است، تیک «پیش‌پرداخت» را بزنید.";
     case "period_overlap": return "این دوره با دورهٔ قبلی همین عضو روی هم می‌افتد؛ تاریخ شروع باید بعد از ختم دورهٔ قبلی باشد.";

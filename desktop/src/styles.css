@@ -229,7 +229,7 @@ button, input { font: inherit; color: inherit; }
 .field.wide input { border: 1px solid var(--line); background: var(--glass-strong); border-radius: 11px; }
 .field.wide input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 .btn.big { padding: 10px 16px; font-size: 1rem; border-radius: 11px; }
-.btn.small { padding: 3px 10px; font-size: .8rem; font-weight: 600; }
+.btn.small { padding: 3px 10px; font-size: .8rem; font-weight: 600; white-space: nowrap; }
 .form-error { margin: 0; color: var(--bad); background: var(--bad-soft); padding: 8px 12px; border-radius: 10px; font-size: .9rem; }
 .form-ok { margin: 0; color: var(--good); background: var(--good-soft); padding: 8px 12px; border-radius: 10px; font-size: .9rem; }
 
@@ -237,7 +237,8 @@ button, input { font: inherit; color: inherit; }
 .side nav { flex: 1; }
 .sync-chip { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 7px 12px; border: 0; border-radius: 10px; font: inherit; font-size: .8rem; text-align: start; color: var(--muted); background: color-mix(in srgb, var(--glass-strong) 60%, transparent); }
 button.sync-chip { cursor: pointer; }
-button.sync-chip:hover { color: var(--fg); }
+button.sync-chip:not(.warn):not(.bad):hover { color: var(--fg); }
+button.sync-chip.warn:hover, button.sync-chip.bad:hover { filter: brightness(.92); }
 .sync-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--good); }
 .sync-chip.warn { color: var(--warn); background: var(--warn-soft); }
 .sync-chip.warn .dot { background: var(--warn); }
@@ -381,6 +382,8 @@ button.sync-chip:hover { color: var(--fg); }
 .period-form { display: flex; flex-direction: column; gap: 10px; }
 .period-sum { margin: 0; padding: 10px 14px; border-radius: 12px; background: var(--accent-soft); color: var(--fg); }
 .notice.warn { color: var(--warn); background: var(--warn-soft); padding: 8px 12px; border-radius: 10px; font-size: .9rem; }
+.notice.bad { color: var(--bad); background: var(--bad-soft); padding: 8px 12px; border-radius: 10px; font-size: .9rem; }
+.notice p { margin: 0 0 6px; } .notice p:last-child { margin-bottom: 0; }
 .btn.danger { background: var(--bad-fill); color: #fff; }
 .btn.ghost.danger { background: none; color: var(--bad); }
 button.link { background: none; border: 0; padding: 0; font: inherit; }

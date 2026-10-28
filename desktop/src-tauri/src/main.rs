@@ -41,13 +41,13 @@ fn set_database_password(api: tauri::State<'_, Api>, password: String) -> Result
     Ok(())
 }
 
-/// From the offline screen when the central server cannot be reached: this computer goes
-/// back to its own database (it stops working on the server directly) and the API starts
-/// again on it. See api/src/sync.rs.
+/// From the offline screen when the central server cannot be reached: this computer works
+/// on its own database for now (the side bar then says nothing entered reaches the server,
+/// and the server page offers to go back to it). See api/src/sync.rs.
 #[tauri::command]
 fn use_local_database(api: tauri::State<'_, Api>) -> Result<(), String> {
     let dir = std::path::Path::new(&std::env::var_os("APPDATA").ok_or("no_appdata")?).join("Pezhohesh");
-    let _ = std::fs::remove_file(dir.join("online-device.txt"));
+    std::fs::rename(dir.join("online-device.txt"), dir.join("online-device-paused.txt")).map_err(|e| e.to_string())?;
     let mut child = api.0.lock().unwrap();
     if let Some(mut c) = child.take() {
         let _ = c.kill();
