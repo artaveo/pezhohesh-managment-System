@@ -1,6 +1,9 @@
 # Gives PostgreSQL 16 a password without reinstalling it (for an install that finished without one).
 # Run in PowerShell as Administrator. It asks for the new password itself; nobody else sees it.
 & {
+    $ErrorActionPreference = "Stop"
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $admin) { Write-Host "Not Administrator. Right-click Start > Terminal (Admin), then paste again." -ForegroundColor Red; return }
     $pg  = "C:\Program Files\PostgreSQL\16"
     $data = "$pg\data"
     if (-not (Test-Path "$pg\bin\psql.exe")) { Write-Host "PostgreSQL 16 not found in $pg" -ForegroundColor Red; return }
