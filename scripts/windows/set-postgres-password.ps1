@@ -16,7 +16,7 @@
 
     if (-not (Test-Path "$data\postgresql.conf")) {
         # The installer stopped before it made the database folder: make it now.
-        Write-Host "Creating the database. Type the NEW password twice (it stays hidden)." -ForegroundColor Cyan
+        Write-Host "Creating the database. Type the NEW password twice (it stays hidden), Enter after each." -ForegroundColor Cyan
         New-Item -ItemType Directory -Force $data | Out-Null
         & "$pg\bin\initdb.exe" -D $data -U postgres -W -E UTF8 -A scram-sha-256
         if ($LASTEXITCODE) { Write-Host "initdb failed" -ForegroundColor Red; return }
@@ -38,8 +38,22 @@
             } | Set-Content $hba -Encoding ascii
             Restart-Service $svc
             Start-Sleep 3
-            Write-Host "Type the NEW password twice (it stays hidden)." -ForegroundColor Cyan
-            & "$pg\bin\psql.exe" -U postgres -h 127.0.0.1 -p (Get-Port) -c "\password postgres"
+            # PowerShell asks for the password (psql's own prompt does not take typing in every terminal).
+            while ($true) {
+                $a = Read-Host "New password" -AsSecureString
+                $b = Read-Host "Same password again" -AsSecureString
+                $pa = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($a))
+                $pb = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($b))
+                if ($pa -and $pa -eq $pb) { break }
+                Write-Host "Empty, or the two did not match. Again." -ForegroundColor Yellow
+            }
+            # Sent on stdin, so it never shows on a command line or in a history file.
+            $sql = "ALTER USER postgres WITH PASSWORD '" + $pa.Replace("'", "''") + "';"
+            $sql | & "$pg\bin\psql.exe" -U postgres -h 127.0.0.1 -p (Get-Port) -X -q -v ON_ERROR_STOP=1
+            $ok = ($LASTEXITCODE -eq 0)
+            $pa = $null; $pb = $null; $sql = $null
+            if (-not $ok) { throw "psql could not set the password." }
+            Write-Host "Password set." -ForegroundColor Green
         } finally {
             Copy-Item "$hba.bak" $hba -Force
             Restart-Service $svc
