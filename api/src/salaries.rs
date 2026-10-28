@@ -335,7 +335,7 @@ pub async fn update(State(s): State<AppState>, user: CurrentUser, Path(id): Path
                 "INSERT INTO salary_accruals (id, staff_id, solar_year, solar_month, amount) VALUES ($1, $2, $3, $4, 0) \
                  ON CONFLICT (staff_id, solar_year, solar_month) DO NOTHING",
             )
-            .bind(Uuid::new_v4())
+            .bind(accrual_id(id, fy, fm))
             .bind(id)
             .bind(fy)
             .bind(fm as i32)
@@ -403,6 +403,12 @@ pub async fn set_month(State(s): State<AppState>, user: CurrentUser, Path(id): P
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One person's month always gets the same id, on every computer: two computers that both
+/// note the same month offline then hold the same row, and sync merges them into one.
+fn accrual_id(staff: Uuid, year: i32, month: u32) -> Uuid {
+    Uuid::new_v5(&staff, format!("salary-{year}-{month}").as_bytes())
+}
+
 /// Notes the fixed salary of every month that is due and not noted yet: from each person's
 /// first month up to the month today is in. Safe to run any number of times.
 pub async fn post_due(db: &PgPool) -> anyhow::Result<usize> {
@@ -429,7 +435,7 @@ pub async fn post_due(db: &PgPool) -> anyhow::Result<usize> {
                     "INSERT INTO salary_accruals (id, staff_id, solar_year, solar_month, amount) \
                      VALUES ($1, $2, $3, $4, $5) ON CONFLICT (staff_id, solar_year, solar_month) DO NOTHING",
                 )
-                .bind(Uuid::new_v4())
+                .bind(accrual_id(id, y, m))
                 .bind(id)
                 .bind(y)
                 .bind(m as i32)

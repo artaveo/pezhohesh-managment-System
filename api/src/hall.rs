@@ -150,12 +150,10 @@ fn member_no_taken(e: sqlx::Error) -> ApiError {
     }
 }
 
-/// One more than the highest member number, stepping over numbers the fingerprint device
-/// already gives someone (people added in ZKAccess who are not in the app).
-pub const NEXT_NO: &str = "
-SELECT min(n)::int FROM generate_series((SELECT COALESCE(max(member_no), 0) + 1 FROM members),
-                                       (SELECT COALESCE(max(member_no), 0) + 100000 FROM members)) n
-WHERE NOT EXISTS (SELECT 1 FROM k50_device_ids d WHERE d.no = n)";
+/// One more than the highest member number in this computer's range (or outside every other
+/// computer's range), stepping over numbers the fingerprint device already gives someone
+/// (people added in ZKAccess who are not in the app). See next_member_no() in 0018_sync.sql.
+pub const NEXT_NO: &str = "SELECT next_member_no()";
 
 /// The number the next new member gets unless another is typed (see NEXT_NO).
 pub async fn next_member_no(State(s): State<AppState>, user: CurrentUser) -> Result<Json<i32>, ApiError> {
