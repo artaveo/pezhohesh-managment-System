@@ -1,7 +1,8 @@
 //! The online copy in Neon. The laptop stays the real database; every few hours a full
 //! copy of it replaces the one online, in one transaction (the online copy is never half
 //! old, half new). Later, partners can read reports from it away from the office.
-//! Photos and tazkira scans stay on the laptop and its backups.
+//! Photos and tazkira scans stay on the laptop and its backups, and so do the fingerprints
+//! copied from the device (k50_fingers).
 //!
 //! The online database's address (with its password) is kept in
 //! `%APPDATA%\Pezhohesh\online-url.txt`, never in the database: the database is what gets copied.
@@ -73,7 +74,7 @@ async fn copy(local: &str, target: &str) -> Result<(), String> {
     let result = async {
         let mut dump = pg_command("pg_dump", local)?;
         // Sign-in sessions stay on the laptop.
-        dump.args(["--format=custom", "--no-owner", "--no-privileges", "--exclude-table-data=user_sessions", "--file"]).arg(&file);
+        dump.args(["--format=custom", "--no-owner", "--no-privileges", "--exclude-table-data=user_sessions", "--exclude-table-data=k50_fingers", "--file"]).arg(&file);
         run(dump, "pg_dump").await?;
         prepare(target).await?;
         let mut restore = pg_command("pg_restore", target)?;

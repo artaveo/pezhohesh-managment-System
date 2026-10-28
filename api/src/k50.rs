@@ -332,14 +332,102 @@ async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), 
     }
     let answers = talk(cfg, ops, Duration::from_secs(30 + list.len() as u64 * 2)).await?;
     let (mut ok, mut failed) = (0, 0);
+    let mut created = Vec::new();
     for (w, i) in list.iter().zip(own) {
         if record(db, w, &answers[i]).await.map_err(|e| e.to_string())? {
             ok += 1;
+            if answers[i]["created"] == json!(true) {
+                created.push(device_no(cfg, w.member_no));
+            }
         } else {
             failed += 1;
         }
     }
+    if !created.is_empty() {
+        restore_fingers(db, cfg, &created).await;
+    }
     Ok((ok, failed))
+}
+
+// ---------------------------------------------------------------------------
+// The app's copy of the fingers
+
+#[derive(Deserialize)]
+struct Finger {
+    no: String,
+    finger: i32,
+    #[serde(default)]
+    flag: i32,
+    template: String,
+}
+
+/// Copies every finger on the device into k50_fingers (nothing on the device changes) and
+/// notes when, with how many.
+async fn backup_fingers(db: &PgPool, cfg: &Config) -> Result<Value, String> {
+    let answers = talk(cfg, vec![json!({ "op": "fingers" })], Duration::from_secs(600)).await?;
+    let a = &answers[0];
+    if a["ok"] != json!(true) {
+        return Err(answer_error(a));
+    }
+    let list: Vec<Finger> = serde_json::from_value(a["fingers"].clone()).map_err(|e| format!("fingers: {e}"))?;
+    let nos: Vec<String> = list.iter().map(|f| f.no.trim().to_string()).collect();
+    let fingers: Vec<i32> = list.iter().map(|f| f.finger).collect();
+    let flags: Vec<i32> = list.iter().map(|f| f.flag).collect();
+    let templates: Vec<&str> = list.iter().map(|f| f.template.as_str()).collect();
+    let changed = sqlx::query(
+        "INSERT INTO k50_fingers (no, finger, flag, template) \
+         SELECT * FROM UNNEST($1::text[], $2::int[], $3::int[], $4::text[]) AS f(no, finger, flag, template) \
+         WHERE f.finger BETWEEN 0 AND 9 AND f.template <> '' \
+         ON CONFLICT (no, finger) DO UPDATE SET flag = EXCLUDED.flag, template = EXCLUDED.template, read_at = now() \
+         WHERE k50_fingers.template IS DISTINCT FROM EXCLUDED.template OR k50_fingers.flag IS DISTINCT FROM EXCLUDED.flag",
+    )
+    .bind(&nos)
+    .bind(&fingers)
+    .bind(&flags)
+    .bind(&templates)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+    let note = json!({ "at": Utc::now(), "users": a["users"], "fingers": list.len(), "changed": changed });
+    save_setting(db, "k50_fingers_at", note.clone()).await.map_err(|e| e.to_string())?;
+    tracing::info!("k50 fingers backup: {note}");
+    Ok(note)
+}
+
+/// Once a day while the app keeps the device up to date.
+async fn fingers_due(db: &PgPool) -> bool {
+    let last: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_fingers_at'").fetch_optional(db).await.ok().flatten();
+    let at = last.as_ref().and_then(|v| v["at"].as_str()).and_then(|t| t.parse::<DateTime<Utc>>().ok());
+    at.is_none_or(|at| Utc::now() - at > chrono::Duration::hours(20))
+}
+
+/// A user the device did not have was just made again: give back the fingers the app saved
+/// for that number. Fingers the device already has stay as they are.
+async fn restore_fingers(db: &PgPool, cfg: &Config, nos: &[String]) {
+    let rows: Vec<(String, i32, i32, String)> = match sqlx::query_as("SELECT no, finger, flag, template FROM k50_fingers WHERE no = ANY($1) ORDER BY no, finger")
+        .bind(nos)
+        .fetch_all(db)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => return tracing::warn!("k50 fingers restore: {e}"),
+    };
+    let mut ops: Vec<Value> = Vec::new();
+    for (no, finger, flag, template) in rows {
+        let one = json!({ "finger": finger, "flag": flag, "template": template });
+        match ops.last_mut() {
+            Some(op) if op["no"] == json!(no) => op["fingers"].as_array_mut().into_iter().for_each(|a| a.push(one.clone())),
+            _ => ops.push(json!({ "op": "put_fingers", "no": no, "fingers": [one] })),
+        }
+    }
+    if ops.is_empty() {
+        return;
+    }
+    match talk(cfg, ops, Duration::from_secs(60)).await {
+        Ok(answers) => tracing::info!("k50 fingers restored: {}", serde_json::Value::Array(answers)),
+        Err(e) => tracing::warn!("k50 fingers restore: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +556,11 @@ pub async fn schedule(db: PgPool) {
         if punches && last.ok {
             since_punches = Duration::ZERO;
         }
+        if last.ok && fingers_due(&db).await {
+            if let Err(e) = backup_fingers(&db, &cfg).await {
+                tracing::warn!("k50 fingers backup: {e}");
+            }
+        }
     }
 }
 
@@ -488,6 +581,9 @@ pub struct Status {
     sent: i64,
     errors: Vec<UserError>,
     punches_today: i64,
+    /// Fingers in the app's own copy, and the last time it was read from the device.
+    fingers_saved: i64,
+    fingers_backup: Option<Value>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -513,6 +609,8 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         .fetch_one(&s.db)
         .await?;
     let pending = pending_count(&s.db).await?;
+    let fingers_saved: i64 = sqlx::query_scalar("SELECT count(*) FROM k50_fingers").fetch_one(&s.db).await?;
+    let fingers_backup: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_fingers_at'").fetch_optional(&s.db).await?;
     let last = LAST.lock().unwrap().clone();
     Ok(Json(Status {
         config: config(&s.db).await?,
@@ -521,6 +619,8 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         sent,
         errors,
         punches_today,
+        fingers_saved,
+        fingers_backup,
     }))
 }
 
@@ -618,6 +718,16 @@ pub async fn sdk_install(user: CurrentUser, body: Option<Json<SdkFrom>>) -> Resu
     Ok(DeviceAnswer::from(r))
 }
 
+/// POST /api/v1/k50/fingers: copies every finger on the device into the app now.
+pub async fn fingers_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Result<Value, String>>, ApiError> {
+    partner(&user)?;
+    let cfg = config(&s.db).await?;
+    if cfg.ip.trim().is_empty() {
+        return Err(ApiError::bad("no_ip"));
+    }
+    Ok(Json(backup_fingers(&s.db, &cfg).await))
+}
+
 /// POST /api/v1/k50/sync: one full round now, punches included.
 pub async fn sync_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Last>, ApiError> {
     partner(&user)?;
@@ -679,10 +789,80 @@ fn plain_name(s: &str) -> String {
 }
 
 /// The device keeps short names (often cut), so a device name that starts the app's name
-/// counts as the same person.
+/// counts as the same person. Names written in English on the device (as ZKAccess has them)
+/// are compared with the app's Persian ones by their consonants (see `sounds`).
 fn same_person(device: &str, app: &str) -> bool {
     let (d, a) = (plain_name(device), plain_name(app));
-    !d.is_empty() && (d == a || a.starts_with(&d) || d.starts_with(&a))
+    if d.is_empty() {
+        return false;
+    }
+    if d == a || a.starts_with(&d) || d.starts_with(&a) {
+        return true;
+    }
+    let (dw, aw) = (sounds(&d), sounds(&a));
+    let (df, af) = (dw.concat(), aw.concat());
+    if df.is_empty() || af.is_empty() {
+        return false;
+    }
+    // A cut name must still hold the whole first name of the other.
+    df == af || (af.starts_with(&df) && df.len() >= aw[0].len()) || (df.starts_with(&af) && af.len() >= dw[0].len())
+}
+
+/// Each word of a name as the consonants it sounds with, so "Mohammad Ali" and «محمد علی»
+/// both read "mhmd", "l". Vowels (and ا و ی ع, which English writes as vowels or not at all)
+/// are left out and a sound said twice counts once.
+fn sounds(name: &str) -> Vec<String> {
+    name.split_whitespace()
+        .map(|word| {
+            let w: Vec<char> = word.chars().collect();
+            let mut out = String::new();
+            let mut i = 0;
+            while i < w.len() {
+                let next = w.get(i + 1).copied();
+                let last = i + 1 == w.len();
+                let (class, used) = match (w[i], next) {
+                    ('k', Some('h')) | ('x', _) => (Some('k'), 1 + usize::from(w[i] == 'k')),
+                    ('g', Some('h')) => (Some('g'), 2),
+                    ('s', Some('h')) | ('c', Some('h')) if w[i] == 's' => (Some('s'), 2),
+                    ('c', Some('h')) => (Some('j'), 2),
+                    ('z', Some('h')) | ('d', Some('h')) => (Some('z'), 2),
+                    ('p', Some('h')) => (Some('f'), 2),
+                    ('t', Some('h')) => (Some('t'), 2),
+                    // A word-final h or ه is a vowel sound: «فاطمه», "Fatemah".
+                    ('h' | 'ه' | 'ة', _) if last && i > 0 => (None, 1),
+                    (c, _) => (sound(c), 1),
+                };
+                if let Some(c) = class {
+                    if !out.ends_with(c) {
+                        out.push(c);
+                    }
+                }
+                i += used;
+            }
+            out
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn sound(c: char) -> Option<char> {
+    Some(match c {
+        'b' | 'p' | 'ب' | 'پ' => 'b',
+        't' | 'ت' | 'ط' => 't',
+        's' | 'c' | 'ث' | 'س' | 'ص' | 'ش' => 's',
+        'j' | 'ج' | 'چ' => 'j',
+        'h' | 'ح' | 'ه' | 'ة' => 'h',
+        'k' | 'q' | 'خ' | 'ق' | 'ک' => 'k',
+        'g' | 'غ' | 'گ' => 'g',
+        'd' | 'د' => 'd',
+        'z' | 'ذ' | 'ز' | 'ض' | 'ظ' | 'ژ' => 'z',
+        'r' | 'ر' => 'r',
+        'f' | 'ف' => 'f',
+        'l' | 'ل' => 'l',
+        'm' | 'م' => 'm',
+        'n' | 'ن' => 'n',
+        _ => return None,
+    })
 }
 
 #[derive(Serialize)]
@@ -697,6 +877,8 @@ pub struct Comparison {
     /// IDs written with zeros in front (as 051003), and their usual length.
     zero_padded: usize,
     padded_width: Option<usize>,
+    /// Members the app had sent that the device lost; they are sent again.
+    resend: usize,
     /// Every user whose name differs, then those the app does not know, then up to 300 in all.
     rows: Vec<Compared>,
 }
@@ -729,7 +911,25 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         .bind(&device_names)
         .execute(&mut *tx)
         .await?;
+    // Members the app sent before that the device no longer has (a reset, a ZKAccess "sync
+    // to device") go again with the next round, and get their saved fingers back.
+    let resend = if users.is_empty() {
+        0
+    } else {
+        sqlx::query(
+            "UPDATE k50_users SET pushed_at = NULL, error = NULL, error_at = NULL \
+             WHERE pushed_at IS NOT NULL AND NOT (member_no = ANY($1))",
+        )
+        .bind(&nos)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected() as usize
+    };
     tx.commit().await?;
+    if resend > 0 {
+        tracing::info!("k50 compare: {resend} members sent before are not on the device; sending again");
+        poke();
+    }
     let names: Vec<(i32, String)> = sqlx::query_as(
         "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)",
     )
@@ -767,6 +967,7 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         admins: rows.iter().filter(|r| r.admin).count(),
         zero_padded: padded.len(),
         padded_width,
+        resend,
         rows: {
             let rank = |r: &Compared| match r.state {
                 "differs" => 0,
@@ -1024,6 +1225,18 @@ mod tests {
         assert!(same_person("زهرا\u{200c}کریمی", "زهرا کریمی"));
         assert!(!same_person("محمد", "زهرا کریمی"));
         assert!(!same_person("", "زهرا"));
+        // English on the device, Persian in the app.
+        assert!(same_person("Atifa", "عاطفه"));
+        assert!(same_person("Mohammad Ali", "محمد علی"));
+        assert!(same_person("Zakir Naseri", "ذاکر ناصری"));
+        assert!(same_person("Abdul Rahman", "عبدالرحمن"));
+        assert!(same_person("Fatemah Ahmadi", "فاطمه احمدی"));
+        assert!(same_person("Khalid", "خالد"));
+        assert!(same_person("Shabnam Kari", "شبنم کریمی"));
+        assert!(same_person("Sadiq", "صادق"));
+        assert!(!same_person("SAQIQ", "صادق"));
+        assert!(!same_person("Zahra", "محمد"));
+        assert!(!same_person("Ali", "احمد علی"));
     }
 
     #[test]

@@ -19,7 +19,7 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers">("");
   const [sdk, setSdk] = useState<K50Sdk | null>(null);
   const [sdkFrom, setSdkFrom] = useState("");
   const [sdkError, setSdkError] = useState("");
@@ -77,6 +77,11 @@ export function Device() {
     setSdk(now);
     if (now.sdk === "app") toast(`SDK در پوشهٔ برنامه کپی شد (${fa(r.files?.length ?? 0)} فایل).`);
     else setSdkError("فایل‌ها کپی شد ولی برنامه هنوز از نسخهٔ خودش استفاده نمی‌کند. جزئیات در api.log است.");
+  });
+  const backupFingers = () => run("fingers", async () => {
+    const r = await api.backupK50Fingers();
+    if (r.Ok) toast(`انگشت‌ها ذخیره شد: ${fa(r.Ok.fingers)} انگشت از ${fa(r.Ok.users)} کاربر.`);
+    else setError(k50ErrorText(r.Err));
   });
   const fixTime = () => run("time", async () => {
     const r = await api.k50Time();
@@ -201,6 +206,27 @@ export function Device() {
       </section>
 
       <section className="panel wide">
+        <h2>نسخهٔ پشتیبان اثر انگشت‌ها</h2>
+        <p className="muted">
+          وقتی به‌روزرسانی خودکار روشن است، برنامه هر روز یک بار همهٔ انگشت‌های دستگاه را در دیتابیس خودش نگه می‌دارد. اگر دستگاه کسی را
+          گم کند (ریست شدن دستگاه یا «Sync» در ZKAccess)، آن عضو دوباره با همان انگشت‌ها روی دستگاه می‌رود و لازم نیست
+          دوباره انگشت بدهد. این انگشت‌ها فقط روی همین لپ‌تاپ و پشتیبان‌هایش می‌مانند و به نسخهٔ آنلاین نمی‌روند.
+        </p>
+        <div className="stats-row">
+          <div><span className="muted small">انگشت ذخیره‌شده</span><strong>{fa(s.fingers_saved)}</strong></div>
+          <div>
+            <span className="muted small">آخرین بار</span>
+            <strong>{s.fingers_backup ? when(s.fingers_backup.at) : "هنوز نه"}</strong>
+          </div>
+        </div>
+        <div className="actions">
+          <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void backupFingers()}>
+            {busy === "fingers" ? "در حال خواندن انگشت‌ها…" : "همین حالا از دستگاه بخوان"}
+          </button>
+        </div>
+      </section>
+
+      <section className="panel wide">
         <h2>مقایسهٔ آیدی‌ها با دستگاه</h2>
         <p className="muted">
           پیش از روشن کردن به‌روزرسانی خودکار یک بار این را بزنید. همهٔ کاربران دستگاه خوانده می‌شوند (چیزی عوض نمی‌شود) و نام هر آیدی روی
@@ -223,6 +249,12 @@ export function Device() {
             ) : <p className="form-ok">هر آیدی که در برنامه هست، روی دستگاه هم نام همان کس را دارد.</p>}
             {cmp.zero_padded > 0 && (
               <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
+            )}
+            {cmp.resend > 0 && (
+              <p className="notice warn">
+                {fa(cmp.resend)} عضو که برنامه قبلاً فرستاده بود روی دستگاه نیست. در همگام‌سازی بعدی دوباره فرستاده
+                می‌شوند، با انگشت‌هایی که برنامه از آن‌ها نگه داشته.
+              </p>
             )}
             <div className="list-more">
               <input className="search" type="search" placeholder="جستجوی آیدی یا نام" value={q} aria-label="جستجو در مقایسه"

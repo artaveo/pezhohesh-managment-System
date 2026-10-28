@@ -39,12 +39,16 @@ export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: st
 export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number };
 export type K50Comparison = {
   device_users: number; in_app: number; not_in_app: number; differs: number; admins: number; zero_padded: number; padded_width: number | null;
+  /** Members the app had sent that the device lost; they are sent again. */
+  resend: number;
   rows: { no: string; device_name: string; app_name: string | null; admin: boolean; state: "same" | "differs" | "missing" }[];
 };
 export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
 export type K50Status = {
   config: K50Config; last: K50Round | null; pending: number; sent: number; punches_today: number;
   errors: { member_no: number; name: string; error: string; error_at: string }[];
+  /** Fingers in the app's own copy, and the last copy from the device. */
+  fingers_saved: number; fingers_backup: { at: string; users: number; fingers: number; changed: number } | null;
 };
 /** What the device answered (the rest of the fields depend on the question). */
 export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknown };
@@ -463,6 +467,7 @@ export const api = {
   copyK50Sdk: (from = "") => request<K50SdkCopy>("/k50/sdk", { method: "POST", body: { from } }),
   scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
   syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
+  backupK50Fingers: () => request<{ Ok?: { at: string; users: number; fingers: number; changed: number }; Err?: string }>("/k50/fingers", { method: "POST" }),
   /** Ok: the comparison; Err: why the device could not be read. */
   compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),

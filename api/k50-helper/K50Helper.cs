@@ -83,7 +83,7 @@ static class K50Helper
         if (req.TryGetValue("ops", out list) && list is IEnumerable)
             foreach (var o in (IEnumerable)list) ops.Add(o as Dictionary<string, object> ?? new Dictionary<string, object>());
 
-        var writes = ops.Any(o => Str(o, "op") == "set_user" || Str(o, "op") == "set_time");
+        var writes = ops.Any(o => Str(o, "op") == "set_user" || Str(o, "op") == "set_time" || Str(o, "op") == "put_fingers");
         var results = new ArrayList();
         try
         {
@@ -128,6 +128,8 @@ static class K50Helper
             }
             case "logs": return Logs(Str(o, "since"));
             case "users": return Users();
+            case "fingers": return Fingers();
+            case "put_fingers": return PutFingers(o);
             case "set_time": return Obj("ok", (bool)zk.SetDeviceTime(m));
             case "time":
             {
@@ -308,6 +310,62 @@ static class K50Helper
                 list.Add(Obj("no", no, "name", name, "privilege", priv, "enabled", en));
         }
         return Obj("ok", true, "users", list);
+    }
+
+    // Every stored finger on the device, for the app's own backup copy.
+    static Dictionary<string, object> Fingers()
+    {
+        var nos = new List<string>();
+        if ((bool)zk.ReadAllUserID(m))
+        {
+            string no = "", name = "", pw = "";
+            int priv = 0;
+            bool en = false;
+            while ((bool)zk.SSR_GetAllUserInfo(m, ref no, ref name, ref pw, ref priv, ref en)) nos.Add(no);
+        }
+        // Reads all templates into the SDK's memory at once; the calls below then stay local.
+        try { zk.ReadAllTemplate(m); } catch { }
+        var ex = Has("GetUserTmpExStr");
+        var list = new ArrayList();
+        foreach (var no in nos)
+            for (var f = 0; f < 10; f++)
+            {
+                string tmp = "";
+                int len = 0, flag = 1;
+                bool got;
+                try { got = ex ? (bool)zk.GetUserTmpExStr(m, no, f, ref flag, ref tmp, ref len) : (bool)zk.SSR_GetUserTmpStr(m, no, f, ref tmp, ref len); }
+                catch { got = false; }
+                if (got && !string.IsNullOrEmpty(tmp)) list.Add(Obj("no", no, "finger", f, "flag", flag, "template", tmp));
+            }
+        return Obj("ok", true, "users", nos.Count, "fingers", list);
+    }
+
+    // Puts saved fingers back on a user the device lost. A finger the device already has is kept.
+    static Dictionary<string, object> PutFingers(Dictionary<string, object> o)
+    {
+        var no = Str(o, "no");
+        string name = "", pw = "";
+        int priv = 0;
+        bool en = false;
+        if (!(bool)zk.SSR_GetUserInfo(m, no, ref name, ref pw, ref priv, ref en)) return Obj("ok", false, "error", "no_user");
+        var ex = Has("SetUserTmpExStr");
+        int put = 0, kept = 0, failed = 0;
+        object list;
+        if (o.TryGetValue("fingers", out list) && list is IEnumerable)
+            foreach (var item in (IEnumerable)list)
+            {
+                var t = item as Dictionary<string, object>;
+                if (t == null) continue;
+                var f = Int(t, "finger");
+                string have = "";
+                int len = 0;
+                try { if ((bool)zk.SSR_GetUserTmpStr(m, no, f, ref have, ref len)) { kept++; continue; } } catch { }
+                bool ok;
+                try { ok = ex ? (bool)zk.SetUserTmpExStr(m, no, f, Int(t, "flag"), Str(t, "template")) : (bool)zk.SSR_SetUserTmpStr(m, no, f, Str(t, "template")); }
+                catch { ok = false; }
+                if (ok) put++; else failed++;
+            }
+        return Obj("ok", failed == 0, "put", put, "kept", kept, "failed", failed, "error", failed == 0 ? null : "put_fingers_failed");
     }
 
     static int LastError()
