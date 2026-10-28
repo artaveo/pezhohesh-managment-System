@@ -21,6 +21,15 @@ const size = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.ma
 
 const KIND_LABEL = { folder: "پوشه", usb: "فلش", gdrive: "گوگل درایو" } as const;
 
+type RestoreTab = "all" | "folder" | "usb" | "gdrive" | "monthly";
+const RESTORE_TABS: { id: RestoreTab; label: string; has: (p: RestorePoint) => boolean }[] = [
+  { id: "all", label: "همه، به ترتیب تاریخ", has: () => true },
+  { id: "folder", label: "کمپیوتر", has: (p) => p.kind === "folder" && !p.monthly },
+  { id: "usb", label: "فلش", has: (p) => p.kind === "usb" && !p.monthly },
+  { id: "gdrive", label: "گوگل درایو", has: (p) => p.kind === "gdrive" && !p.monthly },
+  { id: "monthly", label: "ماهانه", has: (p) => p.monthly },
+];
+
 /** Why a folder got no copy, in words the desk can act on. */
 function why(error: string) {
   if (error === "usb_not_found") return "فلش وصل نبود (فلشی با پوشهٔ Pezhohesh-Backup پیدا نشد).";
@@ -54,7 +63,7 @@ export function Backup() {
       setUsb(b.plan.usb);
       setGdrive(b.plan.gdrive);
       setEvery(b.plan.every_hours);
-      setKeep(String(b.plan.keep));
+      setKeep(String(b.plan.keep_days));
     }).catch((e) => setError(errorText(e)));
   }, [tick]);
 
@@ -64,10 +73,10 @@ export function Backup() {
     const f = p.folders ?? folders;
     const k = Number(p.keep ?? keep);
     if (!f[0].trim()) { setError("پوشهٔ همین لپ‌تاپ را انتخاب کنید."); return false; }
-    if (!(k >= 1 && k <= 365)) { setError("تعداد نسخه‌ها باید بین 1 و 365 باشد."); return false; }
+    if (!(k >= 1 && k <= 3650)) { setError("تعداد روزها باید بین 1 و 3650 باشد."); return false; }
     setError("");
     try {
-      await api.setBackupPlan({ folders: f.filter((x) => x.trim()), usb: p.usb ?? usb, gdrive: p.gdrive ?? gdrive, every_hours: p.every ?? every, keep: k });
+      await api.setBackupPlan({ folders: f.filter((x) => x.trim()), usb: p.usb ?? usb, gdrive: p.gdrive ?? gdrive, every_hours: p.every ?? every, keep_days: k });
       toast("ذخیره شد.");
       setTick((t) => t + 1);
       return true;
@@ -76,7 +85,7 @@ export function Backup() {
       return false;
     }
   }
-  const dirty = !!s && (folders[0] !== (s.plan.folders[0] ?? "") || folders[1] !== (s.plan.folders[1] ?? "") || keep !== String(s.plan.keep));
+  const dirty = !!s && (folders[0] !== (s.plan.folders[0] ?? "") || folders[1] !== (s.plan.folders[1] ?? "") || keep !== String(s.plan.keep_days));
   async function choose(i: 0 | 1) {
     const picked = await pickFolder(folders[i] || folders[0]);
     if (!picked) return;
@@ -161,9 +170,10 @@ export function Backup() {
             </select>
           </label>
           <label className="field wide">
-            <span>چند نسخهٔ آخر بماند</span>
-            <input dir="ltr" inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value.replace(/\D/g, "").slice(0, 3))}
+            <span>پشتیبان‌های چند روز اخیر بماند</span>
+            <input dir="ltr" inputMode="numeric" value={keep} aria-describedby="keep-hint" onChange={(e) => setKeep(e.target.value.replace(/\D/g, "").slice(0, 4))}
               onBlur={() => { if (dirty) void persist(); }} />
+            <small id="keep-hint" className="muted">پشتیبان‌های قدیمی‌تر پاک می‌شوند. آخرین پشتیبان هر ماه در پوشهٔ «ماهانه» برای همیشه می‌ماند.</small>
           </label>
         </div>
         {dirty && <div className="actions"><button className="btn" onClick={() => void persist()}>ذخیره</button></div>}
@@ -573,6 +583,7 @@ function Restore({ refresh }: { refresh: number }) {
   const { signOut } = useAuth();
   const [points, setPoints] = useState<RestorePoint[] | null>(null);
   const [all, setAll] = useState(false);
+  const [tab, setTab] = useState<RestoreTab>("all");
   const [chosen, setChosen] = useState<RestorePoint | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -596,7 +607,8 @@ function Restore({ refresh }: { refresh: number }) {
     }
   }
 
-  const shown = all ? points ?? [] : (points ?? []).slice(0, 8);
+  const inTab = (points ?? []).filter(RESTORE_TABS.find((t) => t.id === tab)!.has);
+  const shown = all ? inTab : inTab.slice(0, 8);
   return (
     <>
       <h2>برگرداندن از پشتیبان</h2>
@@ -604,6 +616,16 @@ function Restore({ refresh }: { refresh: number }) {
         همهٔ پشتیبان‌های پوشه‌ها، فلش و گوگل درایو، تازه‌ترین بالا. برگرداندن، دیتابیس و عکس‌ها را همان‌طور می‌کند که در آن پشتیبان بود؛
         هر چه بعد از آن ثبت شده از برنامه برداشته می‌شود. پیش از برگرداندن، خود برنامه یک پشتیبان تازه از وضع فعلی می‌گیرد تا اگر اشتباه شد، آن هم برگردد.
       </p>
+      <div className="segmented" role="tablist" aria-label="کدام پشتیبان‌ها">
+        {RESTORE_TABS.map((t) => {
+          const n = (points ?? []).filter(t.has).length;
+          return (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => { setTab(t.id); setAll(false); }}>
+              {t.label}{points && <span className="muted small"> {n}</span>}
+            </button>
+          );
+        })}
+      </div>
       <div className="glass table-wrap">
         <table className="table">
           <thead><tr><th>زمان</th><th>کجا</th><th>اندازه</th><th><span className="sr-only">کارها</span></th></tr></thead>
@@ -611,17 +633,17 @@ function Restore({ refresh }: { refresh: number }) {
             {shown.map((p) => (
               <tr key={p.path}>
                 <td>{p.modified ? when(p.modified) : "—"}<div className="muted small"><bdi dir="ltr">{p.name}</bdi></div></td>
-                <td>{KIND_LABEL[p.kind]}<div className="muted small"><bdi dir="ltr">{p.folder}</bdi></div></td>
+                <td>{KIND_LABEL[p.kind]}{p.monthly && <> <span className="chip">ماهانه</span></>}<div className="muted small"><bdi dir="ltr">{p.folder}</bdi></div></td>
                 <td className="num"><bdi dir="ltr">{size(p.size)}</bdi></td>
                 <td><button className="btn ghost small" onClick={() => { setChosen(p); setTyped(""); setError(""); }}>برگرداندن…</button></td>
               </tr>
             ))}
           </tbody>
         </table>
-        {points && !points.length && <p className="muted empty">هنوز پشتیبانی پیدا نشد.</p>}
+        {points && !inTab.length && <p className="muted empty">{points.length ? "در این بخش پشتیبانی نیست." : "هنوز پشتیبانی پیدا نشد."}</p>}
         {!points && <p className="muted empty">در حال خواندن…</p>}
       </div>
-      {!all && (points?.length ?? 0) > 8 && <div className="actions"><button className="btn ghost small" onClick={() => setAll(true)}>همه ({points!.length})</button></div>}
+      {!all && inTab.length > 8 && <div className="actions"><button className="btn ghost small" onClick={() => setAll(true)}>همه ({inTab.length})</button></div>}
 
       {chosen && (
         <Modal label="برگرداندن از پشتیبان" onClose={() => !busy && !done && setChosen(null)}>

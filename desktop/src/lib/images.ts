@@ -62,3 +62,31 @@ export function useDocumentUrl(id: string | null | undefined): { url: string | n
   }, [id]);
   return state;
 }
+
+/**
+ * On the hall computer while it shares the server: makes the small copy (about 20 KB) of
+ * each member photo that goes to the server, so the partners' laptops see photos too.
+ * Tazkira scans never go. Runs now and then in the background.
+ */
+export function usePhotoCopies(on: boolean) {
+  useEffect(() => {
+    if (!on) return;
+    let live = true;
+    async function round() {
+      try {
+        if ((await api.sync()).mode !== "node") return;
+        for (let ids = await api.thumbless(); live && ids.length; ids = await api.thumbless()) {
+          for (const id of ids) {
+            if (!live) return;
+            await api.setThumb(id, await shrink(await api.documentFile(id), 320, 0.75));
+          }
+        }
+      } catch {
+        // Tried again at the next round.
+      }
+    }
+    const first = window.setTimeout(() => void round(), 20_000);
+    const every = window.setInterval(() => void round(), 10 * 60_000);
+    return () => { live = false; window.clearTimeout(first); window.clearInterval(every); };
+  }, [on]);
+}

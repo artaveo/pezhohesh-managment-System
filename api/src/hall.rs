@@ -57,6 +57,8 @@ pub struct PeriodInput {
     fee: Option<f64>,
     #[serde(default)]
     discount: f64,
+    /// Paid now; the rest is owed and paid later with a second bill. Default: all of it.
+    paid: Option<f64>,
     #[serde(default)]
     record_only: bool,
     /// A renewal while more than a few days are still left (paying ahead): asked for on
@@ -102,6 +104,11 @@ pub struct Period {
     end_date: NaiveDate,
     fee: f64,
     discount: f64,
+    /// What its bills paid, and what is still owed.
+    paid: f64,
+    owed: f64,
+    /// A period with no bill (its money is in the Excel import): the Excel fee of its month.
+    excel_fee: Option<f64>,
     note: Option<String>,
     receipt_id: Option<Uuid>,
     receipt_no: Option<String>,
@@ -126,9 +133,19 @@ pub struct Timeline {
 pub struct MemberDetail {
     member: Member,
     periods: Vec<Period>,
+    /// The fee cells of the member's row in the Excel book.
+    excel_months: Vec<ExcelMonth>,
     timelines: Vec<Timeline>,
     /// Photo and tazkira scans.
     documents: Vec<crate::documents::Document>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct ExcelMonth {
+    kind: String,
+    year: i32,
+    month: i32,
+    amount: f64,
 }
 
 fn check_member(m: &MemberInput) -> Result<(), ApiError> {
@@ -247,9 +264,14 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     .ok_or(NOT_FOUND)?;
     let mut periods: Vec<Period> = sqlx::query_as(
         "SELECT ms.id, p.name AS plan_name, p.kind::text AS kind, ms.start_date, ms.end_date, \
-                ms.fee::float8 AS fee, ms.discount::float8 AS discount, ms.note, r.id AS receipt_id, r.receipt_no, ms.created_at \
+                ms.fee::float8 AS fee, ms.discount::float8 AS discount, pp.paid, \
+                CASE WHEN pp.receipt_id IS NOT NULL THEN pp.owed ELSE 0 END AS owed, \
+                CASE WHEN pp.receipt_id IS NULL THEN (SELECT sum(x.amount) FROM v_excel_months x \
+                    WHERE x.member_id = ms.member_id AND x.kind = p.kind::text \
+                      AND ms.start_date BETWEEN x.month_start AND x.month_end) END AS excel_fee, \
+                ms.note, pp.receipt_id, pp.receipt_no, ms.created_at \
          FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
-         LEFT JOIN receipts r ON r.membership_id = ms.id AND NOT r.voided AND r.deleted_at IS NULL \
+         JOIN v_period_paid pp ON pp.membership_id = ms.id \
          WHERE ms.member_id = $1 AND ms.deleted_at IS NULL \
          ORDER BY ms.end_date DESC, ms.created_at DESC",
     )
@@ -269,9 +291,16 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
             next_start: next_start(&mut tx, id, kind).await?,
         });
     }
+    let excel_months: Vec<ExcelMonth> = sqlx::query_as(
+        "SELECT kind, year, month, sum(amount)::float8 AS amount FROM v_excel_months WHERE member_id = $1 \
+         GROUP BY kind, year, month ORDER BY year, month, kind",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
     let documents = crate::documents::of_member(&mut tx, id).await?;
     tx.commit().await?;
-    Ok(Json(MemberDetail { member, periods, timelines, documents }))
+    Ok(Json(MemberDetail { member, periods, excel_months, timelines, documents }))
 }
 
 /// The day after the member's last period of this kind (seat or internet), or today.
@@ -299,6 +328,52 @@ pub async fn add_member_period(
     tx.commit().await?;
     crate::k50::poke();
     Ok(Json(Saved { member_id: Some(id), member_no: None, membership_id: Some(membership_id), receipt_id }))
+}
+
+#[derive(Deserialize)]
+pub struct RestInput {
+    amount: f64,
+}
+
+/// The rest of a period paid in parts: a second bill for (some of) what is still owed.
+pub async fn pay_rest(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(b): Json<RestInput>,
+) -> Result<Json<Saved>, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    // Locks the period, so the same rest is not paid twice from two clicks.
+    let row: Option<(Option<Uuid>, String, String)> = sqlx::query_as(
+        "SELECT ms.member_id, p.kind::text, p.name FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+         WHERE ms.id = $1 AND ms.deleted_at IS NULL FOR UPDATE OF ms",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (member, kind, plan) = row.ok_or(NOT_FOUND)?;
+    let (owed, billed): (f64, bool) = sqlx::query_as("SELECT owed, receipt_id IS NOT NULL FROM v_period_paid WHERE membership_id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !billed || owed <= 0.0 {
+        return Err(ApiError::bad("nothing_owed"));
+    }
+    if !b.amount.is_finite() || b.amount <= 0.0 || b.amount > owed + 0.001 {
+        return Err(ApiError::bad("bad_paid"));
+    }
+    let who: String = match member {
+        Some(m) => sqlx::query_scalar("SELECT trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE id = $1")
+            .bind(m)
+            .fetch_one(&mut *tx)
+            .await?,
+        None => sqlx::query_scalar("SELECT COALESCE(guest_name, '') FROM memberships WHERE id = $1").bind(id).fetch_one(&mut *tx).await?,
+    };
+    let receipt = issue(&mut tx, &user, &kind, b.amount, &format!("باقی {plan} · {who}"), Some(id), None).await?;
+    sqlx::query("UPDATE receipts SET pays_rest = true WHERE id = $1").bind(receipt).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(Saved { member_id: member, member_no: None, membership_id: Some(id), receipt_id: Some(receipt) }))
 }
 
 #[derive(Deserialize)]
@@ -369,6 +444,12 @@ async fn add_period(
     if !fee.is_finite() || fee < 0.0 || !discount.is_finite() || discount < 0.0 || discount > fee {
         return Err(ApiError::bad("bad_amount"));
     }
+    let due = fee - discount;
+    let paid = p.paid.unwrap_or(due);
+    // Something is paid at the desk (the bill is for it); a free period's bill is 0.
+    if !paid.is_finite() || paid > due || paid < 0.0 || (paid == 0.0 && due > 0.0) {
+        return Err(ApiError::bad("bad_paid"));
+    }
     let start = match (p.start_date, member) {
         (Some(d), _) => d,
         (None, Some(m)) if plan.kind != "daily" => next_start(tx, m, &plan.kind).await?,
@@ -419,7 +500,7 @@ async fn add_period(
             .await?,
         None => guest.unwrap_or_default(),
     };
-    let receipt = issue(tx, user, plan.kind.as_str(), fee - discount, &format!("{} · {who}", plan.name), Some(membership), None).await?;
+    let receipt = issue(tx, user, plan.kind.as_str(), paid, &format!("{} · {who}", plan.name), Some(membership), None).await?;
     Ok((membership, Some(receipt)))
 }
 
@@ -526,6 +607,11 @@ pub struct Bill {
     end_date: Option<NaiveDate>,
     fee: Option<f64>,
     discount: Option<f64>,
+    /// A bill for the rest of a period paid in parts.
+    pays_rest: bool,
+    /// For a period: what was paid by this bill and the ones before it, and what is left after it.
+    paid_so_far: Option<f64>,
+    remaining: Option<f64>,
 }
 
 const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::float8 AS amount, r.currency::text AS currency, \
@@ -535,14 +621,17 @@ const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::flo
         COALESCE(m.father_name, d.father_name) AS father_name, COALESCE(m.phone, d.phone) AS phone, d.code AS card_no, \
         p.name AS plan_name, r.book_loan_id, \
         COALESCE(ms.start_date, bl.loaned_on) AS start_date, COALESCE(ms.end_date, bl.returned_on) AS end_date, \
-        ms.fee::float8 AS fee, ms.discount::float8 AS discount \
+        ms.fee::float8 AS fee, ms.discount::float8 AS discount, r.pays_rest, \
+        so_far.paid AS paid_so_far, GREATEST(ms.fee - ms.discount - so_far.paid, 0)::float8 AS remaining \
     FROM receipts r \
     LEFT JOIN app_users u ON u.id = r.issued_by LEFT JOIN staff s ON s.id = u.staff_id \
     LEFT JOIN memberships ms ON ms.id = r.membership_id \
     LEFT JOIN book_loans bl ON bl.id = r.book_loan_id \
     LEFT JOIN loan_deposits d ON d.id = bl.deposit_id \
     LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id) \
-    LEFT JOIN plans p ON p.id = ms.plan_id";
+    LEFT JOIN plans p ON p.id = ms.plan_id \
+    LEFT JOIN LATERAL (SELECT sum(o.amount)::float8 AS paid FROM receipts o WHERE ms.id IS NOT NULL AND o.membership_id = ms.id \
+        AND NOT o.voided AND o.deleted_at IS NULL AND (o.created_at, o.id) <= (r.created_at, r.id)) so_far ON true";
 
 #[derive(Serialize)]
 pub struct BillPage {
@@ -625,15 +714,27 @@ pub async fn void_bill(
         return Err(ApiError::bad("reason_required"));
     }
     let mut tx = begin_as(&s.db, &user).await?;
-    let row: Option<(NaiveDate, bool, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
-        "SELECT issued_on, voided, membership_id, book_loan_id FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    let row: Option<(NaiveDate, bool, Option<Uuid>, Option<Uuid>, bool)> = sqlx::query_as(
+        "SELECT issued_on, voided, membership_id, book_loan_id, pays_rest FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
     )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let (issued_on, voided, membership, loan) = row.ok_or(NOT_FOUND)?;
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (issued_on, voided, membership, loan, pays_rest) = row.ok_or(NOT_FOUND)?;
     if voided {
         return Err(ApiError::bad("already_voided"));
+    }
+    // The first bill of a period paid in parts goes last: voiding it withdraws the period.
+    if let (Some(m), false) = (membership, pays_rest) {
+        let later: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM receipts WHERE membership_id = $1 AND pays_rest AND NOT voided AND deleted_at IS NULL)",
+        )
+        .bind(m)
+        .fetch_one(&mut *tx)
+        .await?;
+        if later {
+            return Err(ApiError::bad("rest_bills_first"));
+        }
     }
     if !user.is_partner() && issued_on != today() {
         return Err(ApiError(StatusCode::FORBIDDEN, "void_today_only"));
@@ -644,7 +745,7 @@ pub async fn void_bill(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
-    if let Some(m) = membership {
+    if let (Some(m), false) = (membership, pays_rest) {
         sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = $1").bind(m).execute(&mut *tx).await?;
     }
     // The cards of a wrong hotspot count go back into stock.

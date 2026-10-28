@@ -45,6 +45,11 @@ pub struct Row {
     first: bool,
     /// Dates recorded for a month paid in the Excel book (no bill).
     record_only: bool,
+    /// app | excel_dated (a period with no bill; the amount is its Excel fee) |
+    /// excel (a fee cell of the Excel book; day is the 1st of its month)
+    source: String,
+    /// Still owed on a period paid in parts.
+    owed: f64,
 }
 
 #[derive(Serialize, FromRow, Default)]

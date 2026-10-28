@@ -684,6 +684,15 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(batch)
     .execute(&mut *db)
     .await?;
+    // Each monthly or internet cell belongs to the member of its row (v_excel_months).
+    sqlx::query(
+        "UPDATE receipts r SET member_id = m.id FROM members m \
+         WHERE r.import_batch_id = $1 AND r.income_category IN ('monthly', 'internet') AND m.deleted_at IS NULL \
+           AND m.member_no = NULLIF(substring(r.description FROM 'شمارهٔ ([0-9]+)'), '')::int",
+    )
+    .bind(batch)
+    .execute(&mut *db)
+    .await?;
 
     // Expense categories in the statement's order.
     let mut category_ids = HashMap::new();

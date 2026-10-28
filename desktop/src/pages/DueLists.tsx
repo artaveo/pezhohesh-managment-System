@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, errorText, type ListQuery, type LoanRow, type MemberRow, type Page } from "../lib/api";
-import { fa, formatShort } from "../lib/solar";
+import { api, errorText, type ListQuery, type LoanRow, type MemberRow, type OwedRow, type Page } from "../lib/api";
+import { fa, formatDay, formatShort } from "../lib/solar";
 import { DaysLeft } from "../components/DaysLeft";
 import { BillPreview } from "../components/BillSheet";
 
@@ -73,10 +73,23 @@ function DueList<T>(props: {
 
 export function MembersList({ open, add }: { open: (id: string) => void; add: () => void }) {
   const [bill, setBill] = useState<string | null>(null);
+  const [owedView, setOwedView] = useState(false);
+  const [owedCount, setOwedCount] = useState(0);
+  useEffect(() => {
+    const ctl = new AbortController();
+    api.owed({ scope: "all", q: "", limit: 1 }, ctl.signal).then((p) => setOwedCount(p.total)).catch(() => {});
+    return () => ctl.abort();
+  }, [owedView]);
+  const toggle = (
+    <button className={`btn ${owedView ? "" : "ghost"}`} aria-pressed={owedView} onClick={() => setOwedView((v) => !v)}>
+      باقی‌ها{owedCount > 0 && <span className="owed-badge small-badge">{fa(owedCount)}</span>}
+    </button>
+  );
+  if (owedView) return <OwedList open={open} action={toggle} />;
   return (
     <>
       <DueList<MemberRow>
-        action={<button className="btn" onClick={add}>+ عضو جدید</button>}
+        action={<>{toggle}<button className="btn" onClick={add}>+ عضو جدید</button></>}
         tabs={["نزدیک به ختم و تمام‌شده", "همه اعضا"]}
         hint={[
           "عضویت‌هایی که تا 5 روز دیگر ختم می‌شوند یا در 30 روز گذشته ختم شده‌اند؛ کمترین روز مانده اول.",
@@ -93,7 +106,7 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
               className={`${go ? "clickable" : ""}${m.days_left !== null && m.days_left < 0 && m.member_id ? " late" : ""}`} onClick={go}
               tabIndex={go ? 0 : undefined} onKeyDown={go ? (e) => { if (e.key === "Enter") go(); } : undefined}>
               <td className="num">{m.member_no ?? <span className="chip kind-daily">مهمان</span>}</td>
-              <td><strong>{m.name}</strong></td>
+              <td><strong>{m.name}</strong>{m.owed > 0 && <> <span className="owed-badge small-badge">باقی {fa(m.owed)}</span></>}</td>
               <td>{m.father_name ?? "—"}</td>
               <td><bdi dir="ltr">{m.phone ?? "—"}</bdi></td>
               <td className="muted">{m.plan_name ?? "—"}</td>
@@ -106,6 +119,59 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
       />
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
     </>
+  );
+}
+
+/** Periods paid in parts whose rest is still owed. */
+function OwedList({ open, action }: { open: (id: string) => void; action: ReactNode }) {
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState<Page<OwedRow> | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const ctl = new AbortController();
+    const t = window.setTimeout(() => {
+      api.owed({ scope: "all", q, limit: 500 }, ctl.signal).then((p) => { setPage(p); setError(""); }).catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
+    }, q ? 250 : 0);
+    return () => { window.clearTimeout(t); ctl.abort(); };
+  }, [q]);
+  const sum = page?.rows.reduce((t, r) => t + r.owed, 0) ?? 0;
+  return (
+    <div className="page">
+      <div className="list-tools">
+        <input className="search" type="search" placeholder="جستجو: نام، شماره تماس یا آیدی" aria-label="جستجو: نام، شماره تماس یا آیدی" value={q} onChange={(e) => setQ(e.target.value)} />
+        {action}
+      </div>
+      <p className="muted small">
+        عضوهایی که بخشی از پول دوره‌شان را داده‌اند. در دستگاه انگشت باز هستند. برای گرفتن باقی، روی عضو بزنید و «پرداخت باقی» را بزنید.
+        {page ? ` · ${fa(page.total)} نفر · جمع باقی ${fa(sum)} افغانی` : ""}
+      </p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="glass table-wrap">
+        <table className="table">
+          <thead><tr><th>آیدی</th><th>نام</th><th>شماره تماس</th><th>دوره</th><th className="num">مبلغ</th><th className="num">پرداخت‌شده</th><th className="num">باقی</th><th>بل</th></tr></thead>
+          <tbody>
+            {page?.rows.map((r) => {
+              const go = r.member_id ? () => open(r.member_id!) : undefined;
+              return (
+                <tr key={r.membership_id} className={go ? "clickable" : ""} onClick={go} tabIndex={go ? 0 : undefined}
+                  onKeyDown={go ? (e) => { if (e.key === "Enter") go(); } : undefined}>
+                  <td className="num">{r.member_no ?? "—"}</td>
+                  <td><strong>{r.name}</strong></td>
+                  <td><bdi dir="ltr">{r.phone ?? "—"}</bdi></td>
+                  <td>{r.plan_name}<div className="muted small">{formatDay(r.start_date)} تا {formatDay(r.end_date)}</div></td>
+                  <td className="num">{fa(r.due)}</td>
+                  <td className="num">{fa(r.paid)}</td>
+                  <td className="num owed">{fa(r.owed)}</td>
+                  <td>{r.receipt_no ? <bdi dir="ltr">{r.receipt_no}</bdi> : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {page && !page.rows.length && <p className="muted empty">{q ? "چیزی پیدا نشد." : "هیچ کسی باقی ندارد."}</p>}
+        {!page && !error && <p className="muted empty">در حال بارگذاری…</p>}
+      </div>
+    </div>
   );
 }
 

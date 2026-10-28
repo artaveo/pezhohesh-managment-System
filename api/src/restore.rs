@@ -23,6 +23,8 @@ pub struct Point {
     name: String,
     /// folder | usb | gdrive
     kind: &'static str,
+    /// From the monthly folder: the last backup of a month, kept for good.
+    monthly: bool,
     folder: String,
     size: u64,
     modified: Option<DateTime<Utc>>,
@@ -32,16 +34,19 @@ async fn points(db: &PgPool) -> Result<Vec<Point>, sqlx::Error> {
     let dirs = backup::backup_dirs(db).await?;
     let mut list = tokio::task::spawn_blocking(move || {
         let mut list = vec![];
-        for (kind, dir) in dirs {
-            for f in backup::backups_in(&dir) {
-                list.push(Point {
-                    path: dir.join(&f.name).display().to_string(),
-                    name: f.name,
-                    kind,
-                    folder: dir.display().to_string(),
-                    size: f.size,
-                    modified: f.modified,
-                });
+        for (kind, base) in dirs {
+            for (dir, monthly) in [(base.clone(), false), (base.join(backup::MONTHLY_FOLDER), true)] {
+                for f in backup::backups_in(&dir) {
+                    list.push(Point {
+                        path: dir.join(&f.name).display().to_string(),
+                        name: f.name,
+                        kind,
+                        monthly,
+                        folder: dir.display().to_string(),
+                        size: f.size,
+                        modified: f.modified,
+                    });
+                }
             }
         }
         list

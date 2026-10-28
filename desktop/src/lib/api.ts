@@ -75,7 +75,12 @@ export type MemberK50 = {
     fingers: number | null; error: string | null; error_at: string | null } | null;
   visits: string[];
 };
-export type RestorePoint = { path: string; name: string; kind: "folder" | "usb" | "gdrive"; folder: string; size: number; modified: string | null };
+export type RestorePoint = {
+  path: string; name: string; kind: "folder" | "usb" | "gdrive";
+  /** From the monthly folder: the last backup of a month, kept for good. */
+  monthly: boolean;
+  folder: string; size: number; modified: string | null;
+};
 
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -139,6 +144,10 @@ export type Registration = {
   member_id: string | null; member_no: number | null; name: string; phone: string | null;
   start_date: string; end_date: string; amount: number;
   receipt_id: string | null; receipt_no: string | null; first: boolean; record_only: boolean;
+  /** app | excel_dated: a period without a bill, amount = its Excel fee | excel: an Excel fee cell, day = 1st of its month */
+  source: "app" | "excel_dated" | "excel";
+  /** Still owed on a period paid in parts. */
+  owed: number;
 };
 export type RegSummary = { daily: number; monthly_new: number; monthly_renewed: number; internet: number; amount: number };
 export type RegQuery = { from?: string; to?: string; kind?: RegKind; q?: string; limit?: number; offset?: number };
@@ -157,6 +166,12 @@ export type MemberRow = {
   last_start: string | null;
   /** A guest's daily seat: its bill. */
   receipt_id: string | null;
+  /** Still owed on periods paid in parts. */
+  owed: number;
+};
+export type OwedRow = {
+  membership_id: string; member_id: string | null; member_no: number | null; name: string; phone: string | null;
+  plan_name: string; start_date: string; end_date: string; due: number; paid: number; owed: number; receipt_no: string | null;
 };
 
 export type LoanRow = {
@@ -175,18 +190,27 @@ export type MemberInput = {
   member_no?: number | null; first_name: string; last_name?: string | null; father_name?: string | null;
   phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
 };
-export type PeriodInput = { plan_id: string; start_date?: string | null; fee?: number | null; discount?: number; record_only?: boolean; ahead?: boolean };
+export type PeriodInput = {
+  plan_id: string; start_date?: string | null; fee?: number | null; discount?: number;
+  /** Paid now; the rest is owed. Left out: all of it. */
+  paid?: number | null;
+  record_only?: boolean; ahead?: boolean;
+};
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
 export type Period = {
   id: string; plan_name: string; kind: PlanKind; start_date: string; end_date: string;
   fee: number; discount: number; note: string | null; receipt_id: string | null; receipt_no: string | null; removable: boolean;
+  paid: number; owed: number;
+  /** A period with no bill: the Excel fee of its month. */
+  excel_fee: number | null;
 };
+export type ExcelMonth = { kind: "monthly" | "internet"; year: number; month: number; amount: number };
 /** The seat and the internet plan each run on their own; a renewal starts after its own last day. */
 export type Timeline = { kind: "monthly" | "internet"; end_date: string | null; days_left: number | null; next_start: string };
 export type DocKind = "photo" | "tazkira_front" | "tazkira_back" | "other";
 export type MemberDocument = { id: string; kind: DocKind; mime_type: string; size_bytes: number; created_at: string };
-export type MemberDetail = { member: Member; periods: Period[]; timelines: Timeline[]; documents: MemberDocument[] };
+export type MemberDetail = { member: Member; periods: Period[]; excel_months: ExcelMonth[]; timelines: Timeline[]; documents: MemberDocument[] };
 export type PlanKind = "monthly" | "daily" | "internet";
 export type Plan = { id: string; kind: PlanKind; name: string; price: number; duration_days: number; active: boolean; sort_order: number };
 export type Bill = {
@@ -195,6 +219,10 @@ export type Bill = {
   member_id: string | null; member_no: number | null; customer: string | null; father_name: string | null; phone: string | null;
   card_no: string | null; book_loan_id: string | null;
   plan_name: string | null; start_date: string | null; end_date: string | null; fee: number | null; discount: number | null;
+  /** A bill for the rest of a period paid in parts. */
+  pays_rest: boolean;
+  /** A period's bill: paid by this bill and the ones before it, and still owed after it. */
+  paid_so_far: number | null; remaining: number | null;
 };
 export type BillPage = { total: number; sum: number; rows: Bill[] };
 export type Category = { id: string; name: string };
@@ -234,7 +262,7 @@ export type AuditPage = { lines: AuditLine[]; more: boolean; users: { id: string
 export type MonthSummary = { id: string; solar_year: number; solar_month: number; starts_on: string; net_balance: number; note: string | null };
 export type Withdrawal = { id: string; taken_on: string; staff_id: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
-export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep: number; usb_drive?: string | null };
+export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep_days: number; usb_drive?: string | null };
 export type BackupOutcome = {
   at: string | null; ok: boolean;
   folders: { kind: "folder" | "usb" | "gdrive"; folder: string; file: string | null; error: string | null }[];
@@ -393,6 +421,10 @@ export const api = {
   /** The file itself (a photo or a scan); the page shows it through an object URL. */
   documentFile: (id: string) => request<Blob>(`/documents/${id}`, { blob: true }),
   deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: "DELETE" }),
+  /** The small copy of a photo that goes to the server. */
+  setThumb: (id: string, file: Blob) => request<void>(`/documents/${id}/thumb`, { method: "PUT", file }),
+  /** Photos on this computer that have no small copy yet (a few at a time). */
+  thumbless: () => request<string[]>("/documents/thumbless"),
   members: (p: ListQuery, signal?: AbortSignal) => request<Page<MemberRow>>(`/members?${listParams(p)}`, { signal }),
   loans: (p: ListQuery, signal?: AbortSignal) => request<Page<LoanRow>>(`/loans?${listParams(p)}`, { signal }),
 
@@ -409,6 +441,8 @@ export const api = {
   member: (id: string, signal?: AbortSignal) => request<MemberDetail>(`/members/${id}`, { signal }),
   updateMember: (id: string, m: MemberInput) => request<void>(`/members/${id}`, { method: "PUT", body: m }),
   addPeriod: (id: string, p: PeriodInput) => request<Saved>(`/members/${id}/periods`, { method: "POST", body: p }),
+  payRest: (periodId: string, amount: number) => request<Saved>(`/periods/${periodId}/rest`, { method: "POST", body: { amount } }),
+  owed: (p: ListQuery, signal?: AbortSignal) => request<Page<OwedRow>>(`/owed?${listParams(p)}`, { signal }),
   deletePeriod: (id: string, reason?: string) => request<void>(`/periods/${id}${why(reason)}`, { method: "DELETE" }),
   updatePeriod: (id: string, p: { start_date: string; end_date: string; note?: string | null }) => request<void>(`/periods/${id}`, { method: "PUT", body: p }),
   deleteMember: (id: string, reason?: string) => request<void>(`/members/${id}${why(reason)}`, { method: "DELETE" }),
@@ -488,6 +522,8 @@ export const api = {
   setK50: (c: K50Config) => request<void>("/k50", { method: "PUT", body: c }),
   testK50: (c: K50Config) => request<K50Info>("/k50/test", { method: "POST", body: c }),
   k50Sdk: () => request<K50Sdk>("/k50/sdk"),
+  /** Folders with a copy of the SDK that a backup left (backup folders, USB sticks). */
+  k50SdkCopies: () => request<string[]>("/k50/sdk/copies"),
   copyK50Sdk: (from = "") => request<K50SdkCopy>("/k50/sdk", { method: "POST", body: { from } }),
   scanK50: () => request<{ ip: string; via: string }[]>("/k50/scan", { method: "POST" }),
   syncK50: () => request<K50Round>("/k50/sync", { method: "POST" }),
@@ -541,6 +577,9 @@ export function errorText(e: unknown): string {
     case "bad_member_no": return "شمارهٔ عضویت باید یک عدد مثبت باشد.";
     case "bad_plan": return "این نوع عضویت پیدا نشد یا غیرفعال است.";
     case "bad_amount": return "مبلغ درست نیست (تخفیف نباید از مبلغ بیشتر باشد).";
+    case "bad_paid": return "پول پرداخت‌شده درست نیست. باید بیشتر از صفر باشد و از مبلغی که باید پرداخت شود بیشتر نباشد.";
+    case "nothing_owed": return "این دوره باقی ندارد.";
+    case "rest_bills_first": return "این دوره بل باقی هم دارد. اول بل‌های باقی را باطل کنید، بعد بل اول را.";
     case "bad_category": return "نوع درآمد درست نیست.";
     case "reason_required": return "دلیل باطل کردن را بنویسید.";
     case "already_voided": return "این بل قبلاً باطل شده.";

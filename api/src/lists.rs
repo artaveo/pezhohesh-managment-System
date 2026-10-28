@@ -44,6 +44,8 @@ pub struct MemberRow {
     last_start: Option<chrono::NaiveDate>,
     /// A guest's daily seat: its bill.
     receipt_id: Option<uuid::Uuid>,
+    /// Still owed on periods paid in parts.
+    owed: f64,
 }
 
 pub fn pattern(q: &Option<String>) -> Option<String> {
@@ -71,11 +73,11 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     // as their own row, so a sign-up at the desk is always on top of the list.
     let rows_sql = format!(
         "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, \
-                last_start, last_at, NULL::uuid AS receipt_id \
+                last_start, last_at, NULL::uuid AS receipt_id, owed \
          FROM v_member_status WHERE {filter} \
          UNION ALL \
          SELECT NULL, NULL, ms.guest_name, NULL, NULL, p.name, ms.end_date, ms.end_date - current_date, \
-                ms.start_date, ms.created_at, r.id \
+                ms.start_date, ms.created_at, r.id, 0::float8 \
          FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
          LEFT JOIN LATERAL (SELECT r.id FROM receipts r WHERE r.membership_id = ms.id AND NOT r.voided \
                             AND r.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT 1) r ON true \
@@ -98,7 +100,7 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         .fetch_one(&mut *tx)
         .await?;
     let rows: Vec<MemberRow> = sqlx::query_as(&format!(
-        "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, last_start, receipt_id \
+        "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, last_start, receipt_id, owed \
          FROM ({rows_sql}) t ORDER BY {order} LIMIT $6 OFFSET $7"
     ))
     .bind(attention)
@@ -155,6 +157,49 @@ pub async fn loans(State(s): State<AppState>, user: CurrentUser, Query(p): Query
     .bind(offset)
     .fetch_all(&mut *tx)
     .await?;
+    tx.commit().await?;
+    Ok(Json(Page { total, rows }))
+}
+
+#[derive(Serialize, FromRow)]
+pub struct OwedRow {
+    membership_id: uuid::Uuid,
+    member_id: Option<uuid::Uuid>,
+    member_no: Option<i32>,
+    name: String,
+    phone: Option<String>,
+    plan_name: String,
+    start_date: chrono::NaiveDate,
+    end_date: chrono::NaiveDate,
+    due: f64,
+    paid: f64,
+    owed: f64,
+    receipt_no: Option<String>,
+}
+
+/// Periods paid in parts whose rest is still owed, oldest first.
+pub async fn owed(State(s): State<AppState>, user: CurrentUser, Query(p): Query<ListParams>) -> Result<Json<Page<OwedRow>>, ApiError> {
+    if !user.sees_hall() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    let q = pattern(&p.q);
+    let (limit, offset) = paging(&p);
+    let rows_sql = "SELECT pp.membership_id, m.id AS member_id, m.member_no, \
+            COALESCE(NULLIF(trim(concat_ws(' ', m.first_name, m.last_name)), ''), ms.guest_name, '—') AS name, \
+            m.phone, pl.name AS plan_name, ms.start_date, ms.end_date, pp.due, pp.paid, pp.owed, pp.receipt_no \
+        FROM v_period_paid pp JOIN memberships ms ON ms.id = pp.membership_id JOIN plans pl ON pl.id = ms.plan_id \
+        LEFT JOIN members m ON m.id = ms.member_id AND m.deleted_at IS NULL \
+        WHERE pp.owed > 0 AND pp.receipt_id IS NOT NULL \
+          AND ($1::text IS NULL OR m.first_name ILIKE $1 OR m.last_name ILIKE $1 OR ms.guest_name ILIKE $1 \
+               OR m.phone ILIKE $1 OR m.member_no::text LIKE $1)";
+    let mut tx = begin_as(&s.db, &user).await?;
+    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM ({rows_sql}) t")).bind(&q).fetch_one(&mut *tx).await?;
+    let rows: Vec<OwedRow> = sqlx::query_as(&format!("{rows_sql} ORDER BY ms.start_date, name LIMIT $2 OFFSET $3"))
+        .bind(&q)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(Page { total, rows }))
 }

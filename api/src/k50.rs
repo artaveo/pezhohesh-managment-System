@@ -722,6 +722,13 @@ pub async fn sdk_install(user: CurrentUser, body: Option<Json<SdkFrom>>) -> Resu
     Ok(DeviceAnswer::from(r))
 }
 
+/// GET /api/v1/k50/sdk/copies: folders holding a copy of the SDK from a backup, for a new
+/// computer without ZKAccess.
+pub async fn sdk_copies(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<String>>, ApiError> {
+    partner(&user)?;
+    Ok(Json(crate::backup::sdk_copies(&s.db).await?))
+}
+
 /// POST /api/v1/k50/fingers: copies every finger on the device into the app now.
 pub async fn fingers_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Result<Value, String>>, ApiError> {
     partner(&user)?;

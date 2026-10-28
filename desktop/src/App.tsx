@@ -25,6 +25,8 @@ import { useTheme } from "./theme/ThemeProvider";
 import { api, ROLE_LABEL, type Section, type User } from "./lib/api";
 import { Inbox } from "./pages/Inbox";
 import { SyncChip } from "./components/SyncChip";
+import { Reports } from "./pages/Reports";
+import { usePhotoCopies } from "./lib/images";
 
 /**
  * The menu. A section with `section` is shown to the roles a partner gave it to on the users
@@ -44,7 +46,7 @@ export const NAV = [
   { id: "receipts", icon: "receipt", label: "بل‌ها", section: "receipts", group: "حساب و پول" },
   // Staff salaries and the partners' shares live inside it, under «برداشت‌ها».
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares"], group: "حساب و پول" },
-  { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول", soon: true },
+  { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
   { id: "audit", icon: "history", label: "چه کسی چه کرد", partner: true, group: "مدیریت" },
   { id: "users", icon: "shield", label: "کاربران", partner: true, group: "مدیریت" },
@@ -80,6 +82,7 @@ function Shell() {
   const { dark, setMode } = useTheme();
   const nav = useMemo(() => NAV.filter((n) => sees(user!, n)), [user]);
   const arrived = useInboxCount(nav.some((n) => n.id === "inbox"));
+  usePhotoCopies(nav.some((n) => n.id === "members"));
   const [view, setView] = useState<View>({ page: "dashboard", member: null });
   // Earlier views, for «برگشت» (and Alt+←), like a browser's history.
   const [history, setHistory] = useState<View[]>([]);
@@ -190,6 +193,7 @@ function Shell() {
               : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => go({ page: "members", member: { id: null } })} />
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
+              : page === "reports" ? <Reports />
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />

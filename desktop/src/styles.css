@@ -538,6 +538,19 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .chip.kind-daily { background: var(--warn-soft); color: var(--warn); }
 .chip.kind-internet { background: var(--info-soft); color: var(--info); }
 .chip.kind-monthly.new { background: var(--good-soft); color: var(--good); }
+.chip.excel { background: var(--warn-soft); color: var(--warn); font-size: .72rem; padding: 0 8px; }
+.owed { color: var(--bad); font-weight: 600; }
+.bill-lines .bill-rest th { font-weight: 700; border-top: 1px dashed currentColor; }
+.owed-badge.small-badge { font-size: .72rem; padding: 0 7px; margin-inline-start: 6px; vertical-align: 1px; }
+.owed-badge { display: inline-block; color: #fff; background: var(--bad-fill); border-radius: 99px; padding: 2px 10px; font-size: .85rem; font-weight: 700; }
+.excel-months { padding: 16px 20px; }
+.excel-months h2 { margin: 0 0 10px; font-size: 1rem; }
+.excel-line { display: grid; grid-template-columns: 7rem 1fr; gap: 10px; align-items: center; margin-bottom: 8px; }
+.excel-line ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; }
+.excel-line li { display: flex; flex-direction: column; align-items: center; padding: 4px 2px; border-radius: 8px; font-size: .75rem; color: var(--muted); background: color-mix(in srgb, var(--glass-strong) 50%, transparent); }
+.excel-line li.paid { color: var(--fg); background: var(--accent-soft); }
+.excel-line li strong { font-size: .8rem; }
+@media (max-width: 900px) { .excel-line { grid-template-columns: 1fr; } .excel-line ul { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 .dest { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--glass-strong); }
 .dest .muted.small { margin: 0; }
 .drive-list { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
@@ -709,3 +722,23 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .enroll-steps li::before { content: counter(es, persian) ". "; }
 .enroll-steps li.on { color: var(--accent-ink); background: var(--accent); font-weight: 700; }
 .enroll-steps li.done { color: var(--good); background: var(--good-soft); }
+
+/* Financial report (گزارش مالی) */
+.report-page .list-tools { flex-wrap: wrap; }
+.report-sheet { padding: 16px 18px; }
+.report { display: flex; flex-direction: column; gap: 12px; }
+.report-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.report-head h1 { margin: 0; font-size: 1.15rem; }
+.report-head p { margin: 2px 0 0; color: var(--muted); font-size: .85rem; }
+.report h2 { margin: 6px 0 0; font-size: 1rem; }
+@media print {
+  .print-only.report-print { color: #111; font-family: var(--font); }
+  .report-print .report { gap: 4mm; }
+  .report-print .report-head h1 { font-size: 15pt; }
+  .report-print .table-wrap { overflow: visible; }
+  .report-print .table.sheet { width: 100%; font-size: 8.5pt; border-collapse: collapse; }
+  .report-print .table.sheet th, .report-print .table.sheet td { padding: 1.4mm 1.6mm; border-bottom: .2mm solid #ccd3c8; }
+  .report-print .table.sheet th:first-child { position: static; background: none; }
+  .report-print .table.sheet .remarks { background: #eef4e6; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .report-print .muted { color: #555; }
+}

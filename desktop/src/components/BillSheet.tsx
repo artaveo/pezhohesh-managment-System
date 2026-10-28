@@ -14,6 +14,8 @@ export const CATEGORY_LABEL: Record<string, string> = {
 export function BillSheet({ bill }: { bill: Bill }) {
   const copy = bill.printed_count > 0;
   const what = bill.plan_name ?? CATEGORY_LABEL[bill.income_category] ?? bill.income_category;
+  // A period paid in parts: this bill pays some, and what is left is printed under it.
+  const part = bill.pays_rest || (bill.remaining ?? 0) > 0;
   return (
     <article className="bill-sheet" dir="rtl">
       {bill.voided && <div className="bill-stamp void">باطل شده</div>}
@@ -39,13 +41,19 @@ export function BillSheet({ bill }: { bill: Bill }) {
         <thead><tr><th>بابت</th><th>مدت</th><th>مبلغ</th></tr></thead>
         <tbody>
           <tr>
-            <td>{what}{!bill.plan_name && bill.description ? <div className="small">{bill.description}</div> : null}</td>
+            <td>{bill.pays_rest && "باقی "}{what}{!bill.plan_name && bill.description ? <div className="small">{bill.description}</div> : null}</td>
             <td>{bill.start_date && bill.end_date ? (bill.start_date === bill.end_date ? formatDay(bill.start_date) : <>از {formatDay(bill.start_date)}<br />تا {formatDay(bill.end_date)}</>) : "—"}</td>
             <td className="num">{fa(bill.fee ?? bill.amount)}</td>
           </tr>
           {!!bill.discount && <tr><td colSpan={2}>تخفیف</td><td className="num">{fa(-bill.discount)}</td></tr>}
+          {bill.pays_rest && bill.paid_so_far !== null && (
+            <tr><td colSpan={2}>پرداخت‌های قبلی</td><td className="num">{fa(-(bill.paid_so_far - bill.amount))}</td></tr>
+          )}
         </tbody>
-        <tfoot><tr><th colSpan={2}>مجموع پرداخت</th><th className="num">{fa(bill.amount)} افغانی</th></tr></tfoot>
+        <tfoot>
+          <tr><th colSpan={2}>{part ? "پرداخت این بل" : "مجموع پرداخت"}</th><th className="num">{fa(bill.amount)} افغانی</th></tr>
+          {part && <tr className="bill-rest"><th colSpan={2}>باقی</th><th className="num">{fa(bill.remaining ?? 0)} افغانی</th></tr>}
+        </tfoot>
       </table>
       <p className="bill-words">به حروف: {inWords(bill.amount)} افغانی</p>
       {bill.voided && bill.void_reason && <p className="bill-words">دلیل باطل شدن: {bill.void_reason}</p>}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type MemberK50, type MemberDetail, type MemberInput, type Period, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
-import { daysBetween, fa, formatDay, iso, parseIso } from "../../lib/solar";
+import { daysBetween, fa, formatDay, iso, MONTHS, parseIso } from "../../lib/solar";
 import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview } from "../../components/BillSheet";
@@ -25,6 +25,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   const partner = useAuth().user?.role === "partner";
   const [removing, setRemoving] = useState<"member" | Period | null>(null);
   const [dates, setDates] = useState<Period | null>(null);
+  const [paying, setPaying] = useState<Period | null>(null);
   const [d, setD] = useState<MemberDetail | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
@@ -46,6 +47,8 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   if (!d) return <div className="page">{error ? <p className="form-error">{error}</p> : <p className="muted">در حال بارگذاری…</p>}</div>;
   const m = d.member;
   const name = `${m.first_name} ${m.last_name ?? ""}`.trim();
+  const owing = d.periods.filter((p) => p.owed > 0);
+  const owed = owing.reduce((t, p) => t + p.owed, 0);
 
 
   return (
@@ -70,11 +73,18 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
                 {t.end_date && <span className="muted small">ختم {formatDay(t.end_date)}</span>}
               </div>
             ))}
+            {owed > 0 && (
+              <div>
+                <span className="muted small">پول</span>
+                <span className="owed-badge">باقی {fa(owed)}</span>
+              </div>
+            )}
           </div>
         </div>
         {mode === "view" && (
           <div className="actions">
             <button className="btn big" onClick={() => setMode("renew")}>تمدید عضویت</button>
+            {owing.length > 0 && <button className="btn" onClick={() => setPaying(owing[owing.length - 1])}>پرداخت باقی</button>}
             {k50?.configured && (
               <button className="btn ghost" disabled={!k50.enabled} onClick={() => setEnrolling(true)}
                 title={k50.enabled ? undefined : "اول عضویت سالن را ثبت یا تمدید کنید"}><Icon name="fingerprint" /> ثبت انگشت</button>
@@ -135,10 +145,14 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
                 <td>{p.plan_name}{p.note && <div className="muted small">{p.note}</div>}</td>
                 <td>{formatDay(p.start_date)}</td>
                 <td>{formatDay(p.end_date)}</td>
-                <td className="num">{p.receipt_id ? fa(p.fee - p.discount) : "—"}</td>
+                <td className="num">
+                  {p.receipt_id ? fa(p.fee - p.discount) : p.excel_fee !== null ? <>{fa(p.excel_fee)} <span className="chip excel">اکسل</span></> : "—"}
+                  {p.owed > 0 && <div className="owed small">پرداخت {fa(p.paid)} · باقی {fa(p.owed)}</div>}
+                </td>
                 <td>{p.receipt_no ? <button className="link" onClick={() => setBill(p.receipt_id)}><bdi dir="ltr">{p.receipt_no}</bdi></button> : "—"}</td>
                 <td>
                   <span className="row-tools">
+                    {p.owed > 0 && <button className="btn small" onClick={() => setPaying(p)}>پرداخت باقی</button>}
                     {(partner || p.removable) && <button className="btn small ghost" aria-label="اصلاح تاریخ" onClick={() => setDates(p)}><Icon name="edit" /></button>}
                     {p.removable && <button className="btn small ghost" aria-label="حذف" onClick={() => setRemoving(p)}><Icon name="trash" /></button>}
                   </span>
@@ -149,6 +163,8 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
         </table>
         {!d.periods.length && <p className="muted empty">هنوز هیچ دوره‌ای ثبت نشده. اگر این عضو از اکسل آمده، تاریخ عضویت فعلی‌اش را از دستگاه اثر انگشت ثبت کنید.</p>}
       </section>
+
+      {d.excel_months.length > 0 && <ExcelMonths months={d.excel_months} />}
 
       {removing === "member" && (
         <DeleteDialog title={`حذف ${name}`} action="حذف عضو" reasonRequired onClose={() => setRemoving(null)}
@@ -167,6 +183,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
           {removing.plan_name}، از {formatDay(removing.start_date)} تا {formatDay(removing.end_date)}.
         </DeleteDialog>
       )}
+      {paying && <PayRest period={paying} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
       {dates && <PeriodDates period={dates} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("تاریخ دوره اصلاح شد."); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
@@ -282,6 +299,62 @@ function PeriodDates({ period, onClose }: { period: Period; onClose: (saved: boo
       <div className="actions">
         <button className="btn" disabled={busy} onClick={() => void save()}>ذخیره</button>
         <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** The fee cells of the member's row in the Excel book, one line per year and kind. */
+function ExcelMonths({ months }: { months: MemberDetail["excel_months"] }) {
+  const lines = [...new Set(months.map((x) => `${x.year}|${x.kind}`))];
+  return (
+    <section className="glass excel-months" aria-label="ماه‌های اکسل">
+      <h2>پرداخت‌های اکسل</h2>
+      {lines.map((l) => {
+        const [y, kind] = l.split("|");
+        const row = months.filter((x) => String(x.year) === y && x.kind === kind);
+        return (
+          <div key={l} className="excel-line">
+            <span className="muted">{kind === "internet" ? "انترنت" : "عضویت"} {y}</span>
+            <ul>
+              {MONTHS.map((name, i) => {
+                const cell = row.find((x) => x.month === i + 1);
+                return <li key={name} className={cell ? "paid" : ""}><span>{name}</span><strong>{cell ? fa(cell.amount) : "—"}</strong></li>;
+              })}
+            </ul>
+          </div>
+        );
+      })}
+      <p className="muted small">از دفتر اکسل. این پول‌ها در حساب‌ها هستند و دوباره حساب نمی‌شوند.</p>
+    </section>
+  );
+}
+
+/** The rest of a period paid in parts: a second bill. */
+function PayRest({ period, onClose }: { period: Period; onClose: (billId: string | null) => void }) {
+  const [amount, setAmount] = useState(String(period.owed));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const n = Number(amount);
+  async function pay() {
+    setBusy(true);
+    try { const r = await api.payRest(period.id, n); onClose(r.receipt_id); } catch (e) { setError(errorText(e)); setBusy(false); }
+  }
+  return (
+    <Modal label="پرداخت باقی" onClose={() => !busy && onClose(null)}>
+      <h2>پرداخت باقی</h2>
+      <p className="muted">
+        {period.plan_name}، {formatDay(period.start_date)} تا {formatDay(period.end_date)}. مبلغ {fa(period.fee - period.discount)}، پرداخت‌شده {fa(period.paid)}، باقی <strong className="owed">{fa(period.owed)}</strong> افغانی.
+      </p>
+      <label className="field">
+        <span>پرداخت حالا (افغانی)</span>
+        <input dir="ltr" inputMode="numeric" value={amount} autoFocus onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ""))} />
+      </label>
+      {n > 0 && n < period.owed && <p className="muted small">بعد از این، {fa(period.owed - n)} افغانی باقی می‌ماند.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" disabled={busy || !(n > 0 && n <= period.owed)} onClick={() => void pay()}>{busy ? "در حال ثبت…" : "ثبت و بل"}</button>
+        <button className="btn ghost" disabled={busy} onClick={() => onClose(null)}>انصراف</button>
       </div>
     </Modal>
   );

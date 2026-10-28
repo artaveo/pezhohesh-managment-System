@@ -20,6 +20,8 @@ use crate::AppState;
 
 /// Largest file the desk may add (a phone photo of a tazkira is about 3 MB).
 pub const MAX_BYTES: usize = 10 * 1024 * 1024;
+/// The small copy of a photo that goes to the server (the app makes it about 20 KB).
+const MAX_THUMB_BYTES: usize = 96 * 1024;
 const KINDS: [&str; 4] = ["photo", "tazkira_front", "tazkira_back", "other"];
 const NOT_FOUND: ApiError = ApiError(StatusCode::NOT_FOUND, "not_found");
 
@@ -190,25 +192,74 @@ pub async fn read_file(rel: &str) -> Result<Vec<u8>, ApiError> {
 pub async fn file(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Response, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
-    let row: Option<(String, String)> =
+    let row: Option<(String, String, Option<Vec<u8>>, Option<String>)> =
         sqlx::query_as(
-            "SELECT d.file_path, d.mime_type FROM member_documents d JOIN members m ON m.id = d.member_id \
+            "SELECT d.file_path, d.mime_type, d.thumb, d.thumb_mime FROM member_documents d JOIN members m ON m.id = d.member_id \
              WHERE d.id = $1 AND d.deleted_at IS NULL AND m.deleted_at IS NULL",
         )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
     tx.commit().await?;
-    let (rel, mime) = row.ok_or(NOT_FOUND)?;
-    let bytes = tokio::fs::read(files_dir().join(&rel)).await.map_err(|e| {
-        tracing::error!("reading {rel} failed: {e}");
-        ApiError(StatusCode::NOT_FOUND, "file_missing")
-    })?;
+    let (rel, mime, thumb, thumb_mime) = row.ok_or(NOT_FOUND)?;
+    // A computer working on the server has no files: the photo's small copy stands in.
+    let (bytes, mime) = match (tokio::fs::read(files_dir().join(&rel)).await, thumb, thumb_mime) {
+        (Ok(b), _, _) => (b, mime),
+        (Err(_), Some(t), Some(m)) => (t, m),
+        (Err(e), _, _) => {
+            if crate::sync::online_device().is_none() {
+                tracing::error!("reading {rel} failed: {e}");
+            }
+            return Err(ApiError(StatusCode::NOT_FOUND, "file_missing"));
+        }
+    };
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, mime.parse().map_err(|_| NOT_FOUND)?);
     // A document id always means the same bytes.
     headers.insert(header::CACHE_CONTROL, "private, max-age=31536000, immutable".parse().map_err(|_| NOT_FOUND)?);
     Ok((headers, bytes).into_response())
+}
+
+/// PUT /api/v1/documents/:id/thumb: the small copy of a photo (the app shrinks it), which
+/// goes to the server with the rest of the data.
+pub async fn set_thumb(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Bytes) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    if body.is_empty() || body.len() > MAX_THUMB_BYTES {
+        return Err(ApiError::bad("file_too_large"));
+    }
+    let mime = match sniff(&body) {
+        Some((m, _)) if m != "application/pdf" => m,
+        _ => return Err(ApiError::bad("bad_file_type")),
+    };
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query("UPDATE member_documents SET thumb = $2, thumb_mime = $3 WHERE id = $1 AND kind = 'photo' AND deleted_at IS NULL")
+        .bind(id)
+        .bind(body.as_ref())
+        .bind(mime)
+        .execute(&mut *tx)
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/v1/documents/thumbless: current photos with no small copy yet whose file is on
+/// this computer, a few at a time, for the app to make the copies.
+pub async fn thumbless(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Uuid>>, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT d.id, d.file_path FROM member_documents d JOIN members m ON m.id = d.member_id \
+         WHERE d.kind = 'photo' AND d.thumb IS NULL AND d.deleted_at IS NULL AND m.deleted_at IS NULL \
+         ORDER BY d.created_at DESC LIMIT 200",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let dir = files_dir();
+    Ok(Json(rows.into_iter().filter(|(_, rel)| dir.join(rel).is_file()).map(|(id, _)| id).take(20).collect()))
 }
 
 /// DELETE /api/v1/documents/:id. The row stays (soft-deleted) in the audit log.

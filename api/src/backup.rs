@@ -17,8 +17,16 @@ use uuid::Uuid;
 use crate::auth::{begin_as, ApiError, CurrentUser};
 use crate::{solar, AppState};
 
-/// Backups older than this many runs are deleted from each folder.
-const KEEP_DEFAULT: usize = 30;
+/// Daily backups older than this many days are deleted from each folder (the newest one and
+/// the monthly folder always stay).
+const KEEP_DAYS_DEFAULT: u32 = 30;
+
+/// In each backup folder: the last backup of every Solar month, never deleted.
+pub const MONTHLY_FOLDER: &str = "ماهانه";
+
+/// In each backup folder: the app's copy of ZKTeco's SDK (%APPDATA%\Pezhohesh\zk), so a new
+/// computer can take it from a USB stick or a backup.
+pub const SDK_FOLDER: &str = "zk";
 
 /// The folder that marks a USB stick (or any other drive) for backups. Whatever letter
 /// Windows gives the stick, a backup finds it by this folder.
@@ -39,12 +47,12 @@ pub struct Plan {
     /// Also to Google Drive ("Google Drive for desktop" signed in on this laptop).
     gdrive: bool,
     every_hours: u32,
-    keep: usize,
+    keep_days: u32,
 }
 
 impl Default for Plan {
     fn default() -> Self {
-        Plan { folders: vec![default_folder()], usb: true, usb_drive: None, usb_id: None, gdrive: true, every_hours: 24, keep: KEEP_DEFAULT }
+        Plan { folders: vec![default_folder()], usb: true, usb_drive: None, usb_id: None, gdrive: true, every_hours: 24, keep_days: KEEP_DAYS_DEFAULT }
     }
 }
 
@@ -240,6 +248,25 @@ pub(crate) async fn backup_dirs(db: &PgPool) -> Result<Vec<(&'static str, PathBu
     Ok(dirs)
 }
 
+/// Copies of the fingerprint SDK that backups left: in the backup folders, and on any drive
+/// with a backup folder (a USB stick brought from the other computer).
+pub(crate) async fn sdk_copies(db: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let dirs = backup_dirs(db).await?;
+    Ok(tokio::task::spawn_blocking(move || {
+        let mut found: Vec<PathBuf> = dirs.into_iter().map(|(_, d)| d.join(SDK_FOLDER)).collect();
+        found.extend(drive_roots().into_iter().map(|r| r.path.join(USB_FOLDER).join(SDK_FOLDER)));
+        let mut seen = std::collections::HashSet::new();
+        found
+            .into_iter()
+            .filter(|d| d.join("zkemkeeper.dll").is_file())
+            .map(|d| d.display().to_string())
+            .filter(|d| seen.insert(d.to_lowercase()))
+            .collect()
+    })
+    .await
+    .unwrap_or_default())
+}
+
 /// The files this app wrote: other .backup files in the same folder are never touched.
 pub(crate) fn is_ours(name: &str) -> bool {
     name.starts_with("pezhohesh_") && name.ends_with(".backup")
@@ -330,17 +357,24 @@ pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> 
             Ok(()) => {
                 out.ok = true;
                 first.get_or_insert(target.clone());
-                // Photos and tazkira scans are files, not in the dump: each folder gets a copy too.
-                let (dir, keep) = (dir.to_path_buf(), plan.keep.max(1));
+                // The month's copy, replaced by each later backup of the same month, so the
+                // last one of every month stays for good.
+                let month = monthly_name(Local::now());
+                let monthly = copy(&target, &dir.join(MONTHLY_FOLDER), &dir.join(MONTHLY_FOLDER).join(&month)).await;
+                // Photos and tazkira scans are files, not in the dump: each folder gets a copy
+                // too, and so does the fingerprint SDK.
+                let (dir, keep) = (dir.to_path_buf(), plan.keep_days.max(1));
                 let files = tokio::task::spawn_blocking(move || {
                     prune(&dir, keep);
+                    let _ = copy_flat(&sdk_dir(), &dir.join(SDK_FOLDER));
                     crate::documents::mirror(&crate::documents::files_dir(), &dir.join("files"))
                 })
                 .await;
-                let error = match files {
-                    Ok(Ok(_)) => None,
-                    Ok(Err(e)) => Some(format!("files: {e}")),
-                    Err(e) => Some(format!("files: {e}")),
+                let error = match (files, monthly) {
+                    (Ok(Err(e)), _) => Some(format!("files: {e}")),
+                    (Err(e), _) => Some(format!("files: {e}")),
+                    (_, Err(e)) => Some(format!("{MONTHLY_FOLDER}: {e}")),
+                    _ => None,
                 };
                 out.folders.push(FolderOutcome { kind: kind.into(), folder, file: Some(name.clone()), error });
             }
@@ -416,13 +450,48 @@ pub async fn run(mut cmd: tokio::process::Command, tool: &str) -> Result<(), Str
     Err(line.unwrap_or("failed").trim().to_string())
 }
 
-/// Keeps the newest `keep` backups of the folder.
-fn prune(dir: &Path, keep: usize) {
+/// Deletes the folder's backups older than `days` days, always keeping the newest one. The
+/// monthly folder is not touched.
+fn prune(dir: &Path, days: u32) {
     let mut files = backups_in(dir);
     files.sort_by_key(|f| std::cmp::Reverse(f.modified));
-    for f in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(dir.join(&f.name));
+    let cut = Utc::now() - chrono::Duration::days(days as i64);
+    for f in files.into_iter().skip(1) {
+        if f.modified.is_some_and(|m| m < cut) {
+            let _ = std::fs::remove_file(dir.join(&f.name));
+        }
     }
+}
+
+/// "pezhohesh_1405-08.backup": the month's copy in the monthly folder.
+fn monthly_name(now: DateTime<Local>) -> String {
+    let day = now.date_naive();
+    let (m, _) = solar::month_day(day);
+    format!("pezhohesh_{}-{m:02}.backup", solar::year_of(day))
+}
+
+/// %APPDATA%\Pezhohesh\zk: the app's copy of the fingerprint SDK (see k50-helper).
+pub(crate) fn sdk_dir() -> PathBuf {
+    std::env::var("APPDATA").map(|d| Path::new(&d).join("Pezhohesh").join(SDK_FOLDER)).unwrap_or_else(|_| PathBuf::from(SDK_FOLDER))
+}
+
+/// Copies the files of `from` (not its subfolders) that `to` lacks or holds in another size.
+fn copy_flat(from: &Path, to: &Path) -> std::io::Result<usize> {
+    let Ok(files) = std::fs::read_dir(from) else { return Ok(0) };
+    let mut copied = 0;
+    for f in files.flatten().filter(|f| f.path().is_file()) {
+        let target = to.join(f.file_name());
+        let size = f.metadata().map(|m| m.len()).ok();
+        if std::fs::metadata(&target).ok().map(|m| m.len()) == size {
+            continue;
+        }
+        std::fs::create_dir_all(to)?;
+        let partial = target.with_extension("partial");
+        std::fs::copy(f.path(), &partial)?;
+        std::fs::rename(&partial, &target)?;
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 #[derive(Serialize)]
@@ -520,12 +589,12 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
     if folders.is_empty() {
         return Err(ApiError::bad("folder_required"));
     }
-    if p.every_hours > 24 * 7 || !(1..=365).contains(&p.keep) {
+    if p.every_hours > 24 * 7 || !(1..=3650).contains(&p.keep_days) {
         return Err(ApiError::bad("bad_backup_plan"));
     }
     // The drive is picked with its own button (prepare_usb), so a page opened earlier does not undo it.
     let stored = plan_of(&s.db).await?;
-    let plan = Plan { folders, usb: p.usb, usb_drive: stored.usb_drive, usb_id: stored.usb_id, gdrive: p.gdrive, every_hours: p.every_hours, keep: p.keep };
+    let plan = Plan { folders, usb: p.usb, usb_drive: stored.usb_drive, usb_id: stored.usb_id, gdrive: p.gdrive, every_hours: p.every_hours, keep_days: p.keep_days };
     save_plan(&s.db, &user, &plan).await?;
     Ok(StatusCode::NO_CONTENT)
 }

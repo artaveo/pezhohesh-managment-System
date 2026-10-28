@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, type RegKind, type RegSummary, type Registration } from "../lib/api";
-import { fa, formatDay } from "../lib/solar";
+import { fa, formatDay, MONTHS, toSolar } from "../lib/solar";
 import { BillPreview } from "../components/BillSheet";
 import { PeriodPicker, usePeriod, type Span } from "../components/PeriodPicker";
 
@@ -76,7 +76,7 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
       )}
       <p className="muted small">
         {spanText}: {fa(total)} ثبت‌نام{summary ? ` · مجموع پول ${fa(summary.amount)} افغانی` : ""}.
-        تاریخ هر ردیف روز بل آن است. دوره‌هایی که پولشان در اکسل گرفته شده، بل ندارند و با روز شروعشان آمده‌اند.
+        تاریخ هر ردیف روز بل آن است. ماه‌هایی که پولشان در اکسل ثبت شده، با برچسب «اکسل» آمده‌اند: با روز شروع، اگر تاریخش از دستگاه خوانده شده، وگرنه فقط با نام ماه.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
 
@@ -86,12 +86,18 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                <td>{formatDay(r.day)}</td>
+                <td>{r.source === "excel" && r.kind !== "daily" ? solarMonth(r.day) : formatDay(r.day)}</td>
                 <td>{r.member_id ? <button className="link" onClick={() => openMember(r.member_id!)}>{r.name}</button> : <>{r.name} <span className="muted small">(مهمان)</span></>}</td>
                 <td>{r.member_no ? <bdi dir="ltr">{r.member_no}</bdi> : "—"}</td>
                 <td><span className={`chip kind-${r.kind}${r.kind === "monthly" && r.first ? " new" : ""}`}>{kindLabel(r)}</span></td>
-                <td>{r.start_date === r.end_date ? formatDay(r.start_date) : <>{formatDay(r.start_date)} تا {formatDay(r.end_date)}</>}</td>
-                <td className="num">{r.record_only ? <span className="muted">اکسل</span> : fa(r.amount)}</td>
+                <td>
+                  {r.source === "excel" && r.kind !== "daily" ? <span className="muted">ماه {solarMonth(r.day)}</span>
+                    : r.start_date === r.end_date ? formatDay(r.start_date) : <>{formatDay(r.start_date)} تا {formatDay(r.end_date)}</>}
+                </td>
+                <td className="num">
+                  {r.source !== "app" ? <>{fa(r.amount)} <span className="chip excel">اکسل</span></> : r.record_only ? "—" : fa(r.amount)}
+                  {r.owed > 0 && <div className="owed small">باقی {fa(r.owed)}</div>}
+                </td>
                 <td>{r.receipt_no ? <button className="link" onClick={() => setBill(r.receipt_id)}><bdi dir="ltr">{r.receipt_no}</bdi></button> : "—"}</td>
               </tr>
             ))}
@@ -103,6 +109,11 @@ export function Registrations({ initial, openMember }: { initial?: RegFilter; op
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
     </div>
   );
+}
+
+function solarMonth(day: string) {
+  const s = toSolar(day);
+  return `${MONTHS[s.m - 1]} ${s.y}`;
 }
 
 function Tile({ label, n, on, onClick }: { label: string; n: number; on: boolean; onClick: () => void }) {
