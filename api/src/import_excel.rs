@@ -657,8 +657,9 @@ pub struct Params {
     #[serde(default)]
     commit: bool,
     file_name: Option<String>,
-    /// Where a month's hotspot income comes from: "mixed" (the statement's figure, or the
-    /// hotspot sheet's profit where the statement has none), "sheet" or "statement".
+    /// Where a month's hotspot income comes from: "sheet" (default: the month's sales profit
+    /// on the hotspot sheet, as the statement's own formula takes it), "mixed" (the
+    /// statement's figure, or the sheet's profit where the statement has none) or "statement".
     #[serde(default)]
     hotspot_income: Option<String>,
 }
@@ -798,7 +799,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
 
     // Each month's hotspot income comes from one place only: the statement's figure, or
     // the sheet's daily counts (then each count is a receipt for its profit).
-    let policy = p.hotspot_income.as_deref().unwrap_or("mixed");
+    let policy = p.hotspot_income.as_deref().unwrap_or("sheet");
     if !matches!(policy, "mixed" | "sheet" | "statement") {
         return Err(ApiError::bad("bad_hotspot_income"));
     }
@@ -1007,6 +1008,14 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     for l in lines.iter_mut().filter(|l| l.key == "hotspot") {
         for (i, m) in hotspot.months.iter().enumerate().filter(|(_, m)| m.from_sheet) {
             l.imported[i] += m.income;
+        }
+    }
+    for (i, m) in hotspot.months.iter().enumerate().filter(|(_, m)| m.from_sheet) {
+        if let Some(v) = m.statement.filter(|v| *v != 0.0 && (v - m.profit).abs() >= 1.0) {
+            warnings.push(format!(
+                "هات‌اسپات {}: در «محاسبات» {v} دستی نوشته شده، ولی سود فروش همان ماه در شیت هات‌اسپات {} است. مثل فرمول بقیهٔ ماه‌ها، سود شیت حساب شد.",
+                MONTHS[i], m.profit
+            ));
         }
     }
 
