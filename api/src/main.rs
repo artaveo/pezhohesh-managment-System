@@ -211,7 +211,8 @@ fn problem_of(e: &anyhow::Error) -> &'static str {
 /// Every route but /health waits for the database (CORS sits outside, so the app can read the answer).
 async fn wait_for_database(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let core = s.core.read().unwrap().clone();
-    if core.ready || req.uri().path() == "/health" {
+    // «وصل به سرور مرکزی» is for a computer whose own database is not there.
+    if core.ready || matches!(req.uri().path(), "/health" | "/api/v1/setup/connect") {
         return next.run(req).await;
     }
     let body = json!({ "error": core.problem.unwrap_or("starting"), "detail": core.detail });
@@ -332,6 +333,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/sync/start", post(sync::start))
         .route("/api/v1/sync/problems", get(sync::problems).post(sync::problems_seen))
         .route("/api/v1/sync/online", post(sync::go_online))
+        .route("/api/v1/setup/connect", post(sync::connect))
         .route("/api/v1/sync/local", post(sync::go_local))
         .route("/api/v1/sync/resume", post(sync::resume_online))
         .route("/api/v1/sync/server", get(sync::server_state))

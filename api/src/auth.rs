@@ -160,7 +160,7 @@ fn hash_password(password: &str) -> Result<String, ApiError> {
         .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "hash"))
 }
 
-fn verify_password(password: &str, hash: &str) -> bool {
+pub(crate) fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
         .map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
         .unwrap_or(false)

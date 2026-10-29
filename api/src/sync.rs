@@ -287,6 +287,8 @@ pub struct Status {
     /// Only the server's name; the address with its password never leaves this computer.
     host: Option<String>,
     device: Option<DeviceRow>,
+    /// Whether this computer has PostgreSQL of its own, to go back to or work on for a while.
+    local_db: bool,
     waiting: i64,
     problems: i64,
     #[serde(flatten)]
@@ -321,7 +323,7 @@ pub async fn status(State(s): State<AppState>, _user: CurrentUser) -> Result<Jso
     .fetch_one(&s.db)
     .await?;
     let live = LIVE.read().unwrap().clone();
-    Ok(Json(Status { mode, host, device, waiting, problems, live }))
+    Ok(Json(Status { mode, host, device, local_db: crate::backup::has_postgres(), waiting, problems, live }))
 }
 
 fn partner(user: &CurrentUser) -> Result<(), ApiError> {
@@ -506,16 +508,25 @@ pub async fn go_online(State(s): State<AppState>, user: CurrentUser, Json(i): Js
         return Err(ApiError::bad("is_node"));
     }
     let url = hub_url().ok_or(ApiError::bad("no_server"))?;
-    if hub_state(&url).await? != "hub" {
+    let row = register_device(&url, name, user.id).await?;
+    name_this_computer(row.id)?;
+    restart_soon();
+    Ok(Json(row))
+}
+
+/// A row in the server's devices for a computer that will work on it directly: its own
+/// bill letter and block of member numbers.
+async fn register_device(url: &str, name: &str, user_id: Uuid) -> Result<DeviceRow, ApiError> {
+    if hub_state(url).await? != "hub" {
         return Err(ApiError::bad("hub_not_ready"));
     }
-    prepare_roles(&url).await.map_err(|_| ApiError::bad("bad_server"))?;
-    let mut c = sqlx::PgConnection::connect(&url).await.map_err(|_| ApiError::bad("no_internet"))?;
+    prepare_roles(url).await.map_err(|_| ApiError::bad("bad_server"))?;
+    let mut c = sqlx::PgConnection::connect(url).await.map_err(|_| ApiError::bad("no_internet"))?;
     let mut tx = c.begin().await?;
     let id = Uuid::new_v4();
     sqlx::query("SELECT set_config('app.device_id', $1, true), set_config('app.user_id', $2, true)")
         .bind(id.to_string())
-        .bind(user.id.to_string())
+        .bind(user_id.to_string())
         .execute(&mut *tx)
         .await?;
     let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE lower(name) = lower($1))")
@@ -548,8 +559,70 @@ pub async fn go_online(State(s): State<AppState>, user: CurrentUser, Json(i): Js
     .await?;
     tx.commit().await?;
     let _ = c.close().await;
+    Ok(row)
+}
+
+fn name_this_computer(id: Uuid) -> Result<(), ApiError> {
     let file = app_file("online-device.txt").ok_or(ApiError::bad("no_appdata"))?;
-    std::fs::write(&file, format!("{id}\n")).map_err(|_| ApiError::bad("no_appdata"))?;
+    std::fs::write(&file, format!("{id}\n")).map_err(|_| ApiError::bad("no_appdata"))
+}
+
+#[derive(Deserialize)]
+pub struct ConnectInput {
+    /// The server's address as Neon shows it (a pasted psql line is fine too).
+    address: String,
+    name: String,
+    username: String,
+    password: String,
+}
+
+/// A partner's account on the server, checked there (the computer has no database yet).
+async fn partner_on_server(url: &str, username: &str, password: &str) -> Result<Uuid, ApiError> {
+    let mut c = sqlx::PgConnection::connect(url).await.map_err(|e| {
+        tracing::warn!("connect: server: {e}");
+        if crate::auth::is_unreachable(&e) { ApiError::bad("no_internet") } else { ApiError::bad("bad_server") }
+    })?;
+    let has_users: bool = sqlx::query_scalar("SELECT to_regclass('public.app_users') IS NOT NULL").fetch_one(&mut c).await?;
+    if !has_users {
+        return Err(ApiError::bad("hub_not_ready"));
+    }
+    let row: Option<(Uuid, String, String, bool)> = sqlx::query_as(
+        "SELECT id, password_hash, role::text, active AND deleted_at IS NULL FROM app_users WHERE username = $1",
+    )
+    .bind(username.trim().to_lowercase())
+    .fetch_optional(&mut c)
+    .await?;
+    let _ = c.close().await;
+    match row {
+        Some((id, hash, role, true)) if crate::auth::verify_password(password, &hash) => {
+            if role == "partner" { Ok(id) } else { Err(ApiError::bad("not_partner")) }
+        }
+        _ => Err(ApiError(StatusCode::UNAUTHORIZED, "invalid_login")),
+    }
+}
+
+/// «وصل به سرور مرکزی» on the first start of a computer that has no PostgreSQL of its own
+/// (a partner's laptop): with the server's address and a partner's account on the server,
+/// it becomes a computer that works on the server directly. Nothing to sign in to before.
+pub async fn connect(State(s): State<AppState>, Json(i): Json<ConnectInput>) -> Result<Json<DeviceRow>, ApiError> {
+    if online_device().is_some() || paused_device().is_some() {
+        return Err(ApiError::bad("sync_already_on"));
+    }
+    if s.ready() {
+        // A computer with a working database of its own goes online from «پشتیبان».
+        return Err(ApiError::bad("has_database"));
+    }
+    let url = crate::online::address_in(&i.address).ok_or(ApiError::bad("bad_online_url"))?;
+    let name = i.name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(ApiError::bad("bad_name"));
+    }
+    let _one = RUNNING.lock().await;
+    let user_id = partner_on_server(&url, &i.username, &i.password).await?;
+    let row = register_device(&url, name, user_id).await?;
+    crate::online::save_url(&url)?;
+    name_this_computer(row.id)?;
+    tracing::info!("connected to the server as {}", row.name);
     restart_soon();
     Ok(Json(row))
 }

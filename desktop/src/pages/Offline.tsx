@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AuthCard } from "./Login";
+import { api, errorText } from "../lib/api";
+import { PasswordInput } from "../components/PasswordInput";
 import { apiLog, canFixPostgres, fixPostgres, health, postgresService, restartApi, setDatabasePassword, useLocalDatabase, type Health, type PgService } from "../lib/core";
 
 type Diag = { health: Health | null; service: PgService | null; log: string };
@@ -69,6 +71,8 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
   }
 
   if (loading) return <AuthCard title="در حال وصل شدن…" subtitle="چند لحظه صبر کنید." >{null}</AuthCard>;
+  // No PostgreSQL here at all: a partner's laptop, which works on the server directly.
+  if (diag?.health?.problem === "postgres_down" && !diag.service) return <ConnectToServer />;
 
   const e = explain(diag);
   const detail = [diag?.health?.detail, diag?.log].filter(Boolean).join("\n\n");
@@ -92,10 +96,10 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
         </button>
       )}
       <button className={e.fix ? "btn ghost" : "btn big"} onClick={onRetry}>دوباره امتحان کن</button>
-      {diag?.health?.problem === "server_down" && canFixPostgres() && !goLocal && (
+      {diag?.health?.problem === "server_down" && diag.service && !goLocal && (
         <button className="btn ghost" onClick={() => setGoLocal(true)}>فعلاً با دیتابیس خود این کمپیوتر کار کن…</button>
       )}
-      {diag?.health?.problem === "server_down" && canFixPostgres() && goLocal && (
+      {diag?.health?.problem === "server_down" && diag.service && goLocal && (
         <div className="notice warn">
           <p>هر چه از این به بعد ثبت کنید فقط روی همین کمپیوتر می‌ماند و به سرور نمی‌رود، و اطلاعات این کمپیوتر از آخرین بار تازه نیست.</p>
           <p>برای برگشت: «پشتیبان» ← «سرور مرکزی» ← «دوباره روی سرور کار کن».</p>
@@ -122,6 +126,80 @@ export function Offline({ onRetry, loading }: { onRetry: () => void; loading: bo
           <pre dir="ltr">{detail}</pre>
         </details>
       )}
+    </AuthCard>
+  );
+}
+
+/**
+ * First start on a computer without PostgreSQL: it joins the central server (Neon) with the
+ * server's address and a partner's account there, and from then on works on the server.
+ */
+function ConnectToServer() {
+  const [address, setAddress] = useState("");
+  const [name, setName] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState("");
+
+  async function connect(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const d = await api.connectToServer({ address: address.trim(), name: name.trim(), username: username.trim(), password });
+      setPassword("");
+      setDone(d.name);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <AuthCard title="وصل شد" subtitle={`«${done}» حالا مستقیم روی سرور مرکزی کار می‌کند. برنامه چند لحظه دوباره شروع می‌شود؛ بعد با همان نام کاربری و رمز وارد شوید.`}>
+        {null}
+      </AuthCard>
+    );
+  }
+  return (
+    <AuthCard
+      title="وصل به سرور مرکزی"
+      subtitle="روی این کمپیوتر PostgreSQL نصب نیست. اگر این لپ‌تاپ یکی از شرکا است، به PostgreSQL نیاز ندارد: آن را به سرور مرکزی وصل کنید."
+    >
+      <form className="auth-form" onSubmit={(ev) => void connect(ev)}>
+        <label className="field wide">
+          <span>آدرس سرور (از Neon)</span>
+          <input dir="ltr" autoComplete="off" spellCheck={false} value={address} placeholder="postgresql://…" onChange={(ev) => setAddress(ev.target.value)} autoFocus />
+          <small className="muted">در neon.tech ← پروژه ← دکمهٔ «Connect» ← کادر «Connection string» ← دکمهٔ کپی. همین‌جا بچسبانید (Ctrl+V).</small>
+        </label>
+        <label className="field wide">
+          <span>نام این کمپیوتر</span>
+          <input value={name} placeholder="مثلاً لپ‌تاپ ناصری" onChange={(ev) => setName(ev.target.value)} />
+          <small className="muted">در «چه کسی چه کرد» کنار هر تغییر این کمپیوتر دیده می‌شود.</small>
+        </label>
+        <label className="field wide">
+          <span>نام کاربری شما در برنامه</span>
+          <input dir="ltr" autoComplete="username" value={username} onChange={(ev) => setUsername(ev.target.value)} />
+        </label>
+        <label className="field wide">
+          <span>رمز</span>
+          <PasswordInput value={password} onChange={setPassword} autoComplete="current-password" />
+          <small className="muted">همان حسابی که روی کمپیوتر قرائت‌خانه دارید (حساب یکی از شرکا).</small>
+        </label>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <button className="btn big" disabled={busy || !address.trim() || !name.trim() || !username.trim() || !password}>
+          {busy ? "در حال وصل شدن…" : "وصل شو"}
+        </button>
+        <p className="muted small">آدرس سرور فقط روی همین کمپیوتر نگه داشته می‌شود. بی‌اینترنت، برنامه تا وصل شدن دوباره صبر می‌کند.</p>
+      </form>
+      <details className="offline-details">
+        <summary>این کمپیوتر قرائت‌خانه است</summary>
+        <p>کمپیوتر قرائت‌خانه بی‌اینترنت هم کار می‌کند و باید PostgreSQL داشته باشد. PostgreSQL را طبق راهنمای نصب نصب کنید و برنامه را دوباره باز کنید.</p>
+      </details>
     </AuthCard>
   );
 }

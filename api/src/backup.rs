@@ -277,6 +277,13 @@ fn pg_dump() -> PathBuf {
     pg_tool("pg_dump")
 }
 
+/// Whether PostgreSQL is installed here. A partner's laptop that works on the server
+/// directly needs none; its backups are the hall computer's.
+pub fn has_postgres() -> bool {
+    let p = pg_dump();
+    p.is_absolute() && p.exists()
+}
+
 /// A PostgreSQL program (pg_dump, pg_restore) of the newest installed version, or on PATH.
 pub fn pg_tool(name: &str) -> PathBuf {
     let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
@@ -521,6 +528,9 @@ pub(crate) fn backups_in(dir: &Path) -> Vec<BackupFile> {
 /// A minute after start, then every 10 minutes: a backup when the last good one is older
 /// than the plan says. After a failed try it waits an hour before trying again.
 pub async fn schedule(db: PgPool, url: String) {
+    if crate::sync::online_device().is_some() && !has_postgres() {
+        return;
+    }
     let mut wait = Duration::from_secs(60);
     let mut failed_at: Option<DateTime<Utc>> = None;
     loop {
@@ -549,6 +559,8 @@ pub struct Status {
     /// Backups in the first folder, newest first.
     files: Vec<BackupFile>,
     pg_dump: String,
+    /// Works on the server directly and has no PostgreSQL: nothing to back up from here.
+    online_only: bool,
     /// Where a backup would go now.
     usb: Option<String>,
     gdrive: Option<String>,
@@ -580,7 +592,8 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
     })
     .await
     .unwrap_or((None, None, vec![]));
-    Ok(Json(Status { last: setting(&s.db, "backup_last").await?, files, pg_dump: pg_dump().display().to_string(), plan, usb, gdrive, drives }))
+    Ok(Json(Status { last: setting(&s.db, "backup_last").await?, files, pg_dump: pg_dump().display().to_string(),
+        online_only: crate::sync::online_device().is_some() && !has_postgres(), plan, usb, gdrive, drives }))
 }
 
 pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Json<Plan>) -> Result<StatusCode, ApiError> {

@@ -105,6 +105,20 @@ export function Backup() {
   }
 
   if (!s) return error ? <p className="form-error">{error}</p> : <p className="muted">در حال بارگذاری…</p>;
+  if (s.online_only) {
+    return (
+      <div className="page">
+        <section className="panel wide">
+          <h2>پشتیبان</h2>
+          <p className="muted">
+            این کمپیوتر مستقیم روی سرور مرکزی کار می‌کند و دیتابیس خودش را ندارد، پس این‌جا چیزی برای پشتیبان گرفتن نیست.
+            پشتیبان‌ها را کمپیوتر قرائت‌خانه می‌گیرد (روی خودش، فلش و گوگل درایو)، و همه چیز روی سرور هم هست.
+          </p>
+        </section>
+        <Sync />
+      </div>
+    );
+  }
   return (
     <div className="page">
       <section className="panel wide">
@@ -320,7 +334,7 @@ function Sync() {
         <>
           <p className="muted">این کمپیوتر مستقیم روی سرور <bdi dir="ltr">{s.host}</bdi> کار می‌کند. بی‌اینترنت، برنامه تا وصل شدن دوباره صبر می‌کند.</p>
           <div className="actions">
-            <button className="btn ghost" disabled={busy} onClick={() => setAsk("local")}>برگشت به دیتابیس خود این کمپیوتر…</button>
+            {s.local_db && <button className="btn ghost" disabled={busy} onClick={() => setAsk("local")}>برگشت به دیتابیس خود این کمپیوتر…</button>}
           </div>
         </>
       )}

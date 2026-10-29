@@ -277,14 +277,14 @@ export type OnlineStatus = { host: string | null; every_hours: number; last: Onl
 export type SyncDevice = { id: string; name: string; receipt_prefix: string; member_no_from: number | null; member_no_to: number | null };
 /** Sharing the data through the server: off, an offline computer that sends and takes (node), or working on the server. */
 export type SyncStatus = {
-  mode: "off" | "node" | "online" | "paused"; host: string | null; device: SyncDevice | null;
+  mode: "off" | "node" | "online" | "paused"; host: string | null; device: SyncDevice | null; local_db: boolean;
   waiting: number; problems: number; ok_at: string | null; tried_at: string | null; error: string | null; sent: number; taken: number;
   clock_off_minutes: number | null;
 };
 export type SyncServerState = { state: "empty" | "copy" | "hub"; server_members: number | null; here_members: number; devices: string[] };
 export type SyncProblem = { id: number; at: string; tbl: string | null; op: string | null; error: string };
 export type BackupStatus = {
-  plan: BackupPlan; last: BackupOutcome | null; pg_dump: string;
+  plan: BackupPlan; last: BackupOutcome | null; pg_dump: string; online_only: boolean;
   usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean; picked: boolean; removable: boolean }[];
   files: { name: string; size: number; modified: string | null }[];
 };
@@ -528,6 +528,9 @@ export const api = {
   syncServer: () => request<SyncServerState>("/sync/server"),
   syncResume: () => request<void>("/sync/resume", { method: "POST" }),
   syncGoOnline: (name: string) => request<SyncDevice>("/sync/online", { method: "POST", body: { name } }),
+  /** First start without PostgreSQL: join the server with a partner's account there. */
+  connectToServer: (b: { address: string; name: string; username: string; password: string }) =>
+    request<SyncDevice>("/setup/connect", { method: "POST", body: b }),
   syncGoLocal: () => request<void>("/sync/local", { method: "POST" }),
   k50: () => request<K50Status>("/k50"),
   setK50: (c: K50Config) => request<void>("/k50", { method: "PUT", body: c }),
@@ -627,7 +630,9 @@ export function errorText(e: unknown): string {
     case "file_too_large": return "فایل بیش از 10 MB است.";
     case "file_not_saved": return "فایل روی این کمپیوتر ذخیره نشد. جای خالی دیسک را ببینید.";
     case "file_missing": return "فایل این عکس روی کمپیوتر پیدا نشد.";
-    case "bad_online_url": return "آدرس دیتابیس آنلاین درست نیست. باید با postgresql:// شروع شود.";
+    case "bad_online_url": return "آدرس سرور درست نیست. آن را کامل از Neon کپی کنید؛ باید با postgresql:// شروع شود.";
+    case "not_partner": return "این کار را فقط حساب یکی از شرکا می‌تواند انجام دهد.";
+    case "has_database": return "این کمپیوتر دیتابیس خودش را دارد. از «پشتیبان» ← «سرور مرکزی» ← «این کمپیوتر مستقیم روی سرور کار کند» وصل شوید.";
     case "bad_online_plan": return "زمان ارسال درست نیست.";
     case "restore_online": return "این کمپیوتر مستقیم روی سرور کار می‌کند؛ برگرداندن پشتیبان این‌جا اطلاعات همه را عوض می‌کرد. برگرداندن را روی کمپیوتر قرائت‌خانه انجام دهید.";
     case "no_server": return "آدرس سرور (Neon) هنوز داده نشده. آن را در پایین همین صفحه بدهید.";

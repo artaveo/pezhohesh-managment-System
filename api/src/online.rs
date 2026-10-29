@@ -33,6 +33,23 @@ fn url_file() -> Option<PathBuf> {
     std::env::var("APPDATA").ok().map(|d| PathBuf::from(d).join("Pezhohesh").join("online-url.txt"))
 }
 
+/// The address inside what was pasted: Neon's connection string, or the same with
+/// `psql '...'` around it.
+pub fn address_in(text: &str) -> Option<String> {
+    let at = text.find("postgres")?;
+    let url: String = text[at..].chars().take_while(|c| !c.is_whitespace() && *c != '\'' && *c != '"').collect();
+    url::Url::parse(&url).ok().filter(|u| matches!(u.scheme(), "postgres" | "postgresql") && u.host_str().is_some())?;
+    Some(url)
+}
+
+pub fn save_url(url: &str) -> Result<(), ApiError> {
+    let file = url_file().ok_or(ApiError::bad("bad_online_url"))?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|_| ApiError::bad("bad_online_url"))?;
+    }
+    std::fs::write(&file, format!("{url}\n")).map_err(|_| ApiError::bad("bad_online_url"))
+}
+
 pub fn target_url() -> Option<String> {
     if let Ok(u) = std::env::var("ONLINE_DATABASE_URL") {
         return Some(u);
@@ -178,14 +195,7 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
         if url.is_empty() {
             let _ = std::fs::remove_file(&file);
         } else {
-            let ok = url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "postgres" | "postgresql") && u.host_str().is_some());
-            if !ok {
-                return Err(ApiError::bad("bad_online_url"));
-            }
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir).map_err(|_| ApiError::bad("bad_online_url"))?;
-            }
-            std::fs::write(&file, format!("{url}\n")).map_err(|_| ApiError::bad("bad_online_url"))?;
+            save_url(&address_in(url).ok_or(ApiError::bad("bad_online_url"))?)?;
         }
     }
     let mut tx = crate::auth::begin_as(&s.db, &user).await?;
