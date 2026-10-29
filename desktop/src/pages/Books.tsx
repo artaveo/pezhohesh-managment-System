@@ -27,8 +27,10 @@ export function Books() {
   const [returning, setReturning] = useState<string | null>(null);
   const [bill, setBill] = useState<string | null>(null);
   const [borrower, setBorrower] = useState<Borrower | null>(null);
+  // A book picked in the catalogue with «امانت»: the lending form opens with it.
+  const [lendBook, setLendBook] = useState<CatalogBook | null>(null);
   const [tick, setTick] = useState(0);
-  const lendTo = (b: Borrower | null) => { setBorrower(b); setTab("lend"); };
+  const lendTo = (b: Borrower | null) => { setBorrower(b); setLendBook(null); setTab("lend"); };
   return (
     <div className="page">
       <div className="desk-tasks">
@@ -39,10 +41,10 @@ export function Books() {
         <button className={tab === "catalog" ? "on" : ""} onClick={() => setTab("catalog")}><Icon name="tag" size={20} /> فهرست کتاب‌ها</button>
       </div>
       {tab === "loans" && <LoansList key={tick} open={setReturning} />}
-      {tab === "lend" && <Lend key={borrower?.id ?? "new"} initial={borrower} done={() => { setTick((t) => t + 1); setTab("loans"); }} />}
+      {tab === "lend" && <Lend key={`${borrower?.id ?? "new"}-${lendBook?.id ?? ""}`} initial={borrower} initialBook={lendBook} done={() => { setTick((t) => t + 1); setTab("loans"); }} />}
       {tab === "deposits" && <Deposits lendTo={lendTo} />}
       {tab === "new-deposit" && <NewDeposit lendTo={lendTo} />}
-      {tab === "catalog" && <BookCatalog />}
+      {tab === "catalog" && <BookCatalog lend={(b) => { setBorrower(null); setLendBook(b); setTab("lend"); }} />}
       {returning && (
         <ReturnBook id={returning} onClose={(receipt) => {
           setReturning(null);
@@ -95,12 +97,12 @@ function FindBorrower({ pick }: { pick: (b: Borrower) => void }) {
   );
 }
 
-function Lend({ initial, done }: { initial: Borrower | null; done: () => void }) {
+function Lend({ initial, initialBook, done }: { initial: Borrower | null; initialBook: CatalogBook | null; done: () => void }) {
   const [who, setWho] = useState<Borrower | null>(initial);
   const [rules, setRules] = useState<BookRules | null>(null);
   const [titles, setTitles] = useState<string[]>([]);
   const [title, setTitle] = useState("");
-  const [book, setBook] = useState<CatalogBook | null>(null);
+  const [book, setBook] = useState<CatalogBook | null>(initialBook);
   const [from, setFrom] = useState(iso(new Date()));
   const [due, setDue] = useState(iso(addDays(new Date(), 14)));
   const [fee, setFee] = useState("");
@@ -137,6 +139,15 @@ function Lend({ initial, done }: { initial: Borrower | null; done: () => void })
   return (
     <section className="panel wide">
       <h2>امانت دادن کتاب</h2>
+      {!who && book && (
+        <div className="picked">
+          <span className="num"><bdi dir="ltr">{book.code ?? "—"}</bdi></span>
+          <strong>{book.title}</strong>
+          <span className="muted">{[book.author, book.section].filter(Boolean).join(" · ")}</span>
+          <Copies b={book} />
+          <span className="muted">حالا امانت‌گیرنده را پیدا کنید.</span>
+        </div>
+      )}
       {!who ? <FindBorrower pick={setWho} /> : (
         <>
           <div className="picked">

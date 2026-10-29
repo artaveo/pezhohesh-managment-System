@@ -15,7 +15,7 @@ import { RemoveButton } from "../components/RemoveButton";
  * Every book on the shelves, by section, as in the book list (لیست کتابها): search it,
  * add or correct a book, bring the Excel list in, and print the list by section.
  */
-export function BookCatalog() {
+export function BookCatalog({ lend }: { lend: (b: CatalogBook) => void }) {
   const partner = useAuth().user!.role === "partner";
   const [q, setQ] = useState("");
   const [section, setSection] = useState("");
@@ -82,7 +82,12 @@ export function BookCatalog() {
                       : left > 0 ? <span className="days due">{fa(left)} موجود · {fa(b.on_loan)} بیرون</span>
                         : <span className="days late">همه بیرون</span>}
                   </td>
-                  <td><div className="row-actions"><button className="btn small ghost" onClick={() => setEditing(b)}>اصلاح</button></div></td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn small" disabled={left <= 0} title={left <= 0 ? "همهٔ جلدها بیرون است" : undefined} onClick={() => lend(b)}>امانت</button>
+                      <button className="btn small ghost" onClick={() => setEditing(b)}>اصلاح</button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
