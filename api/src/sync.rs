@@ -627,15 +627,20 @@ pub async fn connect(State(s): State<AppState>, Json(i): Json<ConnectInput>) -> 
     Ok(Json(row))
 }
 
-/// Back to this computer's own database (what was in it before going online).
+/// Back to this computer's own database (what was in it before going online), for tests.
+/// The computer keeps its name on the server, so «دوباره روی سرور کار کن» brings it back.
 pub async fn go_local(_s: State<AppState>, user: CurrentUser) -> Result<StatusCode, ApiError> {
     partner(&user)?;
-    if let Some(file) = app_file("online-device.txt") {
-        let _ = std::fs::remove_file(file);
+    if !crate::backup::has_postgres() {
+        return Err(ApiError::bad("no_local_db"));
     }
-    if let Some(file) = app_file("online-device-paused.txt") {
-        let _ = std::fs::remove_file(file);
+    let (Some(from), Some(to)) = (app_file("online-device.txt"), app_file("online-device-paused.txt")) else {
+        return Err(ApiError::bad("no_appdata"));
+    };
+    if online_device().is_none() {
+        return Err(ApiError::bad("sync_off"));
     }
+    std::fs::rename(from, to).map_err(|_| ApiError::bad("no_appdata"))?;
     restart_soon();
     Ok(StatusCode::NO_CONTENT)
 }

@@ -642,6 +642,7 @@ export function errorText(e: unknown): string {
     case "hub_not_ready": return "همگام‌سازی روی سرور هنوز شروع نشده. اول روی کمپیوتر قرائت‌خانه «شروع با همین کمپیوتر» را بزنید.";
     case "sync_already_on": return "همگام‌سازی روی این کمپیوتر از قبل روشن است.";
     case "is_node": return "این کمپیوتر اطلاعات خودش را به سرور می‌فرستد و باید همین‌طور بماند.";
+    case "no_local_db": return "روی این کمپیوتر PostgreSQL نصب نیست؛ دیتابیس جدایی برای برگشت ندارد.";
     case "sync_off": return "همگام‌سازی روی این کمپیوتر روشن نیست.";
     case "sync_start_failed": return "فرستادن اطلاعات به سرور نشد. چیزی عوض نشد؛ دوباره امتحان کنید.";
     case "no_letter": return "حرف تازه‌ای برای بل‌های این کمپیوتر نمانده.";

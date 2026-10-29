@@ -39,7 +39,19 @@ pub fn address_in(text: &str) -> Option<String> {
     let at = text.find("postgres")?;
     let url: String = text[at..].chars().take_while(|c| !c.is_whitespace() && *c != '\'' && *c != '"').collect();
     url::Url::parse(&url).ok().filter(|u| matches!(u.scheme(), "postgres" | "postgresql") && u.host_str().is_some())?;
-    Some(url)
+    Some(direct(url))
+}
+
+/// Neon's pooled address (ep-…-pooler.…) as the direct one. Through the pooler the
+/// settings a connection keeps (this computer's device id) and pg_dump would not hold.
+fn direct(url: String) -> String {
+    match url::Url::parse(&url) {
+        Ok(mut u) if u.host_str().is_some_and(|h| h.contains("-pooler.") && h.ends_with(".neon.tech")) => {
+            let host = u.host_str().unwrap_or_default().replacen("-pooler.", ".", 1);
+            if u.set_host(Some(&host)).is_ok() { u.to_string() } else { url }
+        }
+        _ => url,
+    }
 }
 
 pub fn save_url(url: &str) -> Result<(), ApiError> {
@@ -55,7 +67,7 @@ pub fn target_url() -> Option<String> {
         return Some(u);
     }
     let text = std::fs::read_to_string(url_file()?).ok()?;
-    text.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+    text.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).map(direct)
 }
 
 async fn every_hours(db: &PgPool) -> Result<u32, sqlx::Error> {
@@ -212,4 +224,20 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
 pub async fn copy_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Outcome>, ApiError> {
     partner(&user)?;
     Ok(Json(run_copy(&s.db, &crate::database_url()).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pasted_addresses() {
+        let neon = "postgresql://pezhohesh_owner:pw@ep-cool-1234-pooler.eu-central-1.aws.neon.tech/pezhohesh?sslmode=require&channel_binding=require";
+        let want = "postgresql://pezhohesh_owner:pw@ep-cool-1234.eu-central-1.aws.neon.tech/pezhohesh?sslmode=require&channel_binding=require";
+        assert_eq!(address_in(neon).as_deref(), Some(want));
+        assert_eq!(address_in(&format!("psql '{neon}'")).as_deref(), Some(want));
+        assert_eq!(address_in(want).as_deref(), Some(want));
+        assert_eq!(address_in("postgres://postgres@localhost:5499/hub?host=/var/tmp").as_deref(), Some("postgres://postgres@localhost:5499/hub?host=/var/tmp"));
+        assert_eq!(address_in("nonsense"), None);
+    }
 }
