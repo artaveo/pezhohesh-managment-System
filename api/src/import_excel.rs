@@ -154,11 +154,11 @@ impl Book {
     }
 }
 
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").replace('ي', "ی").replace('ك', "ک")
 }
 
-fn text(d: &Data) -> Option<String> {
+pub(crate) fn text(d: &Data) -> Option<String> {
     let t = match d {
         Data::String(s) => clean(s),
         Data::Int(i) => i.to_string(),
@@ -169,7 +169,7 @@ fn text(d: &Data) -> Option<String> {
     (!t.is_empty() && t != "-").then_some(t)
 }
 
-fn num(d: &Data) -> Option<f64> {
+pub(crate) fn num(d: &Data) -> Option<f64> {
     match d {
         Data::Int(i) => Some(*i as f64),
         Data::Float(f) => Some(*f),
@@ -178,12 +178,12 @@ fn num(d: &Data) -> Option<f64> {
     }
 }
 
-fn cell(rg: &Range<Data>, r: usize, c: usize) -> &Data {
+pub(crate) fn cell(rg: &Range<Data>, r: usize, c: usize) -> &Data {
     rg.get((r, c)).unwrap_or(&Data::Empty)
 }
 
 /// Row number as Excel shows it, for messages.
-fn excel_row(rg: &Range<Data>, r: usize) -> usize {
+pub(crate) fn excel_row(rg: &Range<Data>, r: usize) -> usize {
     rg.start().map(|(r0, _)| r0 as usize).unwrap_or(0) + r + 1
 }
 
@@ -759,7 +759,7 @@ pub async fn import(
     Ok(Json(report))
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

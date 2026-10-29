@@ -1,5 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
 import {
   addDays, daysBetween, fa, formatDay, iso, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
   sameMonthLastYear, toSolar, yearNumber, yearStart,
@@ -12,6 +11,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { Failed, Kpi, Loading } from "../components/Stat";
 import { LABELS } from "../components/charts/CategoryBars";
 import { Icon } from "../components/Icon";
+import { PrintCopy } from "../components/PrintCopy";
 
 const INCOME_ORDER = Object.keys(LABELS);
 const rankIncome = (c: string) => (INCOME_ORDER.includes(c) ? INCOME_ORDER.indexOf(c) : 99);
@@ -55,25 +55,6 @@ export function Reports() {
       {mode === "hotspot" && <HotspotReport ys={ys} printing={printing} onPrinted={() => setPrinting(false)} />}
     </div>
   );
-}
-
-/**
- * Prints `children` alone on A4 (the app itself is hidden while printing), once it is on
- * the page; `landscape` for the 12-month sheet.
- */
-function PrintCopy({ on, landscape, onDone, children }: { on: boolean; landscape?: boolean; onDone: () => void; children: ReactNode }) {
-  useEffect(() => {
-    if (!on) return;
-    const style = document.createElement("style");
-    style.textContent = `@page { size: A4 ${landscape ? "landscape" : "portrait"}; margin: 12mm; }`;
-    document.head.appendChild(style);
-    const done = () => { style.remove(); onDone(); };
-    window.addEventListener("afterprint", done, { once: true });
-    const t = window.setTimeout(() => window.print(), 50);
-    return () => { window.clearTimeout(t); window.removeEventListener("afterprint", done); style.remove(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [on]);
-  return on ? createPortal(<div className="print-only report-print">{children}</div>, document.body) : null;
 }
 
 function printedOn() {

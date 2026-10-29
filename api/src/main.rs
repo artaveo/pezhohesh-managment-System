@@ -28,6 +28,7 @@ mod audit;
 mod auth;
 mod backup;
 mod books;
+mod catalog;
 mod dashboard;
 mod documents;
 mod hall;
@@ -310,6 +311,15 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/withdrawals", get(money::withdrawals).post(money::create_withdrawal))
         .route("/api/v1/withdrawals/:id", put(money::update_withdrawal).delete(money::delete_withdrawal))
         .route("/api/v1/withdrawals/:id/restore", post(money::restore_withdrawal))
+        .route("/api/v1/catalog", get(catalog::list))
+        .route("/api/v1/catalog/books", post(catalog::create_book))
+        .route("/api/v1/catalog/books/:id", put(catalog::update_book).delete(catalog::delete_book))
+        .route("/api/v1/catalog/sections", post(catalog::create_section))
+        .route("/api/v1/catalog/sections/:id", put(catalog::update_section))
+        .route(
+            "/api/v1/catalog/import",
+            post(catalog::import).layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024)),
+        )
         .route("/api/v1/book-rules", get(books::rules).put(books::set_rules))
         .route("/api/v1/book-titles", get(books::titles))
         .route("/api/v1/borrowers", get(books::borrowers))

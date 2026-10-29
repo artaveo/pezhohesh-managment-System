@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   api, errorText,
-  type BookRules, type Borrower, type Deposit, type DepositKind, type DepositPage, type Loan,
+  type BookRules, type Borrower, type CatalogBook, type Deposit, type DepositKind, type DepositPage, type Loan,
 } from "../lib/api";
 import { addDays, fa, formatDay, iso, parseIso } from "../lib/solar";
 import { amount, decimal as digits } from "../lib/numbers";
@@ -11,8 +11,9 @@ import { RemoveButton } from "../components/RemoveButton";
 import { BillPreview } from "../components/BillSheet";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
+import { BookCatalog } from "./BookCatalog";
 
-type Tab = "loans" | "lend" | "deposits" | "new-deposit";
+type Tab = "loans" | "lend" | "deposits" | "new-deposit" | "catalog";
 
 const KIND_LABEL: Record<DepositKind, string> = { cash: "ضمانت پولی", book: "ضمانت کتاب", person: "ضمانت شخص" };
 
@@ -35,11 +36,13 @@ export function Books() {
         <button className={tab === "lend" ? "on" : ""} onClick={() => lendTo(null)}><Icon name="plus" size={20} /> امانت دادن</button>
         <button className={tab === "deposits" ? "on" : ""} onClick={() => setTab("deposits")}><Icon name="card" size={20} /> ضمانت‌ها</button>
         <button className={tab === "new-deposit" ? "on" : ""} onClick={() => setTab("new-deposit")}><Icon name="wallet" size={20} /> ضمانت جدید</button>
+        <button className={tab === "catalog" ? "on" : ""} onClick={() => setTab("catalog")}><Icon name="tag" size={20} /> فهرست کتاب‌ها</button>
       </div>
       {tab === "loans" && <LoansList key={tick} open={setReturning} />}
       {tab === "lend" && <Lend key={borrower?.id ?? "new"} initial={borrower} done={() => { setTick((t) => t + 1); setTab("loans"); }} />}
       {tab === "deposits" && <Deposits lendTo={lendTo} />}
       {tab === "new-deposit" && <NewDeposit lendTo={lendTo} />}
+      {tab === "catalog" && <BookCatalog />}
       {returning && (
         <ReturnBook id={returning} onClose={(receipt) => {
           setReturning(null);
@@ -97,6 +100,7 @@ function Lend({ initial, done }: { initial: Borrower | null; done: () => void })
   const [rules, setRules] = useState<BookRules | null>(null);
   const [titles, setTitles] = useState<string[]>([]);
   const [title, setTitle] = useState("");
+  const [book, setBook] = useState<CatalogBook | null>(null);
   const [from, setFrom] = useState(iso(new Date()));
   const [due, setDue] = useState(iso(addDays(new Date(), 14)));
   const [fee, setFee] = useState("");
@@ -120,7 +124,8 @@ function Lend({ initial, done }: { initial: Borrower | null; done: () => void })
     try {
       await api.lend({
         ...(who.kind === "deposit" ? { deposit_id: who.id } : { member_id: who.id }),
-        book_title: title, loaned_on: from, due_on: due, weekly_fee: amount(fee),
+        ...(book ? { book_id: book.id } : { book_title: title }),
+        loaned_on: from, due_on: due, weekly_fee: amount(fee),
       });
       done();
     } catch (e) {
@@ -142,12 +147,16 @@ function Lend({ initial, done }: { initial: Borrower | null; done: () => void })
             {who.open_loans > 0 && <span className="days due">{fa(who.open_loans)} کتاب دیگر هم بیرون دارد</span>}
             <button className="btn small ghost" onClick={() => setWho(null)}>تغییر</button>
           </div>
+          {book ? (
+            <div className="picked">
+              <span className="num"><bdi dir="ltr">{book.code ?? "—"}</bdi></span>
+              <strong>{book.title}</strong>
+              <span className="muted">{[book.author, book.section, book.shelf && `قفسه ${book.shelf}`].filter(Boolean).join(" · ")}</span>
+              <Copies b={book} />
+              <button className="btn small ghost" onClick={() => setBook(null)}>تغییر</button>
+            </div>
+          ) : <PickBook title={title} setTitle={setTitle} titles={titles} pick={setBook} />}
           <div className="form-grid">
-            <label className="field wide span-2">
-              <span>نام کتاب *</span>
-              <input list="book-titles" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-              <datalist id="book-titles">{titles.map((t) => <option key={t} value={t} />)}</datalist>
-            </label>
             <SolarDate label="تاریخ امانت" value={from} onChange={setFrom} />
             <SolarDate label="موعد برگشت" value={due} onChange={(d) => { setDueTouched(true); setDue(d); }} />
             <label className="field wide">
@@ -159,11 +168,59 @@ function Lend({ initial, done }: { initial: Borrower | null; done: () => void })
           {rules && rules.fine_per_day > 0 && <p className="muted small">هر روز دیرکرد بعد از موعد {fa(rules.fine_per_day)} افغانی جریمه دارد.</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="actions">
-            <button className="btn big" disabled={!title.trim() || !from || !due || busy} onClick={() => void save()}>ثبت امانت</button>
+            <button className="btn big" disabled={!(book || title.trim()) || !from || !due || busy} onClick={() => void save()}>ثبت امانت</button>
           </div>
         </>
       )}
     </section>
+  );
+}
+
+/** How many copies of a catalogue book are on the shelf. */
+function Copies({ b }: { b: CatalogBook }) {
+  const left = b.copies - b.on_loan;
+  if (left <= 0) return <span className="days late">همهٔ {fa(b.copies)} جلد امانت بیرون است</span>;
+  return <span className={b.on_loan ? "days due" : "days ok"}>{fa(left)} از {fa(b.copies)} جلد موجود</span>;
+}
+
+/**
+ * The book: picked from the catalogue by title, author or code, or typed by name when it
+ * is not in the list (then it is lent by its name only).
+ */
+function PickBook({ title, setTitle, titles, pick }: {
+  title: string; setTitle: (t: string) => void; titles: string[]; pick: (b: CatalogBook) => void;
+}) {
+  const [rows, setRows] = useState<CatalogBook[] | null>(null);
+  useEffect(() => {
+    if (!title.trim()) { setRows(null); return; }
+    const ctl = new AbortController();
+    const t = window.setTimeout(() => {
+      api.catalog({ q: title, limit: 8 }, ctl.signal).then((c) => setRows(c.books)).catch(() => {});
+    }, 200);
+    return () => { window.clearTimeout(t); ctl.abort(); };
+  }, [title]);
+  return (
+    <div className="field wide">
+      <label htmlFor="lend-title">نام کتاب یا کد آن *</label>
+      <input id="lend-title" list="book-titles" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus
+        placeholder="مثلاً «کیمیاگر» یا 553-012" autoComplete="off" />
+      {!rows?.length && <datalist id="book-titles">{titles.map((t) => <option key={t} value={t} />)}</datalist>}
+      {rows && rows.length > 0 && (
+        <ul className="pick-list">
+          {rows.map((b) => (
+            <li key={b.id}>
+              <button type="button" onClick={() => pick(b)}>
+                <span className="num"><bdi dir="ltr">{b.code ?? "—"}</bdi></span>
+                <strong>{b.title}</strong>
+                <span className="muted">{[b.author, b.section].filter(Boolean).join(" · ")}</span>
+                <Copies b={b} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rows && !rows.length && <small className="muted">در فهرست کتاب‌ها نیست؛ با همین نام امانت داده می‌شود.</small>}
+    </div>
   );
 }
 

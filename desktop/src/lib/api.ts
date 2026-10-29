@@ -328,7 +328,23 @@ export type Borrower = {
   /** Members: a seat or internet period running today. */
   active: boolean;
 };
-export type LoanInput = { deposit_id?: string; member_id?: string; book_title: string; loaned_on?: string; due_on?: string; weekly_fee?: number; note?: string };
+export type BookSection = { id: string; code: string; name: string; titles: number; copies: number; next_code: string };
+export type CatalogBook = {
+  id: string; section_id: string | null; section: string | null; code: string | null; shelf: string | null;
+  title: string; author: string | null; copies: number; on_loan: number; note: string | null;
+};
+export type Catalog = { sections: BookSection[]; total_titles: number; total_copies: number; books: CatalogBook[] };
+export type CatalogBookInput = {
+  section_id: string | null; code: string | null; shelf: string | null; title: string; author: string | null; copies: number; note: string | null;
+};
+export type CatalogImport = {
+  sheet: string;
+  sections: { code: string; name: string; titles: number; copies: number; excel_total: number | null; added: number; changed: number }[];
+  titles: number; copies: number; excel_grand_total: number | null;
+  added: number; changed: number; unchanged: number; not_in_file: number; loans_linked: number;
+  retitled: string[]; warnings: string[];
+};
+export type LoanInput = { deposit_id?: string; member_id?: string; book_id?: string; book_title?: string; loaned_on?: string; due_on?: string; weekly_fee?: number; note?: string };
 export type Charge = { weeks: number; days_late: number; fee: number; fine: number };
 export type Loan = {
   id: string; book_title: string; card_no: string; borrower: string; phone: string | null;
@@ -488,6 +504,27 @@ export const api = {
   audit: (f: AuditFilter, signal?: AbortSignal) => request<AuditPage>(`/audit?${query({ ...f, import: f.import ? "true" : undefined })}`, { signal }),
   monthSummaries: (year: number, signal?: AbortSignal) => request<MonthSummary[]>(`/month-summaries?year=${year}`, { signal }),
   updateMonthSummary: (id: string, b: { net_balance: number; note?: string | null }) => request<void>(`/month-summaries/${id}`, { method: "PUT", body: b }),
+  catalog: (p: { q?: string; section?: string; limit?: number }, signal?: AbortSignal) =>
+    request<Catalog>(`/catalog?${query({ q: p.q || undefined, section: p.section || undefined, limit: p.limit ? String(p.limit) : undefined })}`, { signal }),
+  createCatalogBook: (b: CatalogBookInput) => request<string>("/catalog/books", { method: "POST", body: b }),
+  updateCatalogBook: (id: string, b: CatalogBookInput) => request<void>(`/catalog/books/${id}`, { method: "PUT", body: b }),
+  deleteCatalogBook: (id: string) => request<void>(`/catalog/books/${id}`, { method: "DELETE" }),
+  createBookSection: (b: { code: string; name: string }) => request<string>("/catalog/sections", { method: "POST", body: b }),
+  updateBookSection: (id: string, b: { code: string; name: string }) => request<void>(`/catalog/sections/${id}`, { method: "PUT", body: b }),
+  importCatalog: async (file: File, o: { password: string; commit: boolean }) => {
+    const res = await fetch(`${API_BASE}/api/v1/catalog/import?${new URLSearchParams({ commit: String(o.commit) })}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(o.password ? { "x-excel-password": encodeURIComponent(o.password) } : {}),
+      },
+      body: await file.arrayBuffer(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, typeof data.error === "string" ? data.error : "error", data);
+    return data as CatalogImport;
+  },
   bookRules: () => request<BookRules>("/book-rules"),
   setBookRules: (r: BookRules) => request<void>("/book-rules", { method: "PUT", body: r }),
   bookTitles: () => request<string[]>("/book-titles"),
@@ -618,6 +655,14 @@ export function errorText(e: unknown): string {
     case "guarantor_required": return "نام ضامن را بنویسید.";
     case "title_required": return "نام کتاب را بنویسید.";
     case "borrower_required": return "اول امانت‌گیرنده را انتخاب کنید.";
+    case "bad_book_code": return "کد کتاب باید مثل 553-001 باشد: شمارهٔ بخش، خط تیره، شمارهٔ کتاب.";
+    case "book_code_taken": return "این کد در همین بخش مال کتاب دیگری است.";
+    case "bad_copies": return "تعداد جلد باید بین ۰ و ۵۰۰ باشد.";
+    case "book_on_loan": return "این کتاب هنوز امانت بیرون است؛ اول برگردانده شود.";
+    case "section_name_required": return "نام بخش را بنویسید.";
+    case "section_exists": return "بخشی با همین نام هست.";
+    case "bad_section_code": return "شمارهٔ بخش فقط عدد است، مثلاً 553.";
+    case "no_book_list": return "در این فایل فهرست کتابی پیدا نشد (ستون‌های «کد» و «نام کتاب» لازم است).";
     case "deposit_returned": return "ضمانت این کارت پس داده شده؛ برای امانت تازه ضمانت تازه بگیرید.";
     case "has_open_loans": return "هنوز کتابی از این کارت برنگشته؛ اول کتاب‌ها را برگشت بزنید.";
     case "has_loans": return "با این کارت کتاب امانت داده شده؛ پاک نمی‌شود. اگر تمام شده، ضمانت را پس بدهید.";

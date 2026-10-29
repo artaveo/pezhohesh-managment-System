@@ -416,6 +416,9 @@ pub async fn titles(State(s): State<AppState>, user: CurrentUser) -> Result<Json
 pub struct LoanInput {
     deposit_id: Option<Uuid>,
     member_id: Option<Uuid>,
+    /// The catalogue book, when it was picked from the list; its title is kept on the loan too.
+    book_id: Option<Uuid>,
+    #[serde(default)]
     book_title: String,
     /// Default: today.
     loaned_on: Option<NaiveDate>,
@@ -428,12 +431,19 @@ pub struct LoanInput {
 
 pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<LoanInput>) -> Result<Json<Uuid>, ApiError> {
     hall_only(&user)?;
-    let title = l.book_title.trim();
+    let loaned_on = past(l.loaned_on)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let title = match l.book_id {
+        Some(b) => sqlx::query_scalar::<_, String>("SELECT title FROM books WHERE id = $1 AND deleted_at IS NULL")
+            .bind(b)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(NOT_FOUND)?,
+        None => l.book_title.trim().to_string(),
+    };
     if title.is_empty() {
         return Err(ApiError::bad("title_required"));
     }
-    let loaned_on = past(l.loaned_on)?;
-    let mut tx = begin_as(&s.db, &user).await?;
     match (l.deposit_id, l.member_id) {
         (Some(d), None) => {
             let open: Option<bool> =
@@ -467,13 +477,14 @@ pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<Lo
     money_ok(weekly_fee)?;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO book_loans (id, member_id, deposit_id, book_title, loaned_on, due_on, weekly_fee, note) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO book_loans (id, member_id, deposit_id, book_id, book_title, loaned_on, due_on, weekly_fee, note) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(l.member_id)
     .bind(l.deposit_id)
-    .bind(title)
+    .bind(l.book_id)
+    .bind(&title)
     .bind(loaned_on)
     .bind(due_on)
     .bind(weekly_fee)

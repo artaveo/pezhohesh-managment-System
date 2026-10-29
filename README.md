@@ -25,3 +25,7 @@ Offline-first desktop app; online backup and sync to Neon.
 - Every amount has a currency column (AFN / USD). Dates are stored Gregorian and shown Solar Hijri.
 - The official color is green `#76b82a`; each user can pick a personal accent from a full color wheel.
   Printed bills, receipts and cards always use the official colors.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
