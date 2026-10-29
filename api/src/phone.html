@@ -25,9 +25,10 @@
   .slot .thumb img { width: 100%; height: 100%; object-fit: cover; }
   .slot .text { flex: 1; min-width: 0; }
   .slot .text b { display: block; }
+  .picks { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
   .pick { display: inline-block; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); font-weight: 600; cursor: pointer; }
   .pick input { display: none; }
-  .state { font-size: .85rem; }
+  .state { display: block; font-size: .85rem; }
   .state.ok { color: var(--accent); }
   .state.bad { color: var(--bad); }
   button.send { width: 100%; margin-top: 16px; padding: 14px; font: inherit; font-size: 1.1rem; font-weight: 700; border: 0; border-radius: 12px; background: var(--accent); color: #fff; }
@@ -50,18 +51,30 @@
 
     <div class="slot" data-kind="photo" data-side="800">
       <div class="thumb">عکس</div>
-      <div class="text"><b>عکس خودتان</b><span class="state muted">برای کارت عضویت؛ رو به روبرو، زمینهٔ روشن</span></div>
-      <label class="pick">انتخاب<input type="file" accept="image/*" capture="user"></label>
+      <div class="text"><b>عکس خودتان</b><span class="state muted">برای کارت عضویت؛ رو به روبرو، زمینهٔ روشن</span>
+        <div class="picks">
+          <label class="pick">دوربین<input type="file" accept="image/*" capture="user" data-camera></label>
+          <label class="pick">گالری<input type="file" accept="image/*"></label>
+        </div>
+      </div>
     </div>
     <div class="slot" data-kind="tazkira_front" data-side="1600">
       <div class="thumb">تذکره</div>
-      <div class="text"><b>روی تذکره</b><span class="state muted">همهٔ نوشته‌ها خوانا باشد</span></div>
-      <label class="pick">انتخاب<input type="file" accept="image/*,application/pdf" capture="environment"></label>
+      <div class="text"><b>روی تذکره</b><span class="state muted">همهٔ نوشته‌ها خوانا باشد</span>
+        <div class="picks">
+          <label class="pick">دوربین<input type="file" accept="image/*" capture="environment" data-camera></label>
+          <label class="pick">گالری یا فایل<input type="file" accept="image/*,application/pdf"></label>
+        </div>
+      </div>
     </div>
     <div class="slot" data-kind="tazkira_back" data-side="1600">
       <div class="thumb">پشت</div>
-      <div class="text"><b>پشت تذکره</b><span class="state muted">اختیاری</span></div>
-      <label class="pick">انتخاب<input type="file" accept="image/*,application/pdf" capture="environment"></label>
+      <div class="text"><b>پشت تذکره</b><span class="state muted">اختیاری</span>
+        <div class="picks">
+          <label class="pick">دوربین<input type="file" accept="image/*" capture="environment" data-camera></label>
+          <label class="pick">گالری یا فایل<input type="file" accept="image/*,application/pdf"></label>
+        </div>
+      </div>
     </div>
 
     <p id="error" class="error" role="alert" hidden></p>
@@ -97,9 +110,13 @@
   // A smaller picture: at most `side` pixels, WebP where the phone can make it, else JPEG.
   function shrink(file, side) {
     if (file.type === "application/pdf") return Promise.resolve(file);
+    // A camera photo is 12+ megapixels; decoding it whole can run a cheap phone out of memory
+    // and the browser then reloads the page. Big files are decoded already narrowed.
+    var opts = { imageOrientation: "from-image" };
+    if (file.size > 1500000) { opts.resizeWidth = side; opts.resizeQuality = "high"; }
     var load = window.createImageBitmap
-      ? createImageBitmap(file, { imageOrientation: "from-image" }).catch(function () { return createImageBitmap(file); })
-      : new Promise(function (ok, fail) { var i = new Image(); i.onload = function () { ok(i); }; i.onerror = fail; i.src = URL.createObjectURL(file); });
+      ? createImageBitmap(file, opts).catch(function () { return createImageBitmap(file); })
+      : new Promise(function (ok, fail) { var i = new Image(); i.onload = function () { URL.revokeObjectURL(i.src); ok(i); }; i.onerror = fail; i.src = URL.createObjectURL(file); });
     return load.then(function (img) {
       var scale = Math.min(1, side / Math.max(img.width, img.height));
       var c = document.createElement("canvas");
@@ -107,6 +124,7 @@
       var ctx = c.getContext("2d");
       ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0, c.width, c.height);
+      if (img.close) img.close();
       return new Promise(function (ok) {
         c.toBlob(function (b) {
           if (b && b.type === "image/webp") return ok(b);
@@ -115,22 +133,60 @@
       });
     }).catch(function () { return file; });
   }
+  // The phone's browser can drop this page while the camera app is open and load it fresh
+  // on return. What was typed and picked is kept here so nothing has to be done twice.
+  var KEEP = "pz-phone", keep = {};
+  try { keep = JSON.parse(localStorage.getItem(KEEP) || "{}"); if (!keep.at || Date.now() - keep.at > 3600000) keep = {}; } catch (e) { keep = {}; }
+  keep.files = keep.files || {};
+  function remember() { keep.at = Date.now(); try { localStorage.setItem(KEEP, JSON.stringify(keep)); return true; } catch (e) { return false; } }
+  function forget() { keep = { files: {} }; try { localStorage.removeItem(KEEP); } catch (e) {} }
+  function toBlob(url) {
+    var parts = url.split(","), bin = atob(parts[1]), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: parts[0].slice(5).split(";")[0] });
+  }
+  ["no", "phone"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (keep[id]) el.value = keep[id];
+    el.addEventListener("input", function () { keep[id] = el.value; remember(); });
+  });
+  function show(slot, b) {
+    chosen[slot.dataset.kind] = b;
+    var thumb = slot.querySelector(".thumb");
+    if (b.type.indexOf("image/") === 0) { thumb.innerHTML = ""; var im = document.createElement("img"); im.onload = function () { URL.revokeObjectURL(im.src); }; im.src = URL.createObjectURL(b); thumb.appendChild(im); }
+    else thumb.textContent = "PDF";
+    var state = slot.querySelector(".state");
+    state.className = "state ok"; state.textContent = "آماده · " + Math.max(1, Math.round(b.size / 1024)) + " KB";
+  }
   Array.prototype.forEach.call(document.querySelectorAll(".slot"), function (slot) {
-    var input = slot.querySelector("input");
-    input.addEventListener("change", function () {
-      var f = input.files && input.files[0];
-      if (!f) return;
-      var state = slot.querySelector(".state");
-      state.className = "state muted"; state.textContent = "در حال آماده کردن…";
-      shrink(f, Number(slot.dataset.side)).then(function (b) {
-        chosen[slot.dataset.kind] = b;
-        var thumb = slot.querySelector(".thumb");
-        if (b.type.indexOf("image/") === 0) { thumb.innerHTML = ""; var im = document.createElement("img"); im.src = URL.createObjectURL(b); thumb.appendChild(im); }
-        else thumb.textContent = "PDF";
-        state.className = "state ok"; state.textContent = "آماده · " + Math.max(1, Math.round(b.size / 1024)) + " KB";
+    var kind = slot.dataset.kind, state = slot.querySelector(".state");
+    if (keep.files[kind]) { try { show(slot, toBlob(keep.files[kind])); } catch (e) { delete keep.files[kind]; } }
+    else if (keep.camera === kind) {
+      state.className = "state bad";
+      state.textContent = "عکس دوربین نرسید. با دوربین خود گوشی عکس بگیرید و از «گالری» انتخاب کنید.";
+    }
+    Array.prototype.forEach.call(slot.querySelectorAll("input"), function (input) {
+      // Marked before the camera opens: if the page comes back empty, the slot says what happened.
+      if (input.hasAttribute("data-camera")) {
+        input.addEventListener("click", function () { keep.camera = kind; remember(); });
+        input.addEventListener("cancel", function () { delete keep.camera; remember(); });
+      }
+      input.addEventListener("change", function () {
+        var f = input.files && input.files[0];
+        delete keep.camera; remember();
+        if (!f) return;
+        state.className = "state muted"; state.textContent = "در حال آماده کردن…";
+        shrink(f, Number(slot.dataset.side)).then(function (b) {
+          show(slot, b);
+          input.value = "";
+          var r = new FileReader();
+          r.onload = function () { keep.files[kind] = r.result; if (!remember()) { delete keep.files[kind]; remember(); } };
+          if (b.size < 2000000) r.readAsDataURL(b);
+        });
       });
     });
   });
+  if (keep.camera) { delete keep.camera; remember(); }
   function fail(text) { var e = document.getElementById("error"); e.textContent = text; e.hidden = false; }
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -153,6 +209,7 @@
       });
     });
     chain.then(function () {
+      forget();
       form.hidden = true; document.getElementById("done").hidden = false;
     }).catch(function (e) {
       fail(errors[e.message] || "ارسال نشد. وای‌فای وصل است؟ دوباره امتحان کنید.");
