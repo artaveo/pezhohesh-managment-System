@@ -242,18 +242,18 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
           <thead><tr><th>تاریخ</th><th>شمارهٔ بل</th><th>کارت‌ها</th><th>فروش</th><th>سود</th><th>ثبت کننده</th><th /></tr></thead>
           <tbody>
             {sales?.rows.map((r) => (
-              <tr key={r.receipt_id} className={r.voided ? "inactive" : ""}>
+              <tr key={r.receipt_id ?? `xl-${r.sold_on}`} className={r.voided ? "inactive" : ""}>
                 <td>{formatDay(r.sold_on)}</td>
-                <td><bdi dir="ltr">{r.receipt_no}</bdi></td>
+                <td>{r.receipt_no ? <bdi dir="ltr">{r.receipt_no}</bdi> : <span className="chip excel">اکسل</span>}</td>
                 <td dir="rtl">{r.cards}</td>
                 <td className="num">{fa(r.sales)}</td>
                 <td className="num">{fa(r.profit)}</td>
                 <td className="muted">{r.created_by ?? "—"}</td>
                 <td><div className="row-actions">
-                  {r.voided ? <span className="status off">باطل</span> : (
+                  {r.voided ? <span className="status off">باطل</span> : r.receipt_id && (
                     <>
                       <button className="btn small ghost" onClick={() => setShow(r.receipt_id)}>بل</button>
-                      <button className="btn small ghost danger" onClick={() => void askVoid(r.receipt_id)}>باطل کردن</button>
+                      <button className="btn small ghost danger" onClick={() => void askVoid(r.receipt_id!)}>باطل کردن</button>
                     </>
                   )}
                 </div></td>

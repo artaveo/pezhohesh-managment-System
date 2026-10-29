@@ -799,6 +799,18 @@ fn plain_name(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Device names a partner said are the member with that number (see k50_name_ok).
+async fn names_confirmed(db: &PgPool) -> Result<std::collections::HashMap<i32, String>, sqlx::Error> {
+    let rows: Vec<(i32, String)> = sqlx::query_as("SELECT member_no, device_name FROM k50_name_ok").fetch_all(db).await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// `same_person`, or a partner said so for this number and this very device name.
+fn same_or_confirmed(confirmed: &std::collections::HashMap<i32, String>, no: &str, device: &str, app: &str) -> bool {
+    same_person(device, app)
+        || no.trim().parse::<i32>().ok().and_then(|n| confirmed.get(&n)).is_some_and(|d| plain_name(d) == plain_name(device))
+}
+
 /// The device keeps short names (often cut), so a device name that starts the app's name
 /// counts as the same person. Names written in English on the device (as ZKAccess has them)
 /// are compared with the app's Persian ones by their consonants (see `sounds`).
@@ -811,12 +823,48 @@ fn same_person(device: &str, app: &str) -> bool {
         return true;
     }
     let (dw, aw) = (sounds(&d), sounds(&a));
-    let (df, af) = (dw.concat(), aw.concat());
-    if df.is_empty() || af.is_empty() {
+    if dw.is_empty() || aw.is_empty() {
         return false;
     }
-    // A cut name must still hold the whole first name of the other.
+    // English often leaves out the h of ح and ه inside a word: "Zabiullah", «ذبیح الله».
+    let no_h = |w: &[String]| w.iter().map(|x| x.replace('h', "")).filter(|x| !x.is_empty()).collect::<Vec<_>>();
+    joined_alike(&dw, &aw) || joined_alike(&no_h(&dw), &no_h(&aw)) || words_alike(&dw, &aw) || words_alike(&no_h(&dw), &no_h(&aw))
+}
+
+/// The whole names run together, so «عبدالرحمن» and "Abdul Rahman" meet. A cut name must
+/// still hold the whole first name of the other.
+fn joined_alike(dw: &[String], aw: &[String]) -> bool {
+    let join = |w: &[String]| {
+        let mut out = String::new();
+        for c in w.concat().chars() {
+            if !out.ends_with(c) {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let (df, af) = (join(dw), join(aw));
+    if df.is_empty() || af.is_empty() || dw.is_empty() || aw.is_empty() {
+        return false;
+    }
     df == af || (af.starts_with(&df) && df.len() >= aw[0].len()) || (df.starts_with(&af) && af.len() >= dw[0].len())
+}
+
+/// Word by word, as the desk shortens names on the device: «محمد» and «سید» left out or
+/// written "Moh", "S"; the surname left out. Every device word must stand for the app word
+/// in its place (the same, or its start), and at least one of them must be written out.
+fn words_alike(dw: &[String], aw: &[String]) -> bool {
+    // «محمد», «سید», «سیده», «میر» as `sounds` reads them.
+    let title = |w: &str| matches!(w, "mhmd" | "sd" | "mr");
+    let fits = |dw: &[String], aw: &[String]| {
+        !dw.is_empty()
+            && dw.len() <= aw.len()
+            && dw.iter().zip(aw).all(|(d, a)| a == d || a.starts_with(d.as_str()))
+            && dw.iter().zip(aw).any(|(d, a)| a == d && d.len() >= 2 && !title(a))
+    };
+    let skip_app = usize::from(aw.len() > 1 && title(&aw[0]));
+    let skip_dev = usize::from(dw.len() > 1 && (dw[0].len() == 1 || title(&dw[0])));
+    fits(dw, aw) || fits(dw, &aw[skip_app..]) || fits(&dw[skip_dev..], &aw[skip_app..])
 }
 
 /// Each word of a name as the consonants it sounds with, so "Mohammad Ali" and «محمد علی»
@@ -982,6 +1030,7 @@ pub async fn dates_from_device(
     let by_no: std::collections::HashMap<i32, (Uuid, String, bool, bool)> =
         members.into_iter().map(|(id, no, name, imported, dated)| (no, (id, name, imported, dated))).collect();
 
+    let confirmed = names_confirmed(&s.db).await?;
     let mut report = DatesReport { device_users: users.len(), ..Default::default() };
     let mut take: Vec<(Uuid, NaiveDate, NaiveDate)> = Vec::new();
     for u in &users {
@@ -1007,7 +1056,7 @@ pub async fn dates_from_device(
             continue;
         }
         let row = DateRow { no: u.no.trim().to_string(), device_name: u.name.trim().to_string(), app_name: app_name.clone(), start: Some(start), end: Some(end), taken: true };
-        let alike = row.device_name.is_empty() || same_person(&row.device_name, app_name);
+        let alike = row.device_name.is_empty() || same_or_confirmed(&confirmed, &row.no, &row.device_name, app_name);
         if !alike {
             let taken = *imported && p.include_differs;
             report.name_differs.push(DateRow { taken, ..row.clone() });
@@ -1111,6 +1160,7 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
     .fetch_all(&s.db)
     .await?;
     let app: std::collections::HashMap<i32, String> = names.into_iter().collect();
+    let confirmed = names_confirmed(&s.db).await?;
     let padded: Vec<usize> = users.iter().filter(|u| u.no.len() > 1 && u.no.starts_with('0')).map(|u| u.no.len()).collect();
     let padded_width = {
         let mut counts = std::collections::HashMap::new();
@@ -1126,7 +1176,7 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
             let state = match &app_name {
                 None => "missing",
                 // A user with no name on the device cannot be checked; it is not a different person.
-                Some(a) if u.name.trim().is_empty() || same_person(&u.name, a) => "same",
+                Some(a) if u.name.trim().is_empty() || same_or_confirmed(&confirmed, &u.no, &u.name, a) => "same",
                 Some(_) => "differs",
             };
             Compared { no: u.no.clone(), device_name: u.name.trim().to_string(), app_name, admin: u.privilege > 0, state }
@@ -1364,6 +1414,47 @@ pub async fn enroll(
     Ok(DeviceAnswer::from(r))
 }
 
+#[derive(Deserialize)]
+pub struct NameOk {
+    no: String,
+    device_name: String,
+}
+
+/// POST /api/v1/k50/names/ok: a partner says each of these device users (number and the
+/// name as the device has it) is the app's member with that number. Compare and the date
+/// import then count them as the same person.
+pub async fn names_ok(State(s): State<AppState>, user: CurrentUser, Json(rows): Json<Vec<NameOk>>) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    let mut nos = Vec::new();
+    let mut names = Vec::new();
+    for r in rows {
+        let (Ok(no), name) = (r.no.trim().parse::<i32>(), r.device_name.trim().to_string()) else {
+            return Err(ApiError::bad("bad_number"));
+        };
+        if name.is_empty() {
+            return Err(ApiError::bad("bad_name"));
+        }
+        nos.push(no);
+        names.push(name);
+    }
+    if nos.is_empty() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let mut tx = crate::auth::begin_as(&s.db, &user).await?;
+    sqlx::query(
+        "INSERT INTO k50_name_ok (member_no, device_name, confirmed_by) \
+         SELECT t.no, t.name, $3 FROM UNNEST($1::int[], $2::text[]) AS t(no, name) \
+         ON CONFLICT (member_no) DO UPDATE SET device_name = EXCLUDED.device_name, confirmed_by = EXCLUDED.confirmed_by, confirmed_at = now()",
+    )
+    .bind(&nos)
+    .bind(&names)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,6 +1504,21 @@ mod tests {
         assert!(!same_person("SAQIQ", "صادق"));
         assert!(!same_person("Zahra", "محمد"));
         assert!(!same_person("Ali", "احمد علی"));
+        // Shortened at the desk (the 1405 compare).
+        assert!(same_person("Moh Aquil", "محمد عقیل سلطانی"));
+        assert!(same_person("Hussain", "محمد حسین احمدی"));
+        assert!(same_person("Mahdi", "محمد مهدی ترکمنی"));
+        assert!(same_person("Moh Javad", "محمد جواد حلیمی"));
+        assert!(same_person("Zabiullah", "ذبیح الله احمدی"));
+        assert!(same_person("s ezzat", "سید عزت الله حسینی 2"));
+        assert!(same_person("Moh Jawid", "محمد جاوید واحدی"));
+        assert!(same_person("Abdul ali", "عبدالعلی شجاعی"));
+        assert!(same_person("S Baqir", "سید باقر حسینی"));
+        assert!(same_person("Moh Reza", "محمد رضا سادات"));
+        assert!(!same_person("Abdulrashid", "زینب جعفری"));
+        assert!(!same_person("Moh", "محمد رضا سادات"));
+        assert!(!same_person("S Baqir", "سید رضا حسینی"));
+        assert!(!same_person("Hussain", "محمد رضا حسینی"));
     }
 
     #[test]

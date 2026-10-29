@@ -109,6 +109,8 @@ export function ImportExcel({ done }: { done: () => void }) {
             </table>
           </section>
 
+          {report.hotspot.buys + report.hotspot.counts > 0 && <Hotspot r={report} />}
+
           {report.warnings.length > 0 && (
             <details className="panel wide warnings" open={report.warnings.length <= 8}>
               <summary>{fa(report.warnings.length)} نکته برای چک کردن</summary>
@@ -135,6 +137,9 @@ function Counts({ r }: { r: ImportReport }) {
       <li><strong>{fa(r.receipts)}</strong> پرداخت</li>
       <li><strong>{fa(r.expenses)}</strong> مصرف</li>
       <li><strong>{fa(r.withdrawals)}</strong> برداشت</li>
+      {r.hotspot.buys + r.hotspot.counts > 0 && (
+        <li><strong>{fa(r.hotspot.buys)}</strong> بل خرید و <strong>{fa(r.hotspot.counts)}</strong> شمارش فروش هاتسپات</li>
+      )}
     </ul>
   );
 }
@@ -165,5 +170,38 @@ function Group({ kind, lines }: { kind: ImportLine["kind"]; lines: ImportLine[] 
         );
       })}
     </>
+  );
+}
+
+/** The sheet «انترنت هاتسپات», month by month, next to the statement's hotspot line. */
+function Hotspot({ r }: { r: ImportReport }) {
+  const rows = r.hotspot.months.map((m, i) => ({ m, name: MONTHS[i] })).filter(({ m }) => m.bought || m.sales || m.statement);
+  return (
+    <section className="glass table-wrap">
+      <table className="table reconcile">
+        <caption>شیت «انترنت هاتسپات»</caption>
+        <thead>
+          <tr><th>ماه</th><th>خرید</th><th>فروش</th><th>سود در شیت</th><th>محاسبات</th><th>در درآمد می‌آید</th></tr>
+        </thead>
+        <tbody>
+          {rows.map(({ m, name }) => (
+            <tr key={name}>
+              <th scope="row">{name}</th>
+              <td className="num">{fa(m.bought)} <span className="muted small">({fa(m.cards_bought)} کارت)</span></td>
+              <td className="num">{fa(m.sales)} <span className="muted small">({fa(m.cards_sold)} کارت)</span></td>
+              <td className="num">{fa(m.profit)}</td>
+              <td className="num">{m.statement == null ? "—" : fa(m.statement)}</td>
+              <td className="num">
+                {fa(m.income)} <span className="muted small">{m.from_sheet ? "از شیت" : "از محاسبات"}</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">
+        خریدها و فروش‌ها برای گزارش هاتسپات و موجودی کارت‌ها وارد می‌شوند. درآمد هر ماه همان عدد شیت «محاسبات» است؛
+        فقط ماهی که در «محاسبات» خالی است، سود شیت هاتسپات را می‌گیرد.
+      </p>
+    </section>
   );
 }

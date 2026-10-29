@@ -133,6 +133,11 @@ export type ImportReport = {
   year: number; committed: boolean; batch_id: string | null;
   members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
   replaces: string | null; lines: ImportLine[]; warnings: string[];
+  hotspot: { buys: number; counts: number; months: ImportHotMonth[] };
+};
+export type ImportHotMonth = {
+  cards_bought: number; gb_bought: number; bought: number; cards_sold: number; gb_sold: number; sales: number;
+  profit: number; statement: number | null; income: number; from_sheet: boolean;
 };
 
 export type Page<T> = { total: number; rows: T[] };
@@ -291,9 +296,15 @@ export type HotspotBuy = {
   cards: string; card_count: number; gb: number; cost: number; created_by: string | null; removable: boolean;
 };
 export type HotspotSale = {
-  receipt_id: string; receipt_no: string; sold_on: string; cards: string; card_count: number; gb: number;
+  /** null for a count from the Excel book with no receipt of its own. */
+  receipt_id: string | null; receipt_no: string | null; sold_on: string; cards: string; card_count: number; gb: number;
   sales: number; cost: number; profit: number; voided: boolean; created_by: string | null;
 };
+export type HotspotPeriod = {
+  cards_bought: number; gb_bought: number; bought: number; cards_sold: number; gb_sold: number; sales: number; cost: number;
+  income: number; stock_cards: number; stock_gb: number; stock_value: number;
+};
+export type HotspotReport = { periods: HotspotPeriod[]; stock: { volume_gb: number; in_hand: number; value: number }[] };
 export type HotspotSales = {
   summary: { bought: number; sales: number; cost: number; profit: number; cards_sold: number; gb_sold: number };
   rows: HotspotSale[];
@@ -532,6 +543,8 @@ export const api = {
   backupK50Fingers: () => request<{ Ok?: { at: string; users: number; fingers: number; changed: number }; Err?: string }>("/k50/fingers", { method: "POST" }),
   /** Ok: the comparison; Err: why the device could not be read. */
   compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),
+  /** A partner says these device users are the app's members with the same numbers. */
+  k50NamesOk: (rows: { no: string; device_name: string }[]) => request<void>("/k50/names/ok", { method: "POST", body: rows }),
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
   memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
   checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),
@@ -547,6 +560,8 @@ export const api = {
   createHotspotBuy: (b: { purchased_on?: string; supplier_bill_no?: string; bill_gb?: number | null; extra_cost?: number; note?: string; lines: CardCount[] }) =>
     request<string>("/hotspot/buys", { method: "POST", body: b }),
   deleteHotspotBuy: (id: string) => request<void>(`/hotspot/buys/${id}`, { method: "DELETE" }),
+  hotspotReport: (bounds: string[], signal?: AbortSignal) =>
+    request<HotspotReport>(`/hotspot/report?${new URLSearchParams({ bounds: bounds.join(",") })}`, { signal }),
   hotspotSales: (r: Range, signal?: AbortSignal) => request<HotspotSales>(`/hotspot/sales?${query(r)}`, { signal }),
   createHotspotSale: (lines: CardCount[]) =>
     request<{ receipt_id: string; sales: number; cost: number; profit: number }>("/hotspot/sales", { method: "POST", body: { lines } }),

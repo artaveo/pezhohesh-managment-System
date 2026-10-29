@@ -112,10 +112,35 @@ struct Entry {
     note: Option<String>,
 }
 
+/// A supplier bill in the hotspot sheet, or a month's one summary row (Hamal to Asad).
+struct HotBuy {
+    month: u32,
+    on: Option<NaiveDate>,
+    bill_no: Option<String>,
+    bill_gb: Option<f64>,
+    extra_cost: f64,
+    /// The sheet's purchase amount (cards' GB times the price per GB, plus extra costs).
+    total: f64,
+    cards: Vec<(f64, i32)>,
+}
+
+/// One day's count of cards sold, or a month's summary row.
+struct HotSale {
+    month: u32,
+    on: Option<NaiveDate>,
+    cards: Vec<(f64, i32)>,
+    amount: f64,
+    profit: f64,
+}
+
 #[derive(Default)]
 struct Book {
     members: Vec<Member>,
     entries: Vec<Entry>,
+    hot_buys: Vec<HotBuy>,
+    hot_sales: Vec<HotSale>,
+    /// «کارت های موجود» under a month: cards in hand at its end, per volume.
+    hot_stock: BTreeMap<u32, Vec<(f64, i32)>>,
     /// Statement figures per line key, by month.
     statement: HashMap<&'static str, [Option<f64>; 12]>,
     warnings: Vec<String>,
@@ -252,6 +277,10 @@ fn parse(bytes: &[u8]) -> Result<Book, ApiError> {
     let name = "برداشت ها";
     if let Some(rg) = sheet(&sheets, name) {
         read_withdrawals(&mut book, rg, name);
+    }
+    let name = "انترنت هاتسپات";
+    if let Some(rg) = sheet(&sheets, name) {
+        read_hotspot(&mut book, rg, name);
     }
     let name = "محاسبات";
     let rg = sheet(&sheets, name).ok_or(ApiError::bad("sheet_missing_statement"))?;
@@ -441,6 +470,146 @@ fn read_withdrawals(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
     }
 }
 
+/// A date cell: an Excel date, or its serial number.
+fn excel_date(d: &Data) -> Option<NaiveDate> {
+    let serial = match d {
+        Data::DateTime(t) => t.as_f64(),
+        Data::Float(f) if (30_000.0..80_000.0).contains(f) => *f,
+        Data::Int(i) if (30_000..80_000).contains(i) => *i as f64,
+        Data::DateTimeIso(t) => return NaiveDate::parse_from_str(t.get(..10)?, "%Y-%m-%d").ok(),
+        _ => return None,
+    };
+    NaiveDate::from_ymd_opt(1899, 12, 30)?.checked_add_days(Days::new(serial.floor() as u64))
+}
+
+/// "5GB" -> 5.
+fn volume_of(t: &str) -> Option<f64> {
+    t.trim().strip_suffix("GB")?.trim().parse().ok().filter(|v: &f64| *v > 0.0)
+}
+
+/// The hotspot sheet: a block per month, «ماه حمل» and so on. Each block has supplier
+/// bills on the right (date, bill number, the bill's GB, cards per volume, extra costs,
+/// the amount) and the daily counts of cards sold on the left (date, cards per volume,
+/// sales, profit), then a totals row, «کارت های موجود» and «خلاصه مالی». The first months
+/// have one summary row each and no dates.
+fn read_hotspot(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
+    struct Cols {
+        bill_no: Option<usize>,
+        bill_gb: Option<usize>,
+        extra: Option<usize>,
+        total: Option<usize>,
+        buy_cards: Vec<(usize, f64)>,
+        sale_date: usize,
+        sale_cards: Vec<(usize, f64)>,
+        sales: Option<usize>,
+        profit: Option<usize>,
+    }
+    let header = |r: usize| -> Option<Cols> {
+        let at = |c: usize| text(cell(rg, r, c)).unwrap_or_default();
+        let dates: Vec<usize> = (0..rg.width()).filter(|&c| at(c) == "تاریخ").collect();
+        let (&first, &second) = (dates.first()?, dates.get(1)?);
+        let find = |from: usize, to: usize, f: &dyn Fn(&str) -> bool| (from..to).find(|&c| f(&at(c)));
+        let cards = |from: usize, to: usize| (from..to).filter_map(|c| volume_of(&at(c)).map(|v| (c, v))).collect::<Vec<_>>();
+        Some(Cols {
+            bill_no: find(first, second, &|t| t.starts_with("شماره بل")),
+            bill_gb: find(first, second, &|t| t.starts_with("حجم عمومی")),
+            extra: find(first, second, &|t| t == "مصارف"),
+            total: find(first, second, &|t| t.starts_with("مبلغ خرید")),
+            buy_cards: cards(first, second),
+            sale_date: second,
+            sale_cards: cards(second, rg.width()),
+            sales: find(second, rg.width(), &|t| t.starts_with("مجموع فروش")),
+            profit: find(second, rg.width(), &|t| t == "سود"),
+        })
+    };
+    let counts = |r: usize, cols: &[(usize, f64)]| -> Vec<(f64, i32)> {
+        cols.iter()
+            .filter_map(|&(c, v)| num(cell(rg, r, c)).filter(|n| *n > 0.0 && n.fract() == 0.0).map(|n| (v, n as i32)))
+            .collect()
+    };
+    let amount = |r: usize, c: Option<usize>| c.and_then(|c| num(cell(rg, r, c))).unwrap_or(0.0);
+
+    let mut month: Option<u32> = None;
+    let mut cols: Option<Cols> = None;
+    let mut rows: Vec<usize> = Vec::new();
+    let flush = |book: &mut Book, month: Option<u32>, cols: &Option<Cols>, rows: &mut Vec<usize>| {
+        let (Some(m), Some(k)) = (month, cols) else {
+            rows.clear();
+            return;
+        };
+        let bill_text = |r: usize| k.bill_no.and_then(|c| text(cell(rg, r, c)));
+        let carried = |r: usize| bill_text(r).is_some_and(|t| t.contains("باقیمانده"));
+        // Supplier bills: rows with a date or a bill number (not the carry-over row).
+        let billed: Vec<usize> =
+            rows.iter().copied().filter(|&r| !carried(r) && (excel_date(cell(rg, r, 0)).is_some() || bill_text(r).is_some())).collect();
+        let buy_rows = if billed.is_empty() { rows.first().copied().into_iter().collect() } else { billed };
+        let mut last_on = None;
+        for r in buy_rows {
+            let cards = counts(r, &k.buy_cards);
+            if cards.is_empty() {
+                continue;
+            }
+            let on = excel_date(cell(rg, r, 0)).or(last_on);
+            last_on = on;
+            book.hot_buys.push(HotBuy {
+                month: m,
+                on,
+                bill_no: bill_text(r),
+                bill_gb: k.bill_gb.and_then(|c| num(cell(rg, r, c))),
+                extra_cost: amount(r, k.extra),
+                total: amount(r, k.total),
+                cards,
+            });
+        }
+        // Daily counts: rows with a date in the sales date column.
+        let dated: Vec<usize> = rows.iter().copied().filter(|&r| excel_date(cell(rg, r, k.sale_date)).is_some()).collect();
+        let sale_rows = if dated.is_empty() { rows.first().copied().into_iter().collect() } else { dated };
+        for r in sale_rows {
+            let cards = counts(r, &k.sale_cards);
+            if cards.is_empty() {
+                continue;
+            }
+            book.hot_sales.push(HotSale {
+                month: m,
+                on: excel_date(cell(rg, r, k.sale_date)),
+                cards,
+                amount: amount(r, k.sales),
+                profit: amount(r, k.profit),
+            });
+        }
+        rows.clear();
+    };
+    let mut ended = true;
+    for r in 0..rg.height() {
+        let first = text(cell(rg, r, 0)).unwrap_or_default();
+        if let Some(name) = first.strip_prefix("ماه ") {
+            flush(book, month, &cols, &mut rows);
+            month = month_of(name.trim());
+            cols = None;
+            ended = true;
+        } else if first == "تاریخ" {
+            cols = header(r);
+            ended = cols.is_none();
+            if ended {
+                book.warn(format!("{sheet_name}، ردیف {}: ستون‌های جدول شناخته نشد.", excel_row(rg, r)));
+            }
+        } else if first.starts_with("کارت های موجود") || first.starts_with("کارت‌های موجود") {
+            if let (Some(m), Some(k)) = (month, &cols) {
+                book.hot_stock.insert(m, counts(r, &k.buy_cards));
+            }
+            ended = true;
+        } else if first.starts_with("خلاصه مالی") {
+            ended = true;
+        } else if !ended && cols.is_some() {
+            rows.push(r);
+        }
+        if ended && !rows.is_empty() {
+            flush(book, month, &cols, &mut rows);
+        }
+    }
+    flush(book, month, &cols, &mut rows);
+}
+
 fn read_statement(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
     let Some(h) = find_header(rg, "تفصیلات") else {
         book.warn(format!("{sheet_name}: سطر عنوان «تفصیلات» پیدا نشد."));
@@ -488,6 +657,36 @@ pub struct Params {
     #[serde(default)]
     commit: bool,
     file_name: Option<String>,
+    /// Where a month's hotspot income comes from: "mixed" (the statement's figure, or the
+    /// hotspot sheet's profit where the statement has none), "sheet" or "statement".
+    #[serde(default)]
+    hotspot_income: Option<String>,
+}
+
+/// One month of the hotspot sheet as imported.
+#[derive(Serialize, Default, Clone, Copy)]
+struct HotMonth {
+    cards_bought: i64,
+    gb_bought: f64,
+    /// The supplier bills' amounts, extra costs included.
+    bought: f64,
+    cards_sold: i64,
+    gb_sold: f64,
+    sales: f64,
+    /// The sheet's profit (sales minus what the cards sold had cost).
+    profit: f64,
+    /// The statement's hotspot figure.
+    statement: Option<f64>,
+    /// What went into the income: the statement's figure or the sheet's profit.
+    income: f64,
+    from_sheet: bool,
+}
+
+#[derive(Serialize, Default)]
+struct HotReport {
+    buys: usize,
+    counts: usize,
+    months: [HotMonth; 12],
 }
 
 #[derive(Serialize)]
@@ -503,6 +702,7 @@ pub struct Report {
     /// When this year was imported before; importing again replaces that run.
     replaces: Option<chrono::DateTime<chrono::Utc>>,
     lines: Vec<LineReport>,
+    hotspot: HotReport,
     warnings: Vec<String>,
 }
 
@@ -593,8 +793,25 @@ fn date_of(book_year: i32, month: u32, day: Option<u32>, warnings: &mut Vec<Stri
 }
 
 async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str, book: Book) -> Result<Report, ApiError> {
-    let Book { members, entries, statement, mut warnings } = book;
+    let Book { members, mut entries, statement, mut warnings, hot_buys, hot_sales, hot_stock } = book;
     let year = p.year;
+
+    // Each month's hotspot income comes from one place only: the statement's figure, or
+    // the sheet's daily counts (then each count is a receipt for its profit).
+    let policy = p.hotspot_income.as_deref().unwrap_or("mixed");
+    if !matches!(policy, "mixed" | "sheet" | "statement") {
+        return Err(ApiError::bad("bad_hotspot_income"));
+    }
+    let stated = statement.get("hotspot").copied().unwrap_or([None; 12]);
+    let sheet_month = |m: u32| -> bool {
+        let has_sales = hot_sales.iter().any(|x| x.month == m);
+        match policy {
+            "sheet" => has_sales,
+            "statement" => false,
+            _ => has_sales && stated[m as usize - 1].is_none_or(|v| v == 0.0),
+        }
+    };
+    entries.retain(|e| !(e.kind == Kind::Income && e.key == "hotspot" && sheet_month(e.month)));
 
     // An earlier run of the same year is replaced: its rows are marked deleted.
     let replaces: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
@@ -604,7 +821,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(year)
     .fetch_one(&mut *db)
     .await?;
-    for table in ["receipts", "expenses", "withdrawals"] {
+    for table in ["receipts", "expenses", "withdrawals", "hotspot_buys", "hotspot_purchases", "hotspot_sales"] {
         sqlx::query(&format!(
             "UPDATE {table} SET deleted_at = now() WHERE deleted_at IS NULL AND import_batch_id IN \
              (SELECT id FROM import_batches WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL)"
@@ -765,8 +982,10 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .execute(&mut *db)
     .await?;
 
+    let hotspot = store_hotspot(db, year, batch, short, &hot_buys, &hot_sales, &hot_stock, &stated, &sheet_month, &mut warnings).await?;
+
     // Month-by-month totals next to the statement sheet.
-    let lines: Vec<LineReport> = LINES
+    let mut lines: Vec<LineReport> = LINES
         .iter()
         .map(|l| {
             let mut imported = [0.0; 12];
@@ -784,6 +1003,13 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         })
         .collect();
 
+    // A month whose hotspot income is the sheet's profit has it in the day's receipts.
+    for l in lines.iter_mut().filter(|l| l.key == "hotspot") {
+        for (i, m) in hotspot.months.iter().enumerate().filter(|(_, m)| m.from_sheet) {
+            l.imported[i] += m.income;
+        }
+    }
+
     let report = Report {
         year,
         committed: p.commit,
@@ -795,6 +1021,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         withdrawals: taken.len(),
         replaces,
         lines,
+        hotspot,
         warnings,
     };
     sqlx::query("UPDATE import_batches SET summary = $2 WHERE id = $1")
@@ -805,5 +1032,185 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         }))
         .execute(&mut *db)
         .await?;
+    Ok(report)
+}
+
+/// The hotspot sheet's supplier bills and daily counts, as the app keeps its own: a bill
+/// with its cards per volume, and the cards sold each day at the card prices. Months whose
+/// income comes from the sheet get a receipt per day for its profit, as the desk's count.
+#[allow(clippy::too_many_arguments)]
+async fn store_hotspot(
+    db: &mut PgConnection,
+    year: i32,
+    batch: Uuid,
+    short: &str,
+    buys: &[HotBuy],
+    sales: &[HotSale],
+    stock: &BTreeMap<u32, Vec<(f64, i32)>>,
+    stated: &[Option<f64>; 12],
+    sheet_month: &(dyn Fn(u32) -> bool + Sync),
+    warnings: &mut Vec<String>,
+) -> Result<HotReport, ApiError> {
+    let mut report = HotReport { buys: buys.len(), counts: sales.len(), ..Default::default() };
+    for (i, m) in report.months.iter_mut().enumerate() {
+        m.statement = stated[i];
+    }
+    let mut warn = |w: String| {
+        if warnings.len() < MAX_WARNINGS {
+            warnings.push(w);
+        }
+    };
+    let prices: HashMap<String, f64> = sqlx::query_as::<_, (f64, f64)>("SELECT volume_gb::float8, price::float8 FROM hotspot_cards")
+        .fetch_all(&mut *db)
+        .await?
+        .into_iter()
+        .map(|(v, p)| (v.to_string(), p))
+        .collect();
+    let per_gb_setting: f64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT (value #>> '{}')::float8 FROM settings WHERE key = 'hotspot_cost_per_gb'), 10)",
+    )
+    .fetch_one(&mut *db)
+    .await?;
+    let day = |m: u32, on: Option<NaiveDate>| on.unwrap_or_else(|| solar::to_gregorian(year, m, 1).expect("valid Solar date"));
+    let tag = format!("(اکسل {year})");
+
+    for b in buys {
+        let gb: f64 = b.cards.iter().map(|(v, n)| v * *n as f64).sum();
+        // The sheet's amount is the cards' GB at the price per GB, plus the extra costs.
+        let per_gb = if gb > 0.0 && b.total > b.extra_cost { (b.total - b.extra_cost) / gb } else { per_gb_setting };
+        let id = Uuid::new_v4();
+        let on = day(b.month, b.on);
+        sqlx::query(
+            "INSERT INTO hotspot_buys (id, purchased_on, supplier_bill_no, bill_gb, extra_cost, note, import_batch_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(id)
+        .bind(on)
+        .bind(&b.bill_no)
+        .bind(b.bill_gb)
+        .bind(b.extra_cost)
+        .bind(&tag)
+        .bind(batch)
+        .execute(&mut *db)
+        .await?;
+        for &(v, n) in &b.cards {
+            if !prices.contains_key(&v.to_string()) {
+                warn(format!("هاتسپات، {}: کارت {v}GB در فهرست کارت‌ها نیست و وارد نشد.", MONTHS[b.month as usize - 1]));
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO hotspot_purchases (id, buy_id, purchased_on, supplier_bill_no, volume_gb, quantity, unit_cost, import_batch_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(id)
+            .bind(on)
+            .bind(&b.bill_no)
+            .bind(v)
+            .bind(n)
+            .bind((v * per_gb * 100.0).round() / 100.0)
+            .bind(batch)
+            .execute(&mut *db)
+            .await?;
+        }
+        let m = &mut report.months[b.month as usize - 1];
+        m.cards_bought += b.cards.iter().map(|(_, n)| *n as i64).sum::<i64>();
+        m.gb_bought += gb;
+        m.bought += b.total;
+    }
+
+    for (i, x) in sales.iter().enumerate() {
+        let on = day(x.month, x.on);
+        let mut priced = 0.0;
+        let mut cost = 0.0;
+        let mut what = Vec::new();
+        for &(v, n) in &x.cards {
+            priced += prices.get(&v.to_string()).copied().unwrap_or(0.0) * n as f64;
+            cost += v * per_gb_setting * n as f64;
+            what.push(format!("{n} کارت {v}GB"));
+        }
+        if (priced - x.amount).abs() > 0.5 {
+            warn(format!(
+                "هاتسپات، {} {}: فروش در اکسل {} است ولی با قیمت کارت‌ها {} می‌شود؛ عدد اکسل نگه داشته شد.",
+                solar::month_day(on).1,
+                MONTHS[solar::month_day(on).0 as usize - 1],
+                x.amount,
+                priced
+            ));
+        }
+        let from_sheet = sheet_month(x.month);
+        let receipt: Option<Uuid> = if from_sheet && x.profit > 0.0 {
+            let id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, import_batch_id) \
+                 VALUES ($1, $2, 'hall', $3, $4, 'hotspot', $5, $6)",
+            )
+            .bind(id)
+            .bind(format!("XL{year}-{short}-H{:04}", i + 1))
+            .bind(on)
+            .bind(x.profit)
+            .bind(format!("فروش کارت هاتسپات: {} · فروش {}، سود {} {tag}", what.join("، "), x.amount, x.profit))
+            .bind(batch)
+            .execute(&mut *db)
+            .await?;
+            Some(id)
+        } else {
+            None
+        };
+        // The sheet's sales and profit stand; the cards' prices and costs are spread to match.
+        let scale_price = if priced > 0.0 { x.amount / priced } else { 1.0 };
+        let scale_cost = if cost > 0.0 { (x.amount - x.profit) / cost } else { 1.0 };
+        for &(v, n) in &x.cards {
+            let Some(price) = prices.get(&v.to_string()) else { continue };
+            sqlx::query(
+                "INSERT INTO hotspot_sales (id, sold_on, volume_gb, quantity, unit_price, unit_cost, receipt_id, import_batch_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(on)
+            .bind(v)
+            .bind(n)
+            .bind((price * scale_price * 100.0).round() / 100.0)
+            .bind((v * per_gb_setting * scale_cost * 100.0).round() / 100.0)
+            .bind(receipt)
+            .bind(batch)
+            .execute(&mut *db)
+            .await?;
+        }
+        let m = &mut report.months[x.month as usize - 1];
+        m.cards_sold += x.cards.iter().map(|(_, n)| *n as i64).sum::<i64>();
+        m.gb_sold += x.cards.iter().map(|(v, n)| v * *n as f64).sum::<f64>();
+        m.sales += x.amount;
+        m.profit += x.profit;
+    }
+    for (i, m) in report.months.iter_mut().enumerate() {
+        m.from_sheet = sheet_month(i as u32 + 1);
+        m.income = if m.from_sheet { m.profit } else { m.statement.unwrap_or(0.0) };
+    }
+
+    // The cards in hand at the end of each month, against the sheet's «کارت های موجود».
+    for (&month, listed) in stock {
+        let mut held: BTreeMap<String, i64> = BTreeMap::new();
+        for b in buys.iter().filter(|b| b.month <= month) {
+            for &(v, n) in &b.cards {
+                *held.entry(v.to_string()).or_default() += n as i64;
+            }
+        }
+        for x in sales.iter().filter(|x| x.month <= month) {
+            for &(v, n) in &x.cards {
+                *held.entry(v.to_string()).or_default() -= n as i64;
+            }
+        }
+        let mut off = Vec::new();
+        for (v, n) in &held {
+            let want = listed.iter().find(|(lv, _)| lv.to_string() == *v).map(|(_, c)| *c as i64).unwrap_or(0);
+            if *n != want {
+                off.push(format!("{v}GB: برنامه {n}، اکسل {want}"));
+            }
+        }
+        if !off.is_empty() {
+            warn(format!("هاتسپات، آخر {}: کارت‌های موجود با اکسل فرق دارد ({}).", MONTHS[month as usize - 1], off.join("، ")));
+        }
+    }
     Ok(report)
 }

@@ -744,3 +744,4 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
   .report-print .table.sheet .remarks { background: #eef4e6; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .report-print .muted { color: #555; }
 }
+.table caption { caption-side: top; text-align: start; font-weight: 700; padding: 12px 14px 6px; }

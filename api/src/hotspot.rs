@@ -369,8 +369,9 @@ pub async fn create_sale(State(s): State<AppState>, user: CurrentUser, Json(b): 
 
 #[derive(Serialize, FromRow)]
 pub struct Sale {
-    receipt_id: Uuid,
-    receipt_no: String,
+    /// None for a count from the Excel book whose month's income is the statement's figure.
+    receipt_id: Option<Uuid>,
+    receipt_no: Option<String>,
     sold_on: NaiveDate,
     cards: String,
     card_count: i64,
@@ -408,11 +409,14 @@ pub async fn sales(State(s): State<AppState>, user: CurrentUser, Query(r): Query
                 string_agg(x.quantity || ' کارت ' || trim(trailing '.' FROM trim(trailing '0' FROM x.volume_gb::text)) || 'GB', '، ' ORDER BY x.volume_gb) AS cards, \
                 sum(x.quantity)::int8 AS card_count, sum(x.quantity * x.volume_gb)::float8 AS gb, \
                 sum(x.quantity * x.unit_price)::float8 AS sales, sum(x.quantity * x.unit_cost)::float8 AS cost, \
-                r.amount::float8 AS profit, r.voided, st.full_name AS created_by \
-         FROM hotspot_sales x JOIN receipts r ON r.id = x.receipt_id \
+                COALESCE(r.amount, sum(x.quantity * (x.unit_price - x.unit_cost)))::float8 AS profit, COALESCE(r.voided, false) AS voided, \
+                st.full_name AS created_by \
+         FROM hotspot_sales x LEFT JOIN receipts r ON r.id = x.receipt_id \
          LEFT JOIN app_users u ON u.id = r.issued_by LEFT JOIN staff st ON st.id = u.staff_id \
-         WHERE r.deleted_at IS NULL AND ($1::date IS NULL OR x.sold_on >= $1) AND ($2::date IS NULL OR x.sold_on <= $2) \
-         GROUP BY r.id, st.full_name ORDER BY min(x.sold_on) DESC, r.created_at DESC LIMIT 500",
+         WHERE CASE WHEN x.receipt_id IS NULL THEN x.deleted_at IS NULL ELSE r.deleted_at IS NULL END \
+           AND ($1::date IS NULL OR x.sold_on >= $1) AND ($2::date IS NULL OR x.sold_on <= $2) \
+         GROUP BY r.id, st.full_name, CASE WHEN r.id IS NULL THEN x.sold_on END \
+         ORDER BY min(x.sold_on) DESC, min(r.created_at) DESC LIMIT 500",
     )
     .bind(r.from)
     .bind(r.to)
@@ -440,6 +444,118 @@ pub async fn sales(State(s): State<AppState>, user: CurrentUser, Query(r): Query
         summary.gb_sold += s.gb;
     }
     Ok(Json(Sales { summary, rows }))
+}
+
+#[derive(Deserialize)]
+pub struct Bounds {
+    /// Comma-separated ISO dates d0,d1,...,dn: ranges [d0,d1), [d1,d2), ... (as for the reports).
+    bounds: String,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct ReportPeriod {
+    cards_bought: i64,
+    gb_bought: f64,
+    /// The supplier bills, extra costs included.
+    bought: f64,
+    cards_sold: i64,
+    gb_sold: f64,
+    sales: f64,
+    /// What the cards sold had cost.
+    cost: f64,
+    /// The hotspot income the statement counts in this range.
+    income: f64,
+    /// Cards in hand at the end of the range, and what they cost.
+    stock_cards: i64,
+    stock_gb: f64,
+    stock_value: f64,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct StockLine {
+    volume_gb: f64,
+    in_hand: i64,
+    value: f64,
+}
+
+#[derive(Serialize)]
+pub struct Report {
+    periods: Vec<ReportPeriod>,
+    /// Per volume, at the end of the last range.
+    stock: Vec<StockLine>,
+}
+
+/// The hotspot on its own: per range what was bought and sold, the profit, what the
+/// statement counted as income and the cards left at the end. Its income stays in the
+/// hall's total too; this is only the closer look.
+pub async fn report(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Bounds>) -> Result<Json<Report>, ApiError> {
+    hall_only(&user)?;
+    let bounds: Vec<NaiveDate> = p.bounds.split(',').map(|d| d.trim().parse()).collect::<Result<_, _>>().map_err(|_| ApiError::bad("bad_bounds"))?;
+    if bounds.len() < 2 || bounds.len() > 400 || bounds.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(ApiError::bad("bad_bounds"));
+    }
+    let lo = bounds[..bounds.len() - 1].to_vec();
+    let hi = bounds[1..].to_vec();
+    let mut tx = begin_as(&s.db, &user).await?;
+    // Stock per volume at a day's end: bought on or before it minus sold on or before it,
+    // valued at the average cost of that volume's purchases so far.
+    let periods: Vec<ReportPeriod> = sqlx::query_as(
+        r#"
+        WITH b AS (SELECT * FROM unnest($1::date[], $2::date[]) WITH ORDINALITY AS b(lo, hi, n)),
+        bought AS (
+            SELECT p.volume_gb, p.quantity, p.unit_cost, h.purchased_on AS day FROM hotspot_purchases p
+            JOIN hotspot_buys h ON h.id = p.buy_id WHERE p.deleted_at IS NULL AND h.deleted_at IS NULL),
+        sold AS (SELECT volume_gb, quantity, unit_price, unit_cost, sold_on AS day FROM hotspot_sales WHERE deleted_at IS NULL)
+        SELECT
+            COALESCE((SELECT sum(quantity) FROM bought WHERE day >= b.lo AND day < b.hi), 0)::int8 AS cards_bought,
+            COALESCE((SELECT sum(quantity * volume_gb) FROM bought WHERE day >= b.lo AND day < b.hi), 0)::float8 AS gb_bought,
+            (COALESCE((SELECT sum(quantity * unit_cost) FROM bought WHERE day >= b.lo AND day < b.hi), 0)
+              + COALESCE((SELECT sum(extra_cost) FROM hotspot_buys WHERE deleted_at IS NULL AND purchased_on >= b.lo AND purchased_on < b.hi), 0))::float8 AS bought,
+            COALESCE((SELECT sum(quantity) FROM sold WHERE day >= b.lo AND day < b.hi), 0)::int8 AS cards_sold,
+            COALESCE((SELECT sum(quantity * volume_gb) FROM sold WHERE day >= b.lo AND day < b.hi), 0)::float8 AS gb_sold,
+            COALESCE((SELECT sum(quantity * unit_price) FROM sold WHERE day >= b.lo AND day < b.hi), 0)::float8 AS sales,
+            COALESCE((SELECT sum(quantity * unit_cost) FROM sold WHERE day >= b.lo AND day < b.hi), 0)::float8 AS cost,
+            COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.department = 'hall'
+                AND r.currency = 'AFN' AND r.income_category = 'hotspot' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS income,
+            COALESCE(st.cards, 0)::int8 AS stock_cards, COALESCE(st.gb, 0)::float8 AS stock_gb, COALESCE(st.value, 0)::float8 AS stock_value
+        FROM b
+        LEFT JOIN LATERAL (
+            SELECT sum(v.n) AS cards, sum(v.n * v.volume_gb) AS gb, sum(v.n * v.avg_cost) AS value FROM (
+                SELECT x.volume_gb,
+                    COALESCE((SELECT sum(quantity) FROM bought WHERE volume_gb = x.volume_gb AND day < b.hi), 0)
+                      - COALESCE((SELECT sum(quantity) FROM sold WHERE volume_gb = x.volume_gb AND day < b.hi), 0) AS n,
+                    COALESCE((SELECT sum(quantity * unit_cost) / NULLIF(sum(quantity), 0) FROM bought WHERE volume_gb = x.volume_gb AND day < b.hi), 0) AS avg_cost
+                FROM (SELECT DISTINCT volume_gb FROM bought UNION SELECT DISTINCT volume_gb FROM sold) x
+            ) v
+        ) st ON true
+        ORDER BY b.n
+        "#,
+    )
+    .bind(&lo)
+    .bind(&hi)
+    .fetch_all(&mut *tx)
+    .await?;
+    let end = hi[hi.len() - 1];
+    let stock: Vec<StockLine> = sqlx::query_as(
+        r#"
+        WITH bought AS (
+            SELECT p.volume_gb, p.quantity, p.unit_cost FROM hotspot_purchases p JOIN hotspot_buys h ON h.id = p.buy_id
+            WHERE p.deleted_at IS NULL AND h.deleted_at IS NULL AND h.purchased_on < $1),
+        sold AS (SELECT volume_gb, quantity FROM hotspot_sales WHERE deleted_at IS NULL AND sold_on < $1),
+        v AS (
+            SELECT x.volume_gb,
+                COALESCE((SELECT sum(quantity) FROM bought WHERE volume_gb = x.volume_gb), 0)
+                  - COALESCE((SELECT sum(quantity) FROM sold WHERE volume_gb = x.volume_gb), 0) AS n,
+                COALESCE((SELECT sum(quantity * unit_cost) / NULLIF(sum(quantity), 0) FROM bought WHERE volume_gb = x.volume_gb), 0) AS avg_cost
+            FROM (SELECT DISTINCT volume_gb FROM bought UNION SELECT DISTINCT volume_gb FROM sold) x)
+        SELECT volume_gb::float8, n::int8 AS in_hand, (n * avg_cost)::float8 AS value FROM v WHERE n <> 0 ORDER BY volume_gb
+        "#,
+    )
+    .bind(end)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(Report { periods, stock }))
 }
 
 #[cfg(test)]

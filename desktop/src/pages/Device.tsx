@@ -19,7 +19,7 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates" | "names">("");
   const [dates, setDates] = useState<K50Dates | null>(null);
   const [withDiffers, setWithDiffers] = useState(false);
   const [sdk, setSdk] = useState<K50Sdk | null>(null);
@@ -32,6 +32,7 @@ export function Device() {
   const [cmp, setCmp] = useState<K50Comparison | null>(null);
   const [q, setQ] = useState("");
   const [shown, setShown] = useState(300);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
@@ -74,6 +75,19 @@ export function Device() {
   const compare = () => run("compare", async () => {
     const r = await api.compareK50();
     if (r.Ok) setCmp(r.Ok); else setError(k50ErrorText(r.Err));
+    setPicked(new Set());
+  });
+  // The partner has looked at these rows: same person, written another way on the device.
+  const confirmNames = () => run("names", async () => {
+    const chosen = cmp!.rows.filter((r) => r.state === "differs" && picked.has(r.no));
+    await api.k50NamesOk(chosen.map((r) => ({ no: r.no, device_name: r.device_name })));
+    setCmp((c) => c && {
+      ...c,
+      differs: c.differs - chosen.length,
+      rows: c.rows.map((r) => (picked.has(r.no) && r.state === "differs" ? { ...r, state: "same" as const } : r)),
+    });
+    setPicked(new Set());
+    toast(`${fa(chosen.length)} نفر «همان شخص» ثبت شد.`);
   });
   const copySdk = (from: string) => run("sdk", async () => {
     setSdkError("");
@@ -323,7 +337,7 @@ export function Device() {
         <h2>مقایسهٔ آیدی‌ها با دستگاه</h2>
         <p className="muted">
           پیش از روشن کردن به‌روزرسانی خودکار یک بار این را بزنید. همهٔ کاربران دستگاه خوانده می‌شوند (چیزی عوض نمی‌شود) و نام هر آیدی روی
-          دستگاه کنار نام همان آیدی در برنامه می‌آید. اگر نام‌ها مال یک نفر نیستند، خودکار را روشن نکنید و به من خبر بدهید.
+          دستگاه کنار نام همان آیدی در برنامه می‌آید. نام انگلیسی و فارسی، «Moh» به جای «محمد»، «S» به جای «سید» و نام بی‌تخلص خودش یکی شمرده می‌شود.
         </p>
         <div className="actions">
           <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void compare()}>{busy === "compare" ? "در حال خواندن کاربران دستگاه…" : "مقایسهٔ آیدی‌ها با دستگاه"}</button>
@@ -338,7 +352,20 @@ export function Device() {
               <div><span className="muted small">مدیر دستگاه</span><strong>{fa(cmp.admins)}</strong></div>
             </div>
             {cmp.differs > 0 ? (
-              <p className="form-error" role="alert">{fa(cmp.differs)} آیدی روی دستگاه نام کس دیگری را دارد (بالای جدول). خودکار را روشن نکنید و به من خبر بدهید.</p>
+              <div className="notice bad" role="alert">
+                <p>
+                  نام {fa(cmp.differs)} آیدی روی دستگاه با نام همان آیدی در برنامه جور نمی‌آید (بالای جدول). هر ردیف را نگاه کنید:
+                  اگر همان شخص است و فقط جور دیگری نوشته شده (مثلاً بی‌تخلص یا با املای دیگر)، تیکش را بزنید و «همان شخص‌اند» را بزنید.
+                  لازم نیست روی دستگاه درستش کنید. اگر واقعاً دو نفر جدا هستند، تیک نزنید؛ تا آن ردیف‌ها درست نشده، خودکار روشن نمی‌شود.
+                </p>
+                <div className="actions">
+                  <button className="btn ghost small" disabled={!!busy} onClick={() => setPicked(new Set(cmp.rows.filter((r) => r.state === "differs").map((r) => r.no)))}>انتخاب همهٔ «فرق دارد»ها</button>
+                  {picked.size > 0 && <button className="btn ghost small" disabled={!!busy} onClick={() => setPicked(new Set())}>هیچ‌کدام</button>}
+                  <button className="btn small" disabled={!!busy || picked.size === 0} onClick={() => void confirmNames()}>
+                    {busy === "names" ? "در حال ثبت…" : `${fa(picked.size)} انتخاب‌شده همان شخص‌اند`}
+                  </button>
+                </div>
+              </div>
             ) : <p className="form-ok">هر آیدی که در برنامه هست، روی دستگاه هم نام همان کس را دارد.</p>}
             {cmp.zero_padded > 0 && (
               <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
@@ -356,10 +383,16 @@ export function Device() {
             </div>
             <div className="table-wrap flush">
               <table className="table">
-                <thead><tr><th>وضع</th><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
+                <thead><tr><th><span className="sr-only">انتخاب</span></th><th>وضع</th><th>آیدی روی دستگاه</th><th>نام روی دستگاه</th><th>نام در برنامه</th></tr></thead>
                 <tbody>
                   {rows.slice(0, shown).map((r) => (
                     <tr key={r.no}>
+                      <td>
+                        {r.state === "differs" && (
+                          <input type="checkbox" aria-label={`${r.device_name} همان ${r.app_name} است`} checked={picked.has(r.no)}
+                            onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(r.no); else n.delete(r.no); return n; })} />
+                        )}
+                      </td>
                       <td>
                         <span className={`status ${r.state === "differs" ? "bad" : r.state === "missing" ? "off" : "on"}`}>
                           {r.state === "differs" ? "فرق دارد" : r.state === "missing" ? "در برنامه نیست" : "یکی"}
