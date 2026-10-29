@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Dates, type K50Info, type K50Sdk, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Dates, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
@@ -370,6 +370,9 @@ export function Device() {
             {cmp.zero_padded > 0 && (
               <p className="notice warn">{fa(cmp.zero_padded)} آیدی روی دستگاه با صفر شروع می‌شود (مثل <bdi dir="ltr">051003</bdi>). پیش از فرستادن به من بگویید تا تنظیمش کنم.</p>
             )}
+            {cmp.freed > 0 && (
+              <p className="form-ok">آیدی {fa(cmp.freed)} عضو حذف‌شده روی دستگاه نبود؛ آزاد شد و به اعضای تازه داده می‌شود.</p>
+            )}
             {cmp.resend > 0 && (
               <p className="notice warn">
                 {fa(cmp.resend)} عضو که برنامه قبلاً فرستاده بود روی دستگاه نیست. در همگام‌سازی بعدی دوباره فرستاده
@@ -416,11 +419,14 @@ export function Device() {
         )}
       </section>
 
+      <FreeNumbers configured={!!saved.ip} />
+
       <section className="panel wide">
         <h2>چطور کار می‌کند</h2>
         <ul className="muted">
           <li>هر عضو با همان آیدی عضویتش روی دستگاه است. وقتی عضو ثبت یا تمدید می‌شود، تاریخ شروع و ختمش به دستگاه می‌رود و دستگاه بعد از تاریخ ختم انگشتش را قبول نمی‌کند، حتی اگر لپ‌تاپ خاموش باشد.</li>
-          <li>عضوی که حذف شود یا عضویتش تمام شود، روی دستگاه «غیرفعال» می‌شود؛ انگشتش پاک نمی‌شود و با تمدید دوباره باز می‌شود.</li>
+          <li>عضوی که عضویتش تمام شود، روی دستگاه «غیرفعال» می‌شود؛ انگشتش پاک نمی‌شود و با تمدید دوباره باز می‌شود.</li>
+          <li>عضوی که با «آیدی آزاد شود» حذف شود، با انگشت‌هایش از دستگاه پاک می‌شود و آیدی‌اش به عضو تازه داده می‌شود. آیدی‌ای که دستگاه دیگر ندارد هم با «مقایسهٔ آیدی‌ها» آزاد می‌شود.</li>
           <li>انگشت تازه از صفحهٔ خود عضو با «ثبت انگشت» گرفته می‌شود.</li>
           <li>مدیرهای خود دستگاه دست نمی‌خورند. اعضایی که عضویت فعال ندارند و قبلاً با ZKAccess ثبت شده‌اند، همان‌طور می‌مانند.</li>
         </ul>
@@ -460,5 +466,145 @@ export function Device() {
         </section>
       )}
     </div>
+  );
+}
+
+const latin = (t: string) => t.replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d))).replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)));
+
+/**
+ * Letting numbers go: removed members still holding theirs, and any other ID a partner
+ * wants off the device. Each is read from the device first; freeing takes the user off it
+ * with every finger, and the number goes to the next new member.
+ */
+function FreeNumbers({ configured }: { configured: boolean }) {
+  const toast = useToast();
+  const [held, setHeld] = useState<K50Held[] | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [typed, setTyped] = useState("");
+  const [looked, setLooked] = useState<K50Looked[] | null>(null);
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState<"" | "look" | "free">("");
+  const [error, setError] = useState("");
+  const load = () => api.k50Held().then(setHeld).catch((e) => setError(errorText(e)));
+  useEffect(() => { void load(); }, []);
+
+  async function look(nos: number[]) {
+    setError(""); setLooked(null);
+    if (!nos.length) return setError("آیدی را بنویسید یا از فهرست انتخاب کنید.");
+    setBusy("look");
+    try {
+      const r = await api.lookK50(nos);
+      if (r.Ok) setLooked(r.Ok); else setError(k50ErrorText(r.Err));
+    } catch (e) { setError(errorText(e)); } finally { setBusy(""); }
+  }
+  const typedNos = () => [...new Set(latin(typed).split(/[^0-9]+/).filter(Boolean).map(Number).filter((n) => n > 0))];
+  const freeable = (looked ?? []).filter((r) => !r.member && !r.device_admin);
+  async function free() {
+    setSure(false); setBusy("free"); setError("");
+    try {
+      const r = await api.freeK50(freeable.map((x) => x.no));
+      if (!r.Ok) { setError(k50ErrorText(r.Err)); return; }
+      const ok = r.Ok.filter((x) => x.ok);
+      const bad = r.Ok.filter((x) => !x.ok);
+      if (ok.length) toast(`${fa(ok.length)} آیدی آزاد شد${ok.some((x) => x.device_name) ? " و از دستگاه پاک شد" : ""}.`);
+      if (bad.length) setError(bad.map((x) => `${x.no}: ${k50ErrorText(x.error)}`).join(" "));
+      setLooked(null); setPicked(new Set()); setTyped("");
+      await load();
+    } catch (e) { setError(errorText(e)); } finally { setBusy(""); }
+  }
+
+  return (
+    <section className="panel wide">
+      <h2>آزاد کردن آیدی و پاک کردن از دستگاه</h2>
+      <p className="muted">
+        آیدی عضو حذف‌شده تا وقتی روی دستگاه است مال همان شخص می‌ماند، تا عضو تازه انگشت و تاریخ او را نگیرد. اینجا آیدی از دستگاه
+        پاک می‌شود (با همهٔ انگشت‌ها) و به عضو تازه داده می‌شود. آیدی عضو فعلی پاک نمی‌شود.
+      </p>
+      {held && held.length > 0 && (
+        <>
+          <h3>اعضای حذف‌شده که آیدی‌شان هنوز گرفته است</h3>
+          <div className="table-wrap flush">
+            <table className="table">
+              <thead><tr><th><span className="sr-only">انتخاب</span></th><th>آیدی</th><th>نام</th><th>حذف شده</th><th>وضع</th></tr></thead>
+              <tbody>
+                {held.map((h) => (
+                  <tr key={h.member_id}>
+                    <td><input type="checkbox" aria-label={`انتخاب ${h.name}`} checked={picked.has(h.member_no)}
+                      onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(h.member_no); else n.delete(h.member_no); return n; })} /></td>
+                    <td><bdi dir="ltr">{h.member_no}</bdi></td>
+                    <td>{h.name}</td>
+                    <td>{h.deleted_at ? formatDay(new Date(h.deleted_at)) : "—"}</td>
+                    <td>{h.error ? <><span className="status bad">نشد</span> <span className="muted small">{k50ErrorText(h.error)}</span></> : h.free_no ? <span className="status off">در نوبت</span> : <span className="muted">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="actions">
+            <button className="btn ghost small" disabled={!!busy} onClick={() => setPicked(new Set(held.map((h) => h.member_no)))}>انتخاب همه</button>
+            <button className="btn small" disabled={!!busy || !configured || picked.size === 0} onClick={() => void look([...picked])}>
+              {busy === "look" ? "در حال خواندن از دستگاه…" : `دیدن ${fa(picked.size)} آیدی روی دستگاه`}
+            </button>
+          </div>
+        </>
+      )}
+      {held && held.length === 0 && <p className="muted small">هیچ عضو حذف‌شده‌ای آیدی گرفته ندارد.</p>}
+      <div className="form-grid">
+        <label className="field wide"><span>آیدی دیگری روی دستگاه (چند تا را با فاصله جدا کنید)</span>
+          <input dir="ltr" inputMode="numeric" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="1024 1025"
+            onKeyDown={(e) => { if (e.key === "Enter") void look(typedNos()); }} />
+        </label>
+      </div>
+      <div className="actions">
+        <button className="btn ghost" disabled={!!busy || !configured || !typed.trim()} onClick={() => void look(typedNos())}>
+          {busy === "look" ? "در حال خواندن از دستگاه…" : "دیدن روی دستگاه"}
+        </button>
+      </div>
+      {!configured && <p className="muted small">اول آدرس دستگاه را بالا ذخیره کنید.</p>}
+      {looked && (
+        <>
+          <div className="table-wrap flush">
+            <table className="table">
+              <thead><tr><th>آیدی</th><th>روی دستگاه</th><th>در برنامه</th></tr></thead>
+              <tbody>
+                {looked.map((r) => (
+                  <tr key={r.no} className={r.member || r.device_admin ? "differs" : ""}>
+                    <td><bdi dir="ltr">{r.no}</bdi></td>
+                    <td>
+                      {r.on_device ? <>{r.device_name || "بی‌نام"} <span className="muted small">· {fa(r.fingers ?? 0)} انگشت</span></> : <span className="muted">روی دستگاه نیست</span>}
+                      {r.device_admin && <span className="chip">مدیر دستگاه؛ دست نمی‌خورد</span>}
+                    </td>
+                    <td>
+                      {r.member ? <span className="danger-text">عضو فعلی: {r.member} (پاک نمی‌شود)</span>
+                        : r.removed_member ? <>حذف‌شده: {r.removed_member}</> : <span className="muted">در برنامه نیست</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="actions">
+            <button className="btn danger" disabled={!!busy || freeable.length === 0} onClick={() => setSure(true)}>
+              {busy === "free" ? "در حال پاک کردن…" : `پاک کردن ${fa(freeable.length)} آیدی از دستگاه و آزاد کردن`}
+            </button>
+            <button className="btn ghost" disabled={!!busy} onClick={() => setLooked(null)}>انصراف</button>
+          </div>
+        </>
+      )}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {sure && (
+        <Modal label="پاک کردن از دستگاه" onClose={() => setSure(false)}>
+          <h2>پاک کردن از دستگاه</h2>
+          <p>
+            {fa(freeable.length)} آیدی ({freeable.map((r) => r.no).join("، ")}) با همهٔ انگشت‌هایشان از دستگاه پاک می‌شوند و نسخهٔ انگشت‌هایی که
+            برنامه نگه داشته هم پاک می‌شود. این کار برنمی‌گردد. بعد از آن این آیدی‌ها به اعضای تازه داده می‌شوند.
+          </p>
+          <div className="actions">
+            <button className="btn danger" onClick={() => void free()}>پاک کن و آزاد کن</button>
+            <button className="btn ghost" onClick={() => setSure(false)}>انصراف</button>
+          </div>
+        </Modal>
+      )}
+    </section>
   );
 }

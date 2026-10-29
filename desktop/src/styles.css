@@ -678,6 +678,8 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .role-grid fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
 .role-grid legend { font-weight: 700; padding: 0 6px; }
 .role-grid .check { margin-inline-start: 0; }
+.check.choice { display: flex; align-items: flex-start; margin: 12px 0 4px; font-size: .9rem; line-height: 1.7; }
+.check.choice input { margin-top: .35em; flex: none; }
 .hotspot-bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex-wrap: wrap; }
 .hotspot-bar > div:nth-child(2) { flex: 1; min-width: 240px; }
 

@@ -41,6 +41,8 @@ export type K50Comparison = {
   device_users: number; in_app: number; not_in_app: number; differs: number; admins: number; zero_padded: number; padded_width: number | null;
   /** Members the app had sent that the device lost; they are sent again. */
   resend: number;
+  /** Numbers of removed members the device no longer has, now free for new members. */
+  freed: number;
   rows: { no: string; device_name: string; app_name: string | null; admin: boolean; state: "same" | "differs" | "missing" }[];
 };
 export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
@@ -194,6 +196,8 @@ export type LoanRow = {
 export type MemberInput = {
   member_no?: number | null; first_name: string; last_name?: string | null; father_name?: string | null;
   phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
+  /** Only an edit sends it; a new member joins today. */
+  joined_on?: string | null;
 };
 export type PeriodInput = {
   plan_id: string; start_date?: string | null; fee?: number | null; discount?: number;
@@ -203,9 +207,18 @@ export type PeriodInput = {
 };
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
+/** Removed members whose numbers are still theirs (until the device lets them go). */
+export type K50Held = { member_id: string; member_no: number; name: string; deleted_at: string | null; free_no: boolean; error: string | null };
+export type K50Looked = {
+  no: number; on_device: boolean; device_name: string | null; fingers: number | null; device_admin: boolean;
+  member: string | null; removed_member: string | null;
+};
+export type K50Freed = { no: number; ok: boolean; error: string | null; device_name: string | null };
 export type Period = {
   id: string; plan_name: string; kind: PlanKind; start_date: string; end_date: string;
   fee: number; discount: number; note: string | null; receipt_id: string | null; receipt_no: string | null; removable: boolean;
+  /** Its dates may be corrected (a partner always, the manager on the day). */
+  editable: boolean;
   paid: number; owed: number;
   /** A period with no bill: the Excel fee of its month. */
   excel_fee: number | null;
@@ -472,7 +485,8 @@ export const api = {
   owed: (p: ListQuery, signal?: AbortSignal) => request<Page<OwedRow> & { sum: number }>(`/owed?${listParams(p)}`, { signal }),
   deletePeriod: (id: string, reason?: string) => request<void>(`/periods/${id}${why(reason)}`, { method: "DELETE" }),
   updatePeriod: (id: string, p: { start_date: string; end_date: string; note?: string | null }) => request<void>(`/periods/${id}`, { method: "PUT", body: p }),
-  deleteMember: (id: string, reason?: string) => request<void>(`/members/${id}${why(reason)}`, { method: "DELETE" }),
+  deleteMember: (id: string, reason?: string, freeNo = false) =>
+    request<void>(`/members/${id}?${query({ reason: reason || undefined, free_no: freeNo ? "true" : undefined })}`, { method: "DELETE" }),
   restoreMember: (id: string) => request<void>(`/members/${id}/restore`, { method: "POST" }),
   dailySeat: (b: { member_id?: string | null; guest_name?: string | null } & PeriodInput) => request<Saved>("/daily-seats", { method: "POST", body: b }),
   otherBill: (b: { income_category: string; amount: number; description?: string }) => request<Saved>("/bills", { method: "POST", body: b }),
@@ -585,6 +599,9 @@ export const api = {
   compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),
   /** A partner says these device users are the app's members with the same numbers. */
   k50NamesOk: (rows: { no: string; device_name: string }[]) => request<void>("/k50/names/ok", { method: "POST", body: rows }),
+  k50Held: () => request<K50Held[]>("/k50/held"),
+  lookK50: (nos: number[]) => request<{ Ok?: K50Looked[]; Err?: string }>("/k50/look", { method: "POST", body: { nos } }),
+  freeK50: (nos: number[]) => request<{ Ok?: K50Freed[]; Err?: string }>("/k50/free", { method: "POST", body: { nos } }),
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
   memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
   checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),
@@ -743,6 +760,9 @@ export function k50ErrorText(error: string | null | undefined): string {
     return `این آیدی روی دستگاه به نام «${who || "بی‌نام"}» ثبت است. اگر او کس دیگری است، شمارهٔ این عضو را عوض کنید. برنامه چیزی روی دستگاه ننوشت.`;
   }
   if (e === "finger_taken") return "این انگشت از قبل روی همین آیدی ثبت است و برنامه آن را عوض نمی‌کند. انگشت دیگری را انتخاب کنید.";
+  if (e === "member_alive") return "این آیدی مال یک عضو فعلی است. اول آن عضو را حذف کنید (یا آیدی‌اش را عوض کنید).";
+  if (e.startsWith("delete_failed")) return "دستگاه این آیدی را پاک نکرد.";
+  if (e === "still_there") return "دستگاه گفت پاک کرد، اما آیدی هنوز روی دستگاه است. دوباره امتحان کنید.";
   if (e === "device_admin") return "این آیدی روی دستگاه «مدیر دستگاه» است؛ برنامه به آن دست نمی‌زند.";
   if (e.startsWith("set_user_failed")) return "دستگاه این عضو را نپذیرفت.";
   if (e === "enroll_failed") return "دستگاه برای ثبت انگشت آماده نشد. اگر این انگشت قبلاً ثبت شده، انگشت دیگری را انتخاب کنید.";

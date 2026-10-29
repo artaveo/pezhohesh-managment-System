@@ -24,6 +24,8 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   const toast = useToast();
   const partner = useAuth().user?.role === "partner";
   const [removing, setRemoving] = useState<"member" | Period | null>(null);
+  // Removing a member lets their number go by default: off the fingerprint device, fingers too.
+  const [freeNo, setFreeNo] = useState(true);
   const [dates, setDates] = useState<Period | null>(null);
   const [paying, setPaying] = useState<Period | null>(null);
   const [d, setD] = useState<MemberDetail | null>(null);
@@ -153,7 +155,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
                 <td>
                   <span className="row-tools">
                     {p.owed > 0 && <button className="btn small" onClick={() => setPaying(p)}>پرداخت باقی</button>}
-                    {(partner || p.removable) && <button className="btn small ghost" aria-label="اصلاح تاریخ" onClick={() => setDates(p)}><Icon name="edit" /></button>}
+                    {p.editable && <button className="btn small ghost" onClick={() => setDates(p)}><Icon name="edit" /> اصلاح تاریخ</button>}
                     {p.removable && <button className="btn small ghost" aria-label="حذف" onClick={() => setRemoving(p)}><Icon name="trash" /></button>}
                   </span>
                 </td>
@@ -168,13 +170,19 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
 
       {removing === "member" && (
         <DeleteDialog title={`حذف ${name}`} action="حذف عضو" reasonRequired onClose={() => setRemoving(null)}
+          extra={
+            <label className="check choice">
+              <input type="checkbox" checked={freeNo} onChange={(e) => setFreeNo(e.target.checked)} />
+              <span>آیدی <bdi dir="ltr">{m.member_no}</bdi> آزاد شود: این شخص با همهٔ انگشت‌هایش از دستگاه انگشت پاک می‌شود و این آیدی به عضو تازه داده می‌شود.</span>
+            </label>
+          }
           onConfirm={async (reason) => {
-            await api.deleteMember(id, reason);
+            await api.deleteMember(id, reason, freeNo);
             setRemoving(null);
-            toast(`${name} حذف شد.`, async () => { await api.restoreMember(id); });
+            toast(freeNo ? `${name} حذف شد؛ آیدی‌اش از دستگاه پاک و آزاد می‌شود.` : `${name} حذف شد.`, async () => { await api.restoreMember(id); });
             onRemoved?.();
           }}>
-          دوره‌ها و عکس و تذکرهٔ این عضو هم با او حذف می‌شوند. بل‌هایش می‌مانند، چون پولش گرفته شده. اگر اشتباه شد، از «چه کسی چه کرد» برگردانده می‌شود.
+          دوره‌ها و عکس و تذکرهٔ این عضو هم با او حذف می‌شوند. بل‌هایش می‌مانند، چون پولش گرفته شده. اگر اشتباه شد، از «چه کسی چه کرد» برگردانده می‌شود (اگر آیدی‌اش هنوز به کس دیگری داده نشده باشد).
         </DeleteDialog>
       )}
       {removing && removing !== "member" && (
@@ -204,6 +212,9 @@ function EditMember({ id, member, onDone }: { id: string; member: MemberDetail; 
     <section className="panel wide">
       <h2>ویرایش مشخصات</h2>
       <MemberFields value={m} onChange={setM} />
+      <div className="form-grid">
+        <SolarDate label="تاریخ ثبت‌نام" value={m.joined_on ?? member.member.joined_on} onChange={(d) => setM({ ...m, joined_on: d })} />
+      </div>
       {error && <p className="form-error">{error}</p>}
       <div className="actions">
         <button className="btn" disabled={busy || !m.first_name.trim()} onClick={() => void save()}>ذخیره</button>

@@ -44,6 +44,9 @@ pub struct MemberInput {
     field_of_study: Option<String>,
     tazkira_no: Option<String>,
     notes: Option<String>,
+    /// The day they joined; only an edit changes it (a new member joins today).
+    #[serde(default)]
+    joined_on: Option<NaiveDate>,
 }
 
 /// A paid period (or, with `record_only`, the dates of one already paid in the Excel book).
@@ -117,6 +120,9 @@ pub struct Period {
     /// May this person remove it (only periods without a bill)?
     #[sqlx(skip)]
     removable: bool,
+    /// May this person correct its dates (a partner always, the manager on the day)?
+    #[sqlx(skip)]
+    editable: bool,
 }
 
 /// The seat and the internet plan run separately; each renews after its own last day.
@@ -228,7 +234,7 @@ pub async fn update_member(
     let mut tx = begin_as(&s.db, &user).await?;
     let done = sqlx::query(
         "UPDATE members SET member_no = COALESCE($2, member_no), first_name = $3, last_name = $4, father_name = $5, \
-             phone = $6, field_of_study = $7, tazkira_no = $8, notes = $9 \
+             phone = $6, field_of_study = $7, tazkira_no = $8, notes = $9, joined_on = COALESCE($10, joined_on) \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -240,6 +246,7 @@ pub async fn update_member(
     .bind(clean(&m.field_of_study))
     .bind(clean(&m.tazkira_no))
     .bind(clean(&m.notes))
+    .bind(m.joined_on)
     .execute(&mut *tx)
     .await
     .map_err(member_no_taken)?;
@@ -279,7 +286,8 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     .fetch_all(&mut *tx)
     .await?;
     for p in &mut periods {
-        p.removable = p.receipt_id.is_none() && (user.is_partner() || typed_today(p.created_at));
+        p.editable = user.is_partner() || typed_today(p.created_at);
+        p.removable = p.receipt_id.is_none() && p.editable;
     }
     let mut timelines = Vec::new();
     for kind in ["monthly", "internet"] {
@@ -856,15 +864,16 @@ pub async fn delete_member(
     State(s): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
-    Query(r): Query<Reason>,
+    Query(r): Query<RemoveMember>,
 ) -> Result<StatusCode, ApiError> {
     if !user.is_partner() {
         return Err(ApiError::FORBIDDEN);
     }
     let mut tx = begin_as(&s.db, &user).await?;
-    let done = sqlx::query("UPDATE members SET deleted_at = now(), deleted_reason = $2 WHERE id = $1 AND deleted_at IS NULL")
+    let done = sqlx::query("UPDATE members SET deleted_at = now(), deleted_reason = $2, free_no = $3 WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .bind(clean(&r.reason))
+        .bind(r.free_no)
         .execute(&mut *tx)
         .await
         .map_err(|e| match &e {
@@ -875,8 +884,20 @@ pub async fn delete_member(
         return Err(NOT_FOUND);
     }
     tx.commit().await?;
+    if r.free_no {
+        crate::k50::free_soon(s.db.clone());
+    }
     crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct RemoveMember {
+    reason: Option<String>,
+    /// Take the member off the fingerprint device (fingers too) and let a new member have
+    /// the number.
+    #[serde(default)]
+    free_no: bool,
 }
 
 /// Bringing a removed member back, with the periods and documents removed together with them.
@@ -885,10 +906,12 @@ pub async fn restore_member(State(s): State<AppState>, user: CurrentUser, Path(i
         return Err(ApiError::FORBIDDEN);
     }
     let mut tx = begin_as(&s.db, &user).await?;
+    // Their number comes back with them, unless a new member has it by now.
     let done = sqlx::query("UPDATE members SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL")
         .bind(id)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(member_no_taken)?;
     if done.rows_affected() == 0 {
         return Err(NOT_FOUND);
     }

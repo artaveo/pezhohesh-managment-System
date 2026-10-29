@@ -6,9 +6,11 @@ import { Modal } from "./Modal";
  * Asking before a removal, with the reason that goes into «چه کسی چه کرد». Nothing is
  * erased: a partner can bring the line back from there.
  */
-export function DeleteDialog({ title, children, action = "حذف کن", reasonRequired, onConfirm, onClose }: {
+export function DeleteDialog({ title, children, extra, action = "حذف کن", reasonRequired, onConfirm, onClose }: {
   title: string;
   children?: ReactNode;
+  /** A choice that goes with the removal, under the explanation. */
+  extra?: ReactNode;
   action?: string;
   reasonRequired?: boolean;
   onConfirm: (reason: string) => Promise<void>;
@@ -26,6 +28,7 @@ export function DeleteDialog({ title, children, action = "حذف کن", reasonRe
     <Modal label={title} onClose={onClose}>
       <h2>{title}</h2>
       {children && <div className="muted">{children}</div>}
+      {extra}
       <label className="field wide">
         <span>دلیل{reasonRequired ? " *" : ""}</span>
         <input value={reason} onChange={(e) => { setReason(e.target.value); setError(""); }} autoFocus placeholder="مثلاً: دو بار ثبت شده بود"

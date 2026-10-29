@@ -83,7 +83,7 @@ static class K50Helper
         if (req.TryGetValue("ops", out list) && list is IEnumerable)
             foreach (var o in (IEnumerable)list) ops.Add(o as Dictionary<string, object> ?? new Dictionary<string, object>());
 
-        var writes = ops.Any(o => Str(o, "op") == "set_user" || Str(o, "op") == "set_time" || Str(o, "op") == "put_fingers");
+        var writes = ops.Any(o => Str(o, "op") == "set_user" || Str(o, "op") == "set_time" || Str(o, "op") == "put_fingers" || Str(o, "op") == "delete_user");
         var results = new ArrayList();
         try
         {
@@ -113,6 +113,7 @@ static class K50Helper
             case "info": return Info();
             case "user": return UserInfo(Str(o, "no"));
             case "set_user": return SetUser(o);
+            case "delete_user": return DeleteUser(Str(o, "no"));
             case "enroll":
             {
                 var no = Str(o, "no");
@@ -233,6 +234,31 @@ static class K50Helper
         var end = Str(o, "end");
         if (start != "" && end != "") dates = SetValid(no, start, end, out read);
         return Obj("ok", true, "created", !had, "valid_dates", dates, "date_form", dateForm, "valid_read", read);
+    }
+
+    // Takes the user off the device with every finger, card and password (backup number 12),
+    // then reads the ID again to be sure it is gone. The device's administrators stay.
+    static Dictionary<string, object> DeleteUser(string no)
+    {
+        string name = "", pw = "";
+        int priv = 0;
+        bool en = false;
+        if (!(bool)zk.SSR_GetUserInfo(m, no, ref name, ref pw, ref priv, ref en)) return Obj("ok", true, "existed", false);
+        if (priv > 0) return Obj("ok", false, "error", "device_admin");
+        bool done = false;
+        try { done = (bool)zk.SSR_DeleteEnrollData(m, no, 12); } catch { }
+        if (!done)
+        {
+            // Older firmware: the fingers first, then the user.
+            try { zk.SSR_DeleteEnrollDataExt(m, no, 13); } catch { }
+            try { done = (bool)zk.SSR_DeleteEnrollData(m, no, 12); } catch { }
+        }
+        if (!done) return Obj("ok", false, "error", "delete_failed", "code", LastError());
+        string n2 = "", p2 = "";
+        int pr2 = 0;
+        bool e2 = false;
+        if ((bool)zk.SSR_GetUserInfo(m, no, ref n2, ref p2, ref pr2, ref e2)) return Obj("ok", false, "error", "still_there");
+        return Obj("ok", true, "existed", true, "name", name);
     }
 
     // A form counts only when the device gives the same days back (some take a form and

@@ -857,7 +857,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         INSERT INTO members (id, member_no, first_name, father_name, phone, field_of_study, tazkira_no, joined_on, import_batch_id)
         SELECT gen_random_uuid(), m.no, m.name, m.father, m.phone, m.field, m.tazkira, $7, $8
         FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS m(no, name, father, phone, field, tazkira)
-        ON CONFLICT (member_no) DO UPDATE SET
+        ON CONFLICT (member_no) WHERE no_freed_at IS NULL DO UPDATE SET
             father_name    = COALESCE(members.father_name, EXCLUDED.father_name),
             phone          = COALESCE(members.phone, EXCLUDED.phone),
             field_of_study = COALESCE(members.field_of_study, EXCLUDED.field_of_study),

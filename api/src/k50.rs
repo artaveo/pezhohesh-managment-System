@@ -194,6 +194,9 @@ struct Wanted {
     /// The device's user under this number is this member (made by the app, or checked).
     claimed: Option<bool>,
     pushed_name: Option<String>,
+    /// Removed, with the number freed or asked to be (such members are not sent again).
+    #[allow(dead_code)]
+    giving_up: bool,
 }
 
 /// Per member: let in while a monthly or daily seat covers today, from the start of that
@@ -209,12 +212,13 @@ WITH seat AS (
            (m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date)) AS enabled,
            COALESCE((SELECT min(s.start_date) FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date),
                     (SELECT max(s.start_date) FROM seat s WHERE s.member_id = m.id)) AS start_date,
-           (SELECT max(s.end_date) FROM seat s WHERE s.member_id = m.id) AS end_date
+           (SELECT max(s.end_date) FROM seat s WHERE s.member_id = m.id) AS end_date,
+           (m.free_no OR m.no_freed_at IS NOT NULL) AS giving_up
     FROM members m
 )
 SELECT w.member_id, w.member_no, w.name, w.enabled, w.start_date, w.end_date,
        CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no,
-       w.imported, k.claimed, k.pushed_name
+       w.imported, k.claimed, k.pushed_name, w.giving_up
 FROM want w LEFT JOIN k50_users k ON k.member_id = w.member_id
 ";
 
@@ -226,6 +230,7 @@ const DIFFERS: &str = "
      OR k.pushed_enabled IS DISTINCT FROM w.enabled OR k.pushed_start IS DISTINCT FROM w.start_date
      OR k.pushed_end IS DISTINCT FROM w.end_date)
     AND (w.enabled OR k.pushed_at IS NOT NULL)
+    AND NOT w.giving_up
     AND (k.error_at IS NULL OR k.error_at < now() - interval '30 minutes')";
 
 async fn pending(db: &PgPool) -> Result<Vec<Wanted>, sqlx::Error> {
@@ -475,7 +480,7 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
     }
     let added = sqlx::query(
         "INSERT INTO attendance (member_id, device_user_no, punched_at, verify_mode) \
-         SELECT (SELECT m.id FROM members m WHERE m.member_no = l.no), l.no, l.at, l.mode \
+         SELECT (SELECT m.id FROM members m WHERE m.member_no = l.no AND m.no_freed_at IS NULL), l.no, l.at, l.mode \
          FROM UNNEST($1::int[], $2::timestamptz[], $3::int[]) AS l(no, at, mode) \
          ON CONFLICT (device_user_no, punched_at) DO NOTHING",
     )
@@ -498,7 +503,13 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
 /// Sends everything that changed (a few batches at most) and, when asked, reads the punches.
 async fn round(db: &PgPool, cfg: &Config, punches: bool, batches: u32) -> Last {
     let mut last = Last { at: Some(Utc::now()), ok: true, ..Default::default() };
+    if let Err(e) = free_asked(db, cfg).await {
+        last.error = Some(e);
+    }
     for _ in 0..batches {
+        if last.error.is_some() {
+            break;
+        }
         let list = match pending(db).await {
             Ok(list) if list.is_empty() => break,
             Ok(list) => list,
@@ -938,6 +949,8 @@ pub struct Comparison {
     padded_width: Option<usize>,
     /// Members the app had sent that the device lost; they are sent again.
     resend: usize,
+    /// Numbers of removed members the device no longer has, now free for new members.
+    freed: usize,
     /// Every user whose name differs, then those the app does not know, then up to 300 in all.
     rows: Vec<Compared>,
 }
@@ -1149,6 +1162,21 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         .rows_affected() as usize
     };
     tx.commit().await?;
+    // Removed members the device no longer has (taken off in ZKAccess, or never sent):
+    // their numbers are free.
+    let mut freed = 0;
+    if !users.is_empty() {
+        let gone: Vec<i32> = sqlx::query_scalar(
+            "SELECT DISTINCT member_no FROM members WHERE deleted_at IS NOT NULL AND no_freed_at IS NULL AND NOT (member_no = ANY($1))",
+        )
+        .bind(&nos)
+        .fetch_all(&s.db)
+        .await?;
+        for no in gone {
+            forget_number(&s.db, Some(user.id), no, &device_no(&cfg, no)).await?;
+            freed += 1;
+        }
+    }
     if resend > 0 {
         tracing::info!("k50 compare: {resend} members sent before are not on the device; sending again");
         poke();
@@ -1192,6 +1220,7 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         zero_padded: padded.len(),
         padded_width,
         resend,
+        freed,
         rows: {
             let rank = |r: &Compared| match r.state {
                 "differs" => 0,
@@ -1453,6 +1482,245 @@ pub async fn names_ok(State(s): State<AppState>, user: CurrentUser, Json(rows): 
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Freeing numbers
+
+/// Gives up a number in the app once the device does not hold it: the removed members who
+/// had it let it go, and what the app kept for it (what was sent, the saved fingers, a
+/// partner's word about the name) goes, so the next person under it starts clean.
+async fn forget_number(db: &PgPool, by: Option<Uuid>, no: i32, dev_no: &str) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    if let Some(by) = by {
+        sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(by.to_string()).execute(&mut *tx).await?;
+    }
+    sqlx::query("UPDATE members SET no_freed_at = now(), free_no = false WHERE member_no = $1 AND deleted_at IS NOT NULL AND no_freed_at IS NULL")
+        .bind(no)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM k50_users k USING members m WHERE m.id = k.member_id AND k.member_no = $1 AND m.deleted_at IS NOT NULL")
+        .bind(no)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM k50_fingers WHERE no = $1 OR no = $2").bind(dev_no).bind(no.to_string()).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM k50_device_ids WHERE no = $1").bind(no).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM k50_name_ok WHERE member_no = $1").bind(no).execute(&mut *tx).await?;
+    tx.commit().await?;
+    tracing::info!("k50: number {no} is free");
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct Freed {
+    no: i32,
+    ok: bool,
+    error: Option<String>,
+    /// The user the device had under this number (now removed from it).
+    device_name: Option<String>,
+}
+
+/// Removes each number's user from the device with every finger, checks it is gone, and
+/// frees the number in the app. A number a member still has is refused. With `check_names`
+/// (the rounds, which no one watches) a device user whose name is not the removed
+/// member's is left alone: the number is someone else's there.
+async fn free_numbers(db: &PgPool, cfg: &Config, by: Option<Uuid>, nos: &[i32], check_names: bool) -> Result<Vec<Freed>, String> {
+    let alive: Vec<i32> = sqlx::query_scalar("SELECT member_no FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)")
+        .bind(nos)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out: Vec<Freed> = Vec::new();
+    let mut go: Vec<i32> = Vec::new();
+    for &no in nos {
+        if alive.contains(&no) {
+            out.push(Freed { no, ok: false, error: Some("member_alive".into()), device_name: None });
+        } else if !go.contains(&no) {
+            go.push(no);
+        }
+    }
+    if check_names && !go.is_empty() {
+        let looked = talk(cfg, go.iter().map(|&n| json!({ "op": "user", "no": device_no(cfg, n) })).collect(), Duration::from_secs(60)).await?;
+        let names: std::collections::HashMap<i32, String> = sqlx::query_as::<_, (i32, String)>(
+            "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')) FROM members \
+             WHERE deleted_at IS NOT NULL AND no_freed_at IS NULL AND member_no = ANY($1)",
+        )
+        .bind(&go)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+        let confirmed = names_confirmed(db).await.map_err(|e| e.to_string())?;
+        let mut keep = Vec::new();
+        for (no, a) in go.iter().zip(&looked) {
+            let device_name = a["name"].as_str().unwrap_or("").trim().to_string();
+            let app_name = names.get(no).cloned().unwrap_or_default();
+            let mine = a["exists"] != json!(true)
+                || device_name.is_empty()
+                || same_or_confirmed(&confirmed, &device_no(cfg, *no), &device_name, &app_name);
+            if mine {
+                keep.push(*no);
+            } else {
+                out.push(Freed { no: *no, ok: false, error: Some(format!("taken:{device_name}")), device_name: Some(device_name) });
+            }
+        }
+        go = keep;
+    }
+    if !go.is_empty() {
+        let answers = talk(cfg, go.iter().map(|&n| json!({ "op": "delete_user", "no": device_no(cfg, n) })).collect(), Duration::from_secs(90)).await?;
+        for (no, a) in go.iter().zip(&answers) {
+            if a["ok"] == json!(true) {
+                forget_number(db, by, *no, &device_no(cfg, *no)).await.map_err(|e| e.to_string())?;
+                out.push(Freed { no: *no, ok: true, error: None, device_name: a["name"].as_str().map(|n| n.trim().to_string()) });
+            } else {
+                out.push(Freed { no: *no, ok: false, error: Some(answer_error(a)), device_name: None });
+            }
+        }
+    }
+    // A removed member waiting for their number to be freed shows why it was not.
+    for f in out.iter().filter(|f| !f.ok) {
+        sqlx::query(
+            "INSERT INTO k50_users (member_id, member_no, error, error_at) \
+             SELECT id, member_no, $2, now() FROM members WHERE member_no = $1 AND deleted_at IS NOT NULL AND no_freed_at IS NULL \
+             ON CONFLICT (member_id) DO UPDATE SET error = EXCLUDED.error, error_at = now()",
+        )
+        .bind(f.no)
+        .bind(format!("free:{}", f.error.as_deref().unwrap_or("failed")))
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    out.sort_by_key(|f| f.no);
+    Ok(out)
+}
+
+/// The numbers of removed members asked to be freed, a few at a time; one the device
+/// refused is tried again after half an hour.
+async fn free_asked(db: &PgPool, cfg: &Config) -> Result<(), String> {
+    let nos: Vec<i32> = sqlx::query_scalar(
+        "SELECT m.member_no FROM members m LEFT JOIN k50_users k ON k.member_id = m.id \
+         WHERE m.free_no AND m.deleted_at IS NOT NULL AND m.no_freed_at IS NULL \
+           AND (k.error_at IS NULL OR k.error_at < now() - interval '30 minutes') \
+         ORDER BY m.deleted_at LIMIT 40",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    if nos.is_empty() {
+        return Ok(());
+    }
+    let done = free_numbers(db, cfg, None, &nos, true).await?;
+    tracing::info!("k50: freed {} of {} numbers asked for", done.iter().filter(|f| f.ok).count(), done.len());
+    Ok(())
+}
+
+/// Right after a member is removed with "free the number": done at once when the device is
+/// set up on this computer, even while the app does not keep the device up to date by itself.
+pub fn free_soon(db: PgPool) {
+    tokio::spawn(async move {
+        let Ok(cfg) = config(&db).await else { return };
+        if cfg.ip.trim().is_empty() || now_secs() < ENROLLING_UNTIL.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(e) = free_asked(&db, &cfg).await {
+            tracing::warn!("k50 free: {e}");
+        }
+    });
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Held {
+    member_id: Uuid,
+    member_no: i32,
+    name: String,
+    deleted_at: Option<DateTime<Utc>>,
+    /// Freeing was asked for (when the member was removed).
+    free_no: bool,
+    error: Option<String>,
+}
+
+/// GET /api/v1/k50/held: removed members whose numbers are still theirs.
+pub async fn held(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Held>>, ApiError> {
+    partner(&user)?;
+    let rows = sqlx::query_as(
+        "SELECT m.id AS member_id, m.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name, m.deleted_at, m.free_no, \
+                CASE WHEN k.error LIKE 'free:%' THEN substr(k.error, 6) END AS error \
+         FROM members m LEFT JOIN k50_users k ON k.member_id = m.id \
+         WHERE m.deleted_at IS NOT NULL AND m.no_freed_at IS NULL ORDER BY m.member_no",
+    )
+    .fetch_all(&s.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct Numbers {
+    nos: Vec<i32>,
+}
+
+#[derive(Serialize)]
+pub struct Looked {
+    no: i32,
+    /// On the device: whether it has the number, under which name, with how many fingers.
+    on_device: bool,
+    device_name: Option<String>,
+    fingers: Option<i64>,
+    device_admin: bool,
+    /// In the app: the member who has it now, or the removed one who had it.
+    member: Option<String>,
+    removed_member: Option<String>,
+}
+
+/// POST /api/v1/k50/look: what the device and the app hold under these numbers (nothing
+/// changes), shown before a partner frees them.
+pub async fn look(State(s): State<AppState>, user: CurrentUser, Json(b): Json<Numbers>) -> Result<Json<Result<Vec<Looked>, String>>, ApiError> {
+    partner(&user)?;
+    if b.nos.is_empty() || b.nos.len() > 100 || b.nos.iter().any(|n| *n <= 0) {
+        return Err(ApiError::bad("bad_number"));
+    }
+    let cfg = device_for(&s.db).await?;
+    let answers = match talk(&cfg, b.nos.iter().map(|&n| json!({ "op": "user", "no": device_no(&cfg, n) })).collect(), Duration::from_secs(60)).await {
+        Ok(a) => a,
+        Err(e) => return Ok(Json(Err(e))),
+    };
+    let names: Vec<(i32, String, bool)> = sqlx::query_as(
+        "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')), deleted_at IS NULL FROM members \
+         WHERE member_no = ANY($1) AND no_freed_at IS NULL",
+    )
+    .bind(&b.nos)
+    .fetch_all(&s.db)
+    .await?;
+    let rows = b
+        .nos
+        .iter()
+        .zip(&answers)
+        .map(|(&no, a)| {
+            let on_device = a["exists"] == json!(true);
+            Looked {
+                no,
+                on_device,
+                device_name: on_device.then(|| a["name"].as_str().unwrap_or("").trim().to_string()),
+                fingers: a["fingers"].as_i64(),
+                device_admin: a["privilege"].as_i64().unwrap_or(0) > 0,
+                member: names.iter().find(|(n, _, alive)| *n == no && *alive).map(|(_, name, _)| name.clone()),
+                removed_member: names.iter().find(|(n, _, alive)| *n == no && !*alive).map(|(_, name, _)| name.clone()),
+            }
+        })
+        .collect();
+    Ok(Json(Ok(rows)))
+}
+
+/// POST /api/v1/k50/free: removes these numbers' users from the device, fingers and all,
+/// and frees the numbers for new members. A partner has seen them with /look first.
+pub async fn free(State(s): State<AppState>, user: CurrentUser, Json(b): Json<Numbers>) -> Result<Json<Result<Vec<Freed>, String>>, ApiError> {
+    partner(&user)?;
+    if b.nos.is_empty() || b.nos.len() > 100 || b.nos.iter().any(|n| *n <= 0) {
+        return Err(ApiError::bad("bad_number"));
+    }
+    let cfg = device_for(&s.db).await?;
+    tracing::info!("k50: {} frees numbers {:?}", user.username, b.nos);
+    Ok(Json(free_numbers(&s.db, &cfg, Some(user.id), &b.nos, false).await))
 }
 
 #[cfg(test)]
