@@ -4,7 +4,10 @@ import { fa, formatShort } from "../../lib/solar";
 type Point = { day: string; income: number; expenses: number };
 
 // Income (accent, solid area) vs expenses (dashed neutral line), one axis in Afghani.
-export function TrendChart({ data }: { data: Point[] }) {
+// `tick` names a point (a day by default, a month name in the yearly chart); `every` thins the x labels.
+export function TrendChart({ data, label, tick = (p) => formatShort(p.day), every = 7 }: {
+  data: Point[]; label: string; tick?: (p: Point) => string; every?: number;
+}) {
   const W = 720, H = 240, L = 56, R = 16, T = 16, B = 28;
   const [hover, setHover] = useState<number | null>(null);
 
@@ -26,7 +29,7 @@ export function TrendChart({ data }: { data: Point[] }) {
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="درآمد و مصارف ۳۰ روز اخیر"
+      <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label={label}
         onPointerLeave={() => setHover(null)}
         onPointerMove={(e) => {
           const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
@@ -46,8 +49,8 @@ export function TrendChart({ data }: { data: Point[] }) {
             <text x={L - 8} y={y(t) + 4} className="axis" textAnchor="end">{compact(t)}</text>
           </g>
         ))}
-        {data.map((d, i) => ((i % 7 === 0 && data.length - 1 - i >= 4) || i === data.length - 1) && (
-          <text key={d.day} x={x(i)} y={H - 8} className="axis" textAnchor="middle">{formatShort(d.day)}</text>
+        {data.map((d, i) => ((i % every === 0 && (every === 1 || data.length - 1 - i >= 4)) || i === data.length - 1) && (
+          <text key={d.day} x={x(i)} y={H - 8} className="axis" textAnchor="middle">{tick(d)}</text>
         ))}
         <path d={areaPath} fill="url(#incomeFill)" />
         <path d={incomePath} className="line-income" />
@@ -62,7 +65,7 @@ export function TrendChart({ data }: { data: Point[] }) {
       </svg>
       {h && hover !== null && (
         <div className="tooltip" style={{ left: `${(x(hover) / W) * 100}%` }}>
-          <strong>{formatShort(h.day)}</strong>
+          <strong>{tick(h)}</strong>
           <span><i className="sw sw-income" />درآمد: {fa(h.income)} ؋</span>
           <span><i className="sw sw-expense" />مصارف: {fa(h.expenses)} ؋</span>
         </div>

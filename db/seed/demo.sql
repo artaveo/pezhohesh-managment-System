@@ -57,6 +57,25 @@ SELECT gen_random_uuid(), 'hall',
        d::date, (400 + (extract(doy FROM d)::int * 71) % 1800)
 FROM generate_series(current_date - 60, current_date, interval '1 day') d;
 
+-- two earlier years of daily takings (smaller, growing) so the yearly history and
+-- "same month last year" comparisons have something to show
+INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category)
+SELECT gen_random_uuid(), 'D-1404-8' || lpad(row_number() OVER ()::text, 6, '0'), 'hall', d::date,
+       round(amt * (0.55 + 0.35 * (800 - (current_date - d::date)) / 800.0)), cat
+FROM generate_series(current_date - 800, current_date - 61, interval '1 day') d
+CROSS JOIN LATERAL (VALUES
+    ('monthly',  (2500 + (extract(doy FROM d)::int * 113) % 3500)::numeric),
+    ('daily',    (300 + (extract(doy FROM d)::int * 37) % 700)::numeric),
+    ('internet', (CASE WHEN extract(dow FROM d) IN (0, 3) THEN 1500 ELSE 500 END)::numeric),
+    ('hotspot',  (200 + (extract(doy FROM d)::int * 53) % 400)::numeric)
+) AS x(cat, amt);
+
+INSERT INTO expenses (id, department, category_id, spent_on, amount)
+SELECT gen_random_uuid(), 'hall',
+       (ARRAY['00000000-0000-7000-8000-0000000000e1','00000000-0000-7000-8000-0000000000e2','00000000-0000-7000-8000-0000000000e3'])[1 + extract(doy FROM d)::int % 3]::uuid,
+       d::date, (300 + (extract(doy FROM d)::int * 71) % 1500)
+FROM generate_series(current_date - 800, current_date - 61, interval '1 day') d;
+
 -- attendance from the fingerprint device: active members, most days
 INSERT INTO attendance (id, member_id, device_user_no, punched_at)
 SELECT gen_random_uuid(), m.id, m.member_no, d + interval '8 hours' + (m.member_no % 120) * interval '1 minute'

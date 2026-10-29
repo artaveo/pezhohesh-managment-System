@@ -60,8 +60,18 @@ jobs:
             desktop/src-tauri -> target
           key: ${{ matrix.target }}
 
-      - name: Build API and place it inside the installer
+      - name: Build API and fingerprint helper and place them inside the installer
         run: node scripts/prepare-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Check the fingerprint helper
+        shell: pwsh
+        run: |
+          # Without ZKTeco's SDK on the build machine it must still answer, in JSON, as a 32-bit program.
+          $out = '{"ip":"192.0.2.1","port":4370,"machine":1,"key":0,"ops":[{"op":"info"}]}' |
+            & "desktop\src-tauri\binaries\pezhohesh-k50-${{ matrix.target }}.exe" 2>&1 | Out-String
+          $out = $out -replace "`r?`n", ' '
+          if ($out -notmatch '"error":"sdk_missing","bits":32') { Write-Output "::error::k50 helper answered: $out"; exit 1 }
+          Write-Output "::notice::k50 helper answered: $out"
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -109,7 +119,9 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: پژوهش ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
-          prerelease: ${{ startsWith(env.RELEASE_TAG, 'v0.') }}
+          # A full release, so ./releases/latest (the link in the install guide) finds it.
+          prerelease: false
+          make_latest: true
           files: |
             out/Pezhohesh-Setup-x64.exe
             out/Pezhohesh-Setup-arm64.exe

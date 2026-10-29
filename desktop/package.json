@@ -1,7 +1,8 @@
 {
   "name": "pezhohesh-desktop",
   "private": true,
-  "version": "0.1.0",
+  "license": "MIT",
+  "version": "0.22.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +13,7 @@
   },
   "dependencies": {
     "@fontsource/vazirmatn": "5.1.0",
+    "@tauri-apps/api": "2.12.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },

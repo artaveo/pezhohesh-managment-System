@@ -1,41 +1,54 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { accentTokens, OFFICIAL_GREEN } from "./color";
+import type { ThemeMode } from "../lib/api";
 
-// The personal color is kept per user. Until login is wired to the API it is stored
-// on this device; later it is saved in app_users.theme_color so it follows the user.
-const STORAGE_KEY = "pezhohesh.accent";
+// The personal color and light/dark choice are kept per user in app_users (see AuthProvider);
+// before anyone signs in the app shows the official green and the last mode used on this laptop.
+const MODE_KEY = "pezhohesh.mode";
 
-type ThemeCtx = { accent: string; isOfficial: boolean; setAccent: (hex: string) => void; reset: () => void };
+type ThemeCtx = {
+  accent: string;
+  isOfficial: boolean;
+  setAccent: (hex: string) => void;
+  reset: () => void;
+  mode: ThemeMode;
+  dark: boolean;
+  setMode: (m: ThemeMode) => void;
+};
 const Ctx = createContext<ThemeCtx | null>(null);
 
-function readStored(): string {
+function storedMode(): ThemeMode {
   try {
-    return localStorage.getItem(STORAGE_KEY) || OFFICIAL_GREEN;
+    const m = localStorage.getItem(MODE_KEY);
+    return m === "light" || m === "dark" ? m : "system";
   } catch {
-    return OFFICIAL_GREEN;
+    return "system";
   }
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [accent, setAccentState] = useState(readStored);
-  const [dark, setDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
+  const [accent, setAccentState] = useState(OFFICIAL_GREEN);
+  const [mode, setModeState] = useState<ThemeMode>(storedMode);
+  const [systemDark, setSystemDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
+  const dark = mode === "dark" || (mode === "system" && systemDark);
 
   useEffect(() => {
     const mq = matchMedia("(prefers-color-scheme: dark)");
-    const on = (e: MediaQueryListEvent) => setDark(e.matches);
+    const on = (e: MediaQueryListEvent) => setSystemDark(e.matches);
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, []);
 
   useEffect(() => {
     const root = document.documentElement;
+    if (mode === "system") delete root.dataset.theme;
+    else root.dataset.theme = mode;
+    try { localStorage.setItem(MODE_KEY, mode); } catch { /* only a convenience */ }
+  }, [mode]);
+
+  useEffect(() => {
+    const root = document.documentElement;
     for (const [k, v] of Object.entries(accentTokens(accent, dark))) root.style.setProperty(k, v);
-    try {
-      if (accent === OFFICIAL_GREEN) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, accent);
-    } catch {
-      /* storage unavailable: the color still applies for this session */
-    }
   }, [accent, dark]);
 
   const value = useMemo<ThemeCtx>(
@@ -44,8 +57,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       isOfficial: accent === OFFICIAL_GREEN,
       setAccent: setAccentState,
       reset: () => setAccentState(OFFICIAL_GREEN),
+      mode,
+      dark,
+      setMode: setModeState,
     }),
-    [accent],
+    [accent, mode, dark],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

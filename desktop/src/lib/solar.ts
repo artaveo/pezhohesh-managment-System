@@ -7,7 +7,7 @@ function solar(d: Date): { y: number; m: number; d: number } {
   return { y: Number(p.year), m: Number(p.month), d: Number(p.day) };
 }
 
-const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+export const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 export const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
@@ -22,6 +22,24 @@ function startOf(d: Date, unit: "month" | "year"): Date {
   return x;
 }
 
+/** Solar month and year boundaries, each the first Gregorian day of that month or year. */
+export const monthStart = (d = new Date()) => startOf(d, "month");
+export const nextMonth = (ms: Date) => startOf(addDays(ms, 32), "month");
+export const prevMonth = (ms: Date) => startOf(addDays(ms, -1), "month");
+// A Solar month is 29 to 31 days and a year 365 or 366, so 360 days back is always inside the same month a year earlier.
+export const sameMonthLastYear = (ms: Date) => startOf(addDays(ms, -360), "month");
+export const yearStart = (d = new Date()) => startOf(d, "year");
+export const nextYear = (ys: Date) => startOf(addDays(ys, 370), "year");
+export const prevYear = (ys: Date) => startOf(addDays(ys, -1), "year");
+/** The 12 month starts of the year beginning at `ys`, plus the next year's start. */
+export function monthsOfYear(ys: Date): Date[] {
+  const out = [ys];
+  for (let i = 0; i < 12; i++) out.push(nextMonth(out[i]));
+  return out;
+}
+export const parseIso = (s: string) => new Date(s + "T00:00:00");
+export const daysBetween = (a: Date, b: Date) => Math.round((b.getTime() - a.getTime()) / 864e5);
+
 export type Period = "day" | "month" | "year";
 
 /** Current window [from, to) and the previous one starting at prev_from, as ISO dates. */
@@ -35,15 +53,51 @@ export function windowFor(period: Period, today = new Date()) {
   return { from: iso(from), to: iso(next), prev_from: iso(prev) };
 }
 
-const longDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-const shortDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian", { day: "numeric", month: "long" });
+const longDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const shortDate = new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { day: "numeric", month: "long" });
 export const formatLong = (d: Date) => {
   const p = Object.fromEntries(longDate.formatToParts(d).map((x) => [x.type, x.value]));
   return `${p.weekday}، ${p.day} ${p.month} ${p.year}`;
 };
 export const formatShort = (d: Date | string) => shortDate.format(typeof d === "string" ? new Date(d + "T00:00:00") : d);
-export const monthName = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian", { month: "long" }).format(d);
-export const yearNumber = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian", { year: "numeric" }).format(d);
+export const monthName = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { month: "long" }).format(d);
+export const yearNumber = (d = new Date()) => new Intl.DateTimeFormat("fa-AF-u-ca-persian-nu-latn", { year: "numeric" }).format(d);
 
-const num = new Intl.NumberFormat("fa-AF");
-export const fa = (n: number) => num.format(Math.round(n));
+const num = new Intl.NumberFormat("en-US");
+// Negative numbers are isolated left-to-right so the minus stays in front inside Persian text.
+export const fa = (n: number) => {
+  const s = num.format(Math.round(n));
+  return s.startsWith("-") ? `\u2066${s}\u2069` : s;
+};
+
+// ---------------------------------------------------------------------------
+// Solar dates typed and printed by hand (forms and bills).
+
+export const MONTHS = ["حمل", "ثور", "جوزا", "سرطان", "اسد", "سنبله", "میزان", "عقرب", "قوس", "جدی", "دلو", "حوت"];
+export type SolarDay = { y: number; m: number; d: number };
+
+export const toSolar = (d: Date | string): SolarDay => solar(typeof d === "string" ? parseIso(d) : d);
+
+/** Gregorian day of a Solar date, or null when that day does not exist (31 Mizan…). */
+export function fromSolar({ y, m, d }: SolarDay): Date | null {
+  if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y > 1300 && y < 1500)) return null;
+  // 1 Hamal falls on 20, 21 or 22 March; months 1-6 have 31 days, 7-11 have 30.
+  const nowruz = [20, 21, 22].map((day) => new Date(y + 621, 2, day)).find((x) => { const s = solar(x); return s.m === 1 && s.d === 1; });
+  if (!nowruz) return null;
+  const x = addDays(nowruz, (m - 1) * 31 - Math.max(0, m - 7) + d - 1);
+  const s = solar(x);
+  return s.y === y && s.m === m && s.d === d ? x : null;
+}
+
+/** "5 عقرب 1405" */
+export const formatDay = (d: Date | string) => {
+  const s = toSolar(d);
+  return `${s.d} ${MONTHS[s.m - 1]} ${s.y}`;
+};
+/** "1405/08/05", for bills and narrow columns. */
+export const formatNumeric = (d: Date | string) => {
+  const s = toSolar(d);
+  return `${s.y}/${String(s.m).padStart(2, "0")}/${String(s.d).padStart(2, "0")}`;
+};
+const weekday = new Intl.DateTimeFormat("fa-AF", { weekday: "long" });
+export const weekdayName = (d: Date | string) => weekday.format(typeof d === "string" ? parseIso(d) : d);
