@@ -135,6 +135,21 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
+/// Starts a transaction where a dropped request cannot leave it half begun. sqlx loses track
+/// of a transaction when the future is dropped while BEGIN is on its way (the browser
+/// cancelled the request, as a search box does on every key): the connection goes back to
+/// the pool still inside that transaction, every later query on it joins it, its locks are
+/// never released and the app hangs on the next sign-in check. Begun in a task of its own,
+/// BEGIN always finishes; if no one is waiting any more the transaction is dropped there,
+/// rolled back, and the connection comes back clean.
+pub async fn begin(db: &PgPool) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+    let db = db.clone();
+    match tokio::spawn(async move { db.begin().await }).await {
+        Ok(r) => r,
+        Err(e) => Err(sqlx::Error::Protocol(format!("begin: {e}"))),
+    }
+}
+
 /// Starts a transaction that acts as `user`: their database role, and their id for the audit log.
 pub async fn begin_as(db: &PgPool, user: &CurrentUser) -> Result<Transaction<'static, Postgres>, ApiError> {
     let role = match user.role.as_str() {
@@ -144,7 +159,7 @@ pub async fn begin_as(db: &PgPool, user: &CurrentUser) -> Result<Transaction<'st
         "pec_staff" => "pz_pec",
         _ => return Err(ApiError::FORBIDDEN),
     };
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     // One statement for both (each is a trip to the server, slow over a weak internet).
     sqlx::query("SELECT set_config('role', $1, true), set_config('app.user_id', $2, true)")
         .bind(role)
@@ -260,7 +275,7 @@ pub async fn setup(State(s): State<AppState>, Json(b): Json<NewAccount>) -> Resu
     }
     let hash = hash_password(&b.password)?;
 
-    let mut tx = s.db.begin().await?;
+    let mut tx = begin(&s.db).await?;
     // Serialize concurrent first-run attempts, then make sure nobody beat us to it.
     sqlx::query("LOCK TABLE app_users IN EXCLUSIVE MODE").execute(&mut *tx).await?;
     let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM app_users)").fetch_one(&mut *tx).await?;
@@ -396,7 +411,7 @@ pub async fn change_password(
     if !verify_password(&b.current, &hash) {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong_password"));
     }
-    let mut tx = s.db.begin().await?;
+    let mut tx = begin(&s.db).await?;
     sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(user.id.to_string()).execute(&mut *tx).await?;
     sqlx::query("UPDATE app_users SET password_hash = $2, must_change_password = false WHERE id = $1")
         .bind(user.id)
@@ -421,7 +436,7 @@ pub async fn set_theme(State(s): State<AppState>, user: CurrentUser, Json(b): Js
             return Err(ApiError::bad("bad_color"));
         }
     }
-    let mut tx = s.db.begin().await?;
+    let mut tx = begin(&s.db).await?;
     sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(user.id.to_string()).execute(&mut *tx).await?;
     sqlx::query("UPDATE app_users SET theme_color = $2 WHERE id = $1")
         .bind(user.id)
@@ -442,7 +457,7 @@ pub async fn set_theme_mode(State(s): State<AppState>, user: CurrentUser, Json(b
     if !matches!(b.mode.as_str(), "system" | "light" | "dark") {
         return Err(ApiError::bad("bad_mode"));
     }
-    let mut tx = s.db.begin().await?;
+    let mut tx = begin(&s.db).await?;
     sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(user.id.to_string()).execute(&mut *tx).await?;
     sqlx::query("UPDATE app_users SET theme_mode = $2 WHERE id = $1")
         .bind(user.id)
@@ -466,6 +481,8 @@ pub struct UserRow {
     active: bool,
     must_change_password: bool,
     last_login_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The digit in front of the member IDs this person gives (Rahimi 1, Naseri 2).
+    member_no_prefix: Option<i16>,
 }
 
 pub async fn list_users(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<UserRow>>, ApiError> {
@@ -475,7 +492,7 @@ pub async fn list_users(State(s): State<AppState>, user: CurrentUser) -> Result<
     let mut tx = begin_as(&s.db, &user).await?;
     let rows: Vec<UserRow> = sqlx::query_as(
         "SELECT u.id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.active, \
-                u.must_change_password, \
+                u.must_change_password, u.member_no_prefix, \
                 (SELECT last_login_at FROM login_state l WHERE l.user_id = u.id) AS last_login_at \
          FROM app_users u JOIN staff s ON s.id = u.staff_id \
          WHERE u.deleted_at IS NULL ORDER BY u.active DESC, u.role, s.full_name",
@@ -590,6 +607,8 @@ pub struct UpdateUser {
     can_see_pec_finance: Option<bool>,
     /// A new temporary password; the person must change it at next sign-in.
     reset_password: Option<String>,
+    /// Partners only: the digit in front of the member IDs this person gives; 0 for none.
+    member_no_prefix: Option<i16>,
 }
 
 pub async fn update_user(
@@ -603,6 +622,14 @@ pub async fn update_user(
     }
     if let Some(r) = &b.role {
         check_role(r)?;
+    }
+    if let Some(p) = b.member_no_prefix {
+        if !user.is_partner() {
+            return Err(ApiError(StatusCode::FORBIDDEN, "partners_only_account"));
+        }
+        if !(0..=9).contains(&p) {
+            return Err(ApiError::bad("bad_prefix"));
+        }
     }
     if !user.is_partner() {
         let target: Option<String> = sqlx::query_scalar("SELECT role::text FROM app_users WHERE id = $1").bind(id).fetch_optional(&s.db).await?;
@@ -639,7 +666,8 @@ pub async fn update_user(
             can_see_pec_finance = CASE WHEN COALESCE($2::app_role, role) = 'partner' THEN true \
                                        ELSE COALESCE($4, can_see_pec_finance) END, \
             password_hash = COALESCE($5, password_hash), \
-            must_change_password = must_change_password OR $5 IS NOT NULL \
+            must_change_password = must_change_password OR $5 IS NOT NULL, \
+            member_no_prefix = CASE WHEN $6::smallint IS NULL THEN member_no_prefix ELSE NULLIF($6::smallint, 0) END \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -647,6 +675,7 @@ pub async fn update_user(
     .bind(b.active)
     .bind(b.can_see_pec_finance)
     .bind(&hash)
+    .bind(b.member_no_prefix)
     .execute(&mut *tx)
     .await?
     .rows_affected();

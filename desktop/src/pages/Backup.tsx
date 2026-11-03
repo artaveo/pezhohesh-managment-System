@@ -387,7 +387,6 @@ function Sync() {
       {d && s.mode !== "off" && s.mode !== "paused" && (
         <p className="muted small">
           این کمپیوتر: <b>{d.name}</b> · حرف بل‌ها: <b dir="ltr">{d.receipt_prefix}</b>
-          {d.member_no_from !== null && <> · شمارهٔ عضوهای تازه از <bdi dir="ltr">{d.member_no_from}</bdi> تا <bdi dir="ltr">{d.member_no_to}</bdi></>}
         </p>
       )}
       {error && !ask && <p className="form-error" role="alert">{error}</p>}

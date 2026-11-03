@@ -1225,7 +1225,7 @@ pub async fn compare(
     // New member numbers step over these (see hall::NEXT_NO).
     let device_names: Vec<String> =
         users.iter().filter(|u| u.no.trim().parse::<i32>().is_ok()).map(|u| u.name.trim().to_string()).collect();
-    let mut tx = s.db.begin().await?;
+    let mut tx = crate::auth::begin(&s.db).await?;
     sqlx::query("DELETE FROM k50_device_ids").execute(&mut *tx).await?;
     sqlx::query("INSERT INTO k50_device_ids (no, name) SELECT * FROM UNNEST($1::int[], $2::text[]) ON CONFLICT (no) DO NOTHING")
         .bind(&nos)
@@ -1591,7 +1591,7 @@ pub async fn names_ok(State(s): State<AppState>, user: CurrentUser, Json(rows): 
 /// had it let it go, and what the app kept for it (what was sent, the saved fingers, a
 /// partner's word about the name) goes, so the next person under it starts clean.
 async fn forget_number(db: &PgPool, by: Option<Uuid>, no: i32, dev_no: &str) -> Result<(), sqlx::Error> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::auth::begin(db).await?;
     if let Some(by) = by {
         sqlx::query("SELECT set_config('app.user_id', $1, true)").bind(by.to_string()).execute(&mut *tx).await?;
     }

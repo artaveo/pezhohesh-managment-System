@@ -152,7 +152,7 @@ async fn pull(db: &PgPool, hub: &PgPool) -> Result<u64, String> {
         if n == 0 {
             return Ok(taken);
         }
-        let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+        let mut tx = crate::auth::begin(db).await.map_err(|e| e.to_string())?;
         sqlx::query(
             "INSERT INTO settings (key, value) SELECT 'sync_pulled', to_jsonb(sync_apply($1)) \
              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
@@ -226,7 +226,7 @@ const NOT_REWOUND: &str = "tbl NOT IN ('devices', 'app_users')";
 async fn send_rows(db: &PgPool, hub: &PgPool, keys: Value, from: Option<i64>) -> Result<(i64, u64), String> {
     let who: Option<Uuid> =
         sqlx::query_scalar("SELECT user_id FROM audit_log WHERE action = 'restore' ORDER BY id DESC LIMIT 1").fetch_optional(db).await.map_err(|e| e.to_string())?.flatten();
-    let mut tx = hub.begin().await.map_err(hub_error)?;
+    let mut tx = crate::auth::begin(hub).await.map_err(hub_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pezhohesh.sync_hub'))").execute(&mut *tx).await.map_err(hub_error)?;
     let mut keys: Vec<Value> = keys.as_array().cloned().unwrap_or_default();
     if let Some(from) = from {
@@ -282,7 +282,7 @@ async fn rewind(db: &PgPool, hub: &PgPool) -> Result<u64, String> {
     .map_err(|e| e.to_string())?;
     let (last, sent) = send_rows(db, hub, waiting, Some(from)).await?;
     // The waiting rows went with it (as they are now); later ones are sent as usual.
-    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = crate::auth::begin(db).await.map_err(|e| e.to_string())?;
     sqlx::query("UPDATE sync_log SET hub_seq = -1 WHERE hub_seq IS NULL AND seq <= $1")
         .bind(top.unwrap_or(0))
         .execute(&mut *tx)

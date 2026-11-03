@@ -127,10 +127,14 @@ export type MemberNumbers = {
   gaps: { from: number; to: number }[];
   gap_numbers: number;
   check: { no: number; state: "free" | "member" | "removed" | "device"; name: string | null } | null;
+  /** The digit the signed-in person puts in front of new IDs; gaps are without it. */
+  prefix: number | null;
 };
 
 export type UserRow = {
   id: string;
+  /** The digit in front of the member IDs this person gives (Rahimi 1, Naseri 2). */
+  member_no_prefix: number | null;
   full_name: string;
   username: string;
   role: Role;
@@ -247,6 +251,8 @@ export type PeriodInput = {
   /** Paid now; the rest is owed. Left out: all of it. */
   paid?: number | null;
   record_only?: boolean; ahead?: boolean;
+  /** The day the money was taken; the income goes to that day. Left out: today. */
+  paid_on?: string | null;
 };
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
@@ -486,7 +492,7 @@ export const api = {
   mergePeople: (from: string, into: string) => request<void>("/people/merge", { method: "POST", body: { from, into } }),
   createUser: (b: { full_name: string; username: string; password: string; role: Role; can_see_pec_finance: boolean; staff_id?: string }) =>
     request<{ id: string }>("/users", { method: "POST", body: b }),
-  updateUser: (id: string, b: Partial<{ role: Role; active: boolean; can_see_pec_finance: boolean; reset_password: string }>) =>
+  updateUser: (id: string, b: Partial<{ role: Role; active: boolean; can_see_pec_finance: boolean; reset_password: string; member_no_prefix: number }>) =>
     request<void>(`/users/${id}`, { method: "PUT", body: b }),
   dashboard: (params: Record<string, string>, signal?: AbortSignal) =>
     request<Dashboard>(`/dashboard?${new URLSearchParams(params)}`, { signal }),
@@ -695,6 +701,9 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "bad_paid_on": return "تاریخ پرداخت نمی‌تواند بعد از امروز باشد.";
+    case "paid_on_too_old": return "تاریخ پرداخت بیشتر از یک ماه پیش است. این را یکی از شرکا ثبت کند.";
+    case "bad_prefix": return "پیشوند آیدی یک رقم از ۱ تا ۹ است.";
     case "partners_only_account": return "حساب شرکا (و حساب خود شما) را فقط یکی از شرکا عوض می‌کند.";
     case "section_closed": return "این بخش برای نقش شما بسته است. یکی از شرکا می‌تواند آن را در «کاربران» باز کند.";
     case "safety_backup_failed": return "اول یک پشتیبان تازه از وضع فعلی گرفته می‌شود، ولی نشد؛ پس چیزی برگردانده نشد. پوشه‌های پشتیبان را ببینید.";

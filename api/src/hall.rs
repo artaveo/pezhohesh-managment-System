@@ -68,6 +68,9 @@ pub struct PeriodInput {
     /// purpose, so a second click or a repeat does not add another month.
     #[serde(default)]
     ahead: bool,
+    /// The day the money was taken; the income and the bill go to that day. Default today.
+    /// The desk sets it back when it records a payment taken earlier (an Excel member).
+    paid_on: Option<NaiveDate>,
 }
 
 #[derive(Deserialize)]
@@ -224,6 +227,35 @@ pub struct Numbers {
     gaps: Vec<Gap>,
     gap_numbers: i64,
     check: Option<Checked>,
+    /// The digit the signed-in person puts in front of new IDs (Rahimi 1, Naseri 2), if any.
+    /// Gaps are sequence numbers without it.
+    prefix: Option<i32>,
+}
+
+/// Who has this ID's sequence number (2511047 and 511047 are the same place in the
+/// sequence, so only one person may have it): a member, a removed member still holding it,
+/// someone on the fingerprint device, or no one. `me` is the member being edited.
+async fn number_state(tx: &mut sqlx::PgConnection, no: i32, me: Option<Uuid>) -> Result<Checked, sqlx::Error> {
+    let held: Option<(String, bool)> = sqlx::query_as(
+        "SELECT concat_ws(' ', first_name, last_name), deleted_at IS NOT NULL FROM members \
+         WHERE member_no_base(member_no) = member_no_base($1) AND no_freed_at IS NULL AND id IS DISTINCT FROM $2 \
+         ORDER BY member_no = $1 DESC, deleted_at NULLS FIRST LIMIT 1",
+    )
+    .bind(no)
+    .bind(me)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let device: Option<Option<String>> =
+        sqlx::query_scalar("SELECT name FROM k50_device_ids WHERE member_no_base(no) = member_no_base($1) ORDER BY no = $1 DESC LIMIT 1")
+            .bind(no)
+            .fetch_optional(&mut *tx)
+            .await?;
+    Ok(match (held, device) {
+        (Some((name, false)), _) => Checked { no, state: "member", name: Some(name) },
+        (Some((name, true)), _) => Checked { no, state: "removed", name: Some(name) },
+        (None, Some(name)) => Checked { no, state: "device", name },
+        (None, None) => Checked { no, state: "free", name: None },
+    })
 }
 
 /// GET /api/v1/members/numbers: the last ID, the next one, the empty ones in between, and
@@ -232,17 +264,21 @@ pub async fn member_numbers(State(s): State<AppState>, user: CurrentUser, Query(
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let next: i32 = sqlx::query_scalar(NEXT_NO).fetch_one(&mut *tx).await?;
+    let prefix: Option<i32> = sqlx::query_scalar("SELECT my_member_no_prefix()").fetch_one(&mut *tx).await?;
+    // The last in the sequence, whoever gave it (with or without a digit in front).
     let last: Option<LastNo> = sqlx::query_as(
         "SELECT member_no AS no, concat_ws(' ', first_name, last_name) AS name, joined_on FROM members \
-         WHERE no_freed_at IS NULL AND deleted_at IS NULL AND member_no < $1 ORDER BY member_no DESC LIMIT 1",
+         WHERE no_freed_at IS NULL AND deleted_at IS NULL AND member_no_base(member_no) < member_no_base($1) \
+         ORDER BY member_no_base(member_no) DESC LIMIT 1",
     )
     .bind(next)
     .fetch_optional(&mut *tx)
     .await?;
-    // Below the next number only; a jump of more than 1000 is where a numbering started
-    // anew (51… to 510…), not a gap.
-    let gaps_of = "WITH u AS (SELECT member_no AS n FROM members WHERE no_freed_at IS NULL UNION SELECT no FROM k50_device_ids), \
-                        o AS (SELECT n, lead(n) OVER (ORDER BY n) AS nx FROM u WHERE n < $1) \
+    // Sequence numbers below the next one; a jump of more than 1000 is where a numbering
+    // started anew (51… to 510…), not a gap.
+    let gaps_of = "WITH u AS (SELECT member_no_base(member_no) AS n FROM members WHERE no_freed_at IS NULL \
+                              UNION SELECT member_no_base(no) FROM k50_device_ids), \
+                        o AS (SELECT n, lead(n) OVER (ORDER BY n) AS nx FROM u WHERE n < member_no_base($1)) \
                    SELECT n + 1 AS from, nx - 1 AS to FROM o WHERE nx - n BETWEEN 2 AND 1001";
     let gaps: Vec<Gap> = sqlx::query_as(&format!("{gaps_of} ORDER BY n DESC LIMIT 300")).bind(next).fetch_all(&mut *tx).await?;
     let gap_numbers: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(sum(g.to - g.from + 1), 0)::BIGINT FROM ({gaps_of}) g"))
@@ -251,26 +287,10 @@ pub async fn member_numbers(State(s): State<AppState>, user: CurrentUser, Query(
         .await?;
     let check = match q.check {
         None => None,
-        Some(no) => {
-            let held: Option<(String, bool)> = sqlx::query_as(
-                "SELECT concat_ws(' ', first_name, last_name), deleted_at IS NOT NULL FROM members \
-                 WHERE member_no = $1 AND no_freed_at IS NULL ORDER BY deleted_at NULLS FIRST LIMIT 1",
-            )
-            .bind(no)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let device: Option<Option<String>> =
-                sqlx::query_scalar("SELECT name FROM k50_device_ids WHERE no = $1").bind(no).fetch_optional(&mut *tx).await?;
-            Some(match (held, device) {
-                (Some((name, false)), _) => Checked { no, state: "member", name: Some(name) },
-                (Some((name, true)), _) => Checked { no, state: "removed", name: Some(name) },
-                (None, Some(name)) => Checked { no, state: "device", name },
-                (None, None) => Checked { no, state: "free", name: None },
-            })
-        }
+        Some(no) => Some(number_state(&mut tx, no, None).await?),
     };
     tx.commit().await?;
-    Ok(Json(Numbers { last, next, gaps, gap_numbers, check }))
+    Ok(Json(Numbers { last, next, gaps, gap_numbers, check, prefix }))
 }
 
 pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b): Json<NewMember>) -> Result<Json<Saved>, ApiError> {
@@ -279,7 +299,13 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
     let m = &b.member;
     let mut tx = begin_as(&s.db, &user).await?;
     let no: i32 = match m.member_no {
-        Some(n) => n,
+        Some(n) => {
+            // Someone else in the same place of the sequence (another digit in front).
+            if matches!(number_state(&mut tx, n, None).await?.state, "member" | "removed") {
+                return Err(ApiError(StatusCode::CONFLICT, "member_no_taken"));
+            }
+            n
+        }
         None => sqlx::query_scalar(NEXT_NO).fetch_one(&mut *tx).await?,
     };
     let id = Uuid::new_v4();
@@ -321,6 +347,9 @@ pub async fn update_member(
     // A new ID only if no one else has it: not a member (the unique index), and not a person
     // the fingerprint device has under it who is not this member (added in ZKAccess).
     if let Some(no) = m.member_no {
+        if matches!(number_state(&mut tx, no, Some(id)).await?.state, "member" | "removed") {
+            return Err(ApiError(StatusCode::CONFLICT, "member_no_taken"));
+        }
         let on_device: Option<(String, i32)> = sqlx::query_as(
             "SELECT d.name, x.member_no FROM k50_device_ids d, members x WHERE d.no = $1 AND x.id = $2 AND x.member_no <> $1",
         )
@@ -610,8 +639,21 @@ async fn add_period(
             .await?,
         None => guest.unwrap_or_default(),
     };
-    let receipt = issue(tx, user, plan.kind.as_str(), paid, &format!("{} · {who}", plan.name), Some(membership), None).await?;
+    let day = paid_day(user, p.paid_on)?;
+    let receipt = issue_on(tx, user, day, plan.kind.as_str(), paid, &format!("{} · {who}", plan.name), Some(membership), None).await?;
     Ok((membership, Some(receipt)))
+}
+
+/// The day a payment counts on: never in the future; the manager at most 31 days back
+/// (older months are closed and only a partner changes them).
+fn paid_day(user: &CurrentUser, paid_on: Option<NaiveDate>) -> Result<NaiveDate, ApiError> {
+    let now = today();
+    match paid_on {
+        None => Ok(now),
+        Some(d) if d > now => Err(ApiError::bad("bad_paid_on")),
+        Some(d) if !user.is_partner() && (now - d).num_days() > 31 => Err(ApiError::bad("paid_on_too_old")),
+        Some(d) => Ok(d),
+    }
 }
 
 /// Issues a bill dated today, numbered with this computer's next number for the Solar
@@ -625,7 +667,21 @@ pub async fn issue(
     membership: Option<Uuid>,
     book_loan: Option<Uuid>,
 ) -> Result<Uuid, ApiError> {
-    let day = today();
+    issue_on(tx, user, today(), category, amount, description, membership, book_loan).await
+}
+
+/// The same, dated `day` (the day the money was taken).
+#[allow(clippy::too_many_arguments)]
+pub async fn issue_on(
+    tx: &mut PgConnection,
+    user: &CurrentUser,
+    day: NaiveDate,
+    category: &str,
+    amount: f64,
+    description: &str,
+    membership: Option<Uuid>,
+    book_loan: Option<Uuid>,
+) -> Result<Uuid, ApiError> {
     let device: Uuid = sqlx::query_scalar::<_, Option<Uuid>>("SELECT current_device()")
         .fetch_one(&mut *tx)
         .await?

@@ -20,18 +20,24 @@ export function NumberHelp({ value, onPick, own }: { value: number | null; onPic
     return () => { window.clearTimeout(t); ctl.abort(); };
   }, [value]);
   if (!info) return null;
+  // A gap is a sequence number; it gets the digit of whoever gives it (the member's own
+  // digit when an ID is being changed).
+  const digit = own !== undefined ? (own >= 1000000 && own <= 9999999 ? Math.floor(own / 1000000) : 0) : info.prefix ?? 0;
+  const withDigit = (g: number) => digit * 1000000 + g;
   // Editing a member: their own ID is not "someone else's".
   const c = info.check && info.check.no === value && value !== own ? info.check : null;
   return (
     <div className="number-help" aria-live="polite">
       <span>آخرین آیدی: <b dir="ltr">{info.last ? n(info.last.no) : "—"}</b>{info.last && <span className="muted"> ({info.last.name})</span>}</span>
       {own === undefined
-        ? <span>آیدی بعدی: <b dir="ltr">{n(info.next)}</b>{value !== info.next && <> <button type="button" className="btn ghost small" onClick={() => onPick(info.next)}>همین را بگذار</button></>}</span>
+        ? <span>آیدی بعدی: <b dir="ltr">{n(info.next)}</b>
+            {info.prefix ? <span className="muted"> (رقم {info.prefix} اول آیدی یعنی شما ثبت کرده‌اید)</span> : null}
+            {value !== info.next && <> <button type="button" className="btn ghost small" onClick={() => onPick(info.next)}>همین را بگذار</button></>}</span>
         : value === own
           ? <span className="muted">آیدی فعلی این عضو. فقط برای درست کردن آیدی اشتباه، یا بردن به یک آیدی خالی عوضش کنید.</span>
           : <span className="notice warn inline">آیدی این عضو از <b dir="ltr">{n(own)}</b> به <b dir="ltr">{value === null ? "—" : n(value)}</b> عوض می‌شود. روی دستگاه، انگشت‌هایش به آیدی تازه می‌رود و آیدی کهنه پاک و خالی می‌شود.
               {" "}<button type="button" className="btn ghost small" onClick={() => onPick(own)}>برگرداندن</button></span>}
-      {c && c.state === "member" && <span className="form-error inline">این آیدی مال {c.name} است.</span>}
+      {c && c.state === "member" && <span className="form-error inline">این شماره (یا همین شماره با رقم دیگری در اول) مال {c.name} است.</span>}
       {c && c.state === "removed" && <span className="form-error inline">این آیدی هنوز مال {c.name} (حذف‌شده) است؛ اول در «دستگاه انگشت» آزادش کنید.</span>}
       {c && c.state === "device" && <span className="form-error inline">دستگاه انگشت زیر این آیدی کسی دیگر{c.name ? ` (${c.name})` : ""} را دارد.</span>}
       {c && c.state === "free" && value !== info.next && <span className="form-ok inline">این آیدی خالی است.</span>}
@@ -47,11 +53,11 @@ export function NumberHelp({ value, onPick, own }: { value: number | null; onPic
             {info.gaps.map((g) => (
               <li key={g.from}>
                 {g.from === g.to ? (
-                  <button type="button" className="btn ghost small" dir="ltr" onClick={() => { onPick(g.from); setGaps(false); }}>{n(g.from)}</button>
+                  <button type="button" className="btn ghost small" dir="ltr" onClick={() => { onPick(withDigit(g.from)); setGaps(false); }}>{n(withDigit(g.from))}</button>
                 ) : (
                   <>
-                    <button type="button" className="btn ghost small" dir="ltr" onClick={() => { onPick(g.from); setGaps(false); }}>{n(g.from)}</button>
-                    <span className="muted" dir="ltr"> … {n(g.to)}</span>
+                    <button type="button" className="btn ghost small" dir="ltr" onClick={() => { onPick(withDigit(g.from)); setGaps(false); }}>{n(withDigit(g.from))}</button>
+                    <span className="muted" dir="ltr"> … {n(withDigit(g.to))}</span>
                     <span className="muted small"> ({n(g.to - g.from + 1)} آیدی)</span>
                   </>
                 )}

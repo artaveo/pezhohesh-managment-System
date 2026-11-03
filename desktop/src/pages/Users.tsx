@@ -51,7 +51,7 @@ export function Users() {
       <div className="glass table-wrap">
         <table className="table">
           <thead>
-            <tr><th>نام</th><th>نام کاربری</th><th>نقش</th><th>آخرین ورود</th><th>وضعیت</th><th /></tr>
+            <tr><th>نام</th><th>نام کاربری</th><th>نقش</th><th title="عددی که جلوی آیدی عضوهای ثبت‌شده با این حساب می‌آید">پیشوند آیدی</th><th>آخرین ورود</th><th>وضعیت</th><th /></tr>
           </thead>
           <tbody>
             {rows?.map((u) => (
@@ -71,6 +71,18 @@ export function Users() {
                       گزارش مالی
                     </label>
                   )}
+                </td>
+                <td>
+                  {me?.role === "partner" ? (
+                    <select value={u.member_no_prefix ?? 0} aria-label={`پیشوند آیدی ${u.full_name}`}
+                      onChange={(e) => {
+                        const p = Number(e.target.value);
+                        void change(u.id, { member_no_prefix: p }, p ? `عضوهایی که ${u.full_name} ثبت می‌کند، با ${p} جلوی آیدی شروع می‌شوند.` : `عضوهای ${u.full_name} بدون پیشوند آیدی می‌گیرند.`);
+                      }}>
+                      <option value={0}>بدون پیشوند</option>
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  ) : <span className="muted">{u.member_no_prefix ?? "—"}</span>}
                 </td>
                 <td className="muted">{u.last_login_at ? formatShort(new Date(u.last_login_at)) : "هنوز وارد نشده"}</td>
                 <td>

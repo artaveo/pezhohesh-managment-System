@@ -42,7 +42,7 @@ pub async fn ensure_1404(db: &PgPool) {
 }
 
 async fn add_1404(db: &PgPool) -> Result<(), sqlx::Error> {
-    let mut tx = db.begin().await?;
+    let mut tx = crate::auth::begin(db).await?;
     let months = sqlx::query(MONTHS).execute(&mut *tx).await?.rows_affected();
     if months > 0 {
         let taken = sqlx::query(WITHDRAWALS).execute(&mut *tx).await?.rows_affected();

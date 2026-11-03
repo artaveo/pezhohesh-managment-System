@@ -855,3 +855,5 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .notice.inline { display: inline; padding: 2px 8px; }
 .list-filter { display: inline-flex; align-items: center; gap: 6px; }
 .list-filter select { min-width: 150px; font: inherit; padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); min-height: 44px; }
+.paid-on { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.paid-on small { flex-basis: 100%; }

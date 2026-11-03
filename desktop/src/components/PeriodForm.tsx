@@ -26,6 +26,9 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
   const [discount, setDiscount] = useState("");
   // Empty: all of it. Typed: that much now, the rest owed. A daily seat is paid whole.
   const [paid, setPaid] = useState("");
+  // The day the money was taken: today, or the start day for a payment taken back then.
+  const today = iso(new Date());
+  const [paidOn, setPaidOn] = useState(today);
   const parts = kinds.some((k) => k !== "daily");
 
   // Seat and internet renew on their own timelines: switching plan moves the suggested day.
@@ -39,16 +42,18 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
   const paidN = paid === "" ? due : Number(paid);
   const paidOk = paidN <= due && (paidN > 0 || due === 0);
   const owed = due - paidN;
-  const ok = !!plan && from !== "" && (recordOnly || (fee !== "" && feeN >= 0 && discountN >= 0 && discountN <= feeN && paidOk));
+  const paidOnOk = paidOn !== "" && paidOn <= today;
+  const ok = !!plan && from !== "" && (recordOnly || (fee !== "" && feeN >= 0 && discountN >= 0 && discountN <= feeN && paidOk && paidOnOk));
   const end = plan && from ? iso(addDays(parseIso(from), plan.duration_days - 1)) : from;
 
   useEffect(() => {
     onChange(ok && plan ? {
       plan_id: plan.id, start_date: from, fee: recordOnly ? 0 : feeN, discount: recordOnly ? 0 : discountN,
       paid: recordOnly || paid === "" ? null : paidN, record_only: recordOnly,
+      paid_on: recordOnly || paidOn === today ? null : paidOn,
     } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ok, plan, from, feeN, discountN, paid, paidN, recordOnly]);
+  }, [ok, plan, from, feeN, discountN, paid, paidN, recordOnly, paidOn]);
 
   if (!choices.length) return <p className="form-error">هیچ نوع عضویتی تعریف نشده. یکی از شرکا در «تنظیمات» قیمت‌ها را اضافه کند.</p>;
 
@@ -78,17 +83,26 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
                 onChange={(e) => setPaid(e.target.value.replace(/[^\d.]/g, ""))} />
               <small id="paid-hint" className="muted">خالی بماند یعنی همه را داده. اگر کمتر بنویسید، بقیه «باقی» می‌ماند.</small>
             </label>}
+            <div className="paid-on">
+              <SolarDate label="تاریخ پرداخت" value={paidOn} onChange={setPaidOn} />
+              {from && from < today && from !== paidOn && (
+                <button type="button" className="btn ghost small" onClick={() => setPaidOn(from)}>همان تاریخ شروع</button>
+              )}
+              {paidOn !== today && <button type="button" className="btn ghost small" onClick={() => setPaidOn(today)}>امروز</button>}
+              <small className="muted">پول به درآمد همین روز می‌رود و بل همین تاریخ را دارد. اگر پول امروز گرفته شده، همان امروز بماند.</small>
+            </div>
           </>
         )}
       </div>
       {plan && from && (
         <p className="period-sum">
           از <strong>{formatDay(from)}</strong> تا <strong>{formatDay(end)}</strong> ({fa(plan.duration_days)} روز)
-          {!recordOnly && <> · پرداخت: <strong>{fa(paidN)} افغانی</strong></>}
+          {!recordOnly && <> · پرداخت: <strong>{fa(paidN)} افغانی</strong>{paidOn !== today && paidOn && <> در <strong>{formatDay(paidOn)}</strong></>}</>}
           {!recordOnly && paidOk && owed > 0 && <> · <span className="owed">باقی {fa(owed)}</span></>}
         </p>
       )}
       {!recordOnly && discountN > feeN && <p className="form-error">تخفیف از مبلغ بیشتر است.</p>}
+      {!recordOnly && paidOn > today && <p className="form-error">تاریخ پرداخت نمی‌تواند بعد از امروز باشد.</p>}
       {!recordOnly && discountN <= feeN && !paidOk && <p className="form-error">پرداخت باید بیشتر از صفر و حداکثر {fa(due)} افغانی باشد.</p>}
     </div>
   );
