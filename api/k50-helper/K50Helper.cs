@@ -169,11 +169,13 @@ static class K50Helper
         bool en = false;
         if (!(bool)zk.SSR_GetUserInfo(m, no, ref name, ref pw, ref priv, ref en)) return Obj("ok", true, "exists", false);
         var fingers = 0;
+        // Which fingers (0 left little ... 4 left thumb, 5 right thumb ... 9 right little).
+        var which = new ArrayList();
         for (var f = 0; f < 10; f++)
         {
             string tmp = "";
             int len = 0;
-            try { if ((bool)zk.SSR_GetUserTmpStr(m, no, f, ref tmp, ref len)) fingers++; } catch { }
+            try { if ((bool)zk.SSR_GetUserTmpStr(m, no, f, ref tmp, ref len)) { fingers++; which.Add(f); } } catch { }
         }
         object valid = null;
         try
@@ -205,7 +207,7 @@ static class K50Helper
             }
             catch { }
         }
-        return Obj("ok", true, "exists", true, "name", name, "enabled", en, "privilege", priv, "fingers", fingers, "valid", valid,
+        return Obj("ok", true, "exists", true, "name", name, "enabled", en, "privilege", priv, "fingers", fingers, "finger_list", which, "valid", valid,
             "group", group, "zones", zones);
     }
 

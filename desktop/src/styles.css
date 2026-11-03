@@ -732,11 +732,81 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .next-steps li { counter-increment: step; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
 .next-steps li > span:first-child::before { content: counter(step, persian) ". "; font-weight: 700; color: var(--muted); }
 .next-steps li.done > span:first-child { color: var(--good); }
-.enroll-steps { display: flex; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; counter-reset: es; }
-.enroll-steps li { counter-increment: es; flex: 1; font-size: .8rem; padding: 6px 8px; border-radius: 8px; text-align: center; color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
-.enroll-steps li::before { content: counter(es, persian) ". "; }
-.enroll-steps li.on { color: var(--accent-ink); background: var(--accent); font-weight: 700; }
-.enroll-steps li.done { color: var(--good); background: var(--good-soft); }
+/* The enroll dialog: two hands, numbered fingers, a status panel. */
+.modal-body.enroll-modal {
+  width: min(920px, 100%);
+  --hand-top: #f3e4d4; --hand-bottom: #e2c6aa; --hand-edge: #c9a789; --nail: #fbf1ea;
+  --stage: radial-gradient(120% 90% at 50% 10%, color-mix(in srgb, var(--accent) 12%, var(--surface)) 0%, var(--surface) 70%);
+}
+:root[data-theme="dark"] .modal-body.enroll-modal { --hand-top: #c9b29c; --hand-bottom: #a88d74; --hand-edge: #7d6754; --nail: #e8dccf; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .modal-body.enroll-modal { --hand-top: #c9b29c; --hand-bottom: #a88d74; --hand-edge: #7d6754; --nail: #e8dccf; } }
+.enroll-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.enroll-head h2 { margin: 0; }
+.enroll-head p { margin: 2px 0 0; }
+.enroll-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: var(--accent-soft); color: var(--accent-strong); }
+.enroll-mark svg { width: 26px; height: 26px; }
+.enroll-steps { display: flex; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; counter-reset: es; flex-wrap: wrap; }
+.enroll-steps li {
+  counter-increment: es; flex: 1 1 150px; display: flex; align-items: center; gap: 8px; justify-content: center;
+  font-size: .85rem; padding: 8px 12px; border-radius: 99px; color: var(--muted); border: 1px solid var(--line); background: var(--glass);
+}
+.enroll-steps li::before { content: counter(es, persian) "."; font-weight: 700; }
+.enroll-steps li .dot { order: -1; width: 8px; height: 8px; border-radius: 50%; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.enroll-steps li.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 700; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+.enroll-steps li.on .dot { background: var(--accent-ink); }
+.enroll-steps li.done { color: var(--good); background: var(--good-soft); border-color: transparent; }
+.enroll-steps li.done .dot { background: var(--good); }
+.enroll-body { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 16px; align-items: stretch; }
+.hands { display: flex; gap: 34px; justify-content: center; padding: 14px 18px 6px; border-radius: 18px; background: var(--stage); border: 1px solid var(--line); }
+.hand { margin: 0; flex: 1 1 0; max-width: 250px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.hand svg { width: 100%; height: auto; overflow: visible; }
+.hand figcaption { font-size: .85rem; color: var(--muted); padding: 4px 14px; border: 1px solid var(--line); border-radius: 99px; background: var(--glass-strong); }
+.hand-palm { stroke: var(--hand-edge); stroke-width: 1.2; }
+.finger { cursor: pointer; outline: none; }
+.finger[aria-disabled="true"] { cursor: default; }
+.finger-hit { fill: transparent; }
+.finger-body { stroke: var(--hand-edge); stroke-width: 1.2; transition: fill .2s, stroke .2s, filter .2s; }
+.finger-nail { fill: var(--nail); opacity: .9; }
+.finger-no { font-size: 15px; font-weight: 700; fill: var(--muted); font-family: var(--font); }
+.finger-check { fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.finger:not([aria-disabled="true"]):hover .finger-body { stroke: var(--accent); stroke-width: 2; }
+.finger:focus-visible .finger-hit { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 3; }
+.finger.enrolled .finger-body { fill: color-mix(in srgb, var(--good) 55%, var(--hand-top)); stroke: var(--good); }
+.finger.enrolled .finger-no { fill: var(--good); }
+.finger.picked .finger-body { fill: var(--accent); stroke: var(--accent-strong); stroke-width: 2; filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 85%, transparent)) drop-shadow(0 0 16px color-mix(in srgb, var(--accent) 55%, transparent)); }
+.finger.picked .finger-nail { fill: color-mix(in srgb, #fff 70%, var(--accent)); }
+.finger.picked .finger-no { fill: var(--accent-strong); font-size: 18px; }
+.finger.failed .finger-body { fill: color-mix(in srgb, var(--bad) 70%, var(--hand-top)); stroke: var(--bad); filter: drop-shadow(0 0 8px color-mix(in srgb, var(--bad) 70%, transparent)); }
+.finger.failed .finger-no { fill: var(--bad); }
+.enroll-panel { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 18px; border: 1px solid var(--line); background: var(--glass-strong); }
+.enroll-status { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.enroll-status strong { font-size: .95rem; }
+.tone-live .enroll-status strong, .tone-good .enroll-status strong { color: var(--good); }
+.tone-bad .enroll-status strong { color: var(--bad); }
+.pulse { position: relative; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; flex: none; color: var(--muted); border: 1px solid var(--line); background: var(--surface); }
+.pulse svg { width: 28px; height: 28px; }
+.pulse.live, .pulse.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.pulse.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.pulse.live::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--good); opacity: 0; animation: enroll-ring 1.6s ease-out infinite; }
+.pulse.wait svg { animation: enroll-breathe 1.2s ease-in-out infinite; }
+@keyframes enroll-ring { 0% { transform: scale(.85); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
+@keyframes enroll-breathe { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pulse.live::after, .pulse.wait svg { animation: none; } }
+.enroll-picked { display: flex; flex-direction: column; gap: 2px; }
+.enroll-picked b { font-size: 1.5rem; }
+.enroll-say { margin: 0; line-height: 1.9; font-size: .92rem; }
+.enroll-legend { margin: auto 0 0; padding: 10px 12px; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 14px; border-radius: 12px; border: 1px solid var(--line); font-size: .8rem; color: var(--muted); }
+.enroll-legend li { display: flex; align-items: center; gap: 6px; }
+.enroll-legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.lg-idle { background: var(--hand-bottom); border: 1px solid var(--hand-edge); }
+.lg-picked { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.lg-enrolled { background: var(--good); }
+.lg-failed { background: var(--bad); }
+.enroll-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) {
+  .enroll-body { grid-template-columns: 1fr; }
+  .hand { max-width: 190px; }
+}
 
 /* Financial report (گزارش مالی) */
 .report-page .list-tools { flex-wrap: wrap; }

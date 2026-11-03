@@ -95,6 +95,8 @@ export type K50SdkCopy = K50Answer & { from?: string; files?: string[]; version?
 export type K50Info = K50Answer & { serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string };
 export type K50User = K50Answer & {
   exists?: boolean; name?: string; enabled?: boolean; privilege?: number; fingers?: number;
+  /** Which fingers the device has (0 left little … 4 left thumb, 5 right thumb … 9 right little). */
+  finger_list?: number[];
   valid?: { expires?: number; start: string; end: string } | null; group?: number | null; zones?: string | null; device_time?: string | null;
   /** With error "taken": the name the device has under this number. */
   device_name?: string;

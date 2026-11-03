@@ -143,15 +143,94 @@ export function Fingerprint({ memberId, name, reload, onLoaded, onEnroll }: {
  * Enrolling one finger: pick it, the device is made ready, the member presses it three
  * times, and then the device is asked whether the finger is there.
  */
+/**
+ * One hand, as a person sees the back of their own hands: fingers numbered 1 (thumb) to 5
+ * (little). The right hand has its thumb on the left; the left hand is its mirror image.
+ * Each finger is a button; its device number is 5–9 on the right hand, 4–0 on the left.
+ */
+const HAND = [
+  // pos, x, y, width, height, rotation (around the finger's base)
+  { pos: 1, x: 40, y: 140, w: 30, h: 70, rot: -34 },
+  { pos: 2, x: 62, y: 42, w: 28, h: 112, rot: -6 },
+  { pos: 3, x: 95, y: 22, w: 29, h: 128, rot: 0 },
+  { pos: 4, x: 129, y: 38, w: 28, h: 114, rot: 6 },
+  { pos: 5, x: 161, y: 74, w: 24, h: 88, rot: 13 },
+];
+const VIEW = 210;
+const deviceFinger = (side: "right" | "left", pos: number) => (side === "right" ? 4 + pos : 5 - pos);
+
+function Hand({ side, picked, enrolled, failed, disabled, onPick }: {
+  side: "right" | "left"; picked: number; enrolled: number[]; failed: number | null; disabled: boolean; onPick: (n: number) => void;
+}) {
+  const mirror = (x: number, w = 0) => (side === "right" ? x : VIEW - x - w);
+  return (
+    <figure className="hand">
+      <svg viewBox={`0 0 ${VIEW} 300`} role="group" aria-label={side === "right" ? "دست راست" : "دست چپ"}>
+        <defs>
+          <linearGradient id={`skin-${side}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="var(--hand-top)" />
+            <stop offset="1" stopColor="var(--hand-bottom)" />
+          </linearGradient>
+        </defs>
+        {/* The palm and wrist. */}
+        <path className="hand-palm" fill={`url(#skin-${side})`}
+          d={side === "right"
+            ? "M58 140 C58 128 66 124 80 124 L170 128 C182 130 188 142 186 160 L178 236 C176 262 160 290 134 296 L92 296 C70 290 56 268 52 240 L44 190 C42 172 50 150 58 140 Z"
+            : "M152 140 C152 128 144 124 130 124 L40 128 C28 130 22 142 24 160 L32 236 C34 262 50 290 76 296 L118 296 C140 290 154 268 158 240 L166 190 C168 172 160 150 152 140 Z"} />
+        {HAND.map((f) => {
+          const n = deviceFinger(side, f.pos);
+          const x = mirror(f.x, f.w);
+          const rot = side === "right" ? f.rot : -f.rot;
+          const cx = x + f.w / 2;
+          const base = f.y + f.h;
+          const state = failed === n ? "failed" : picked === n ? "picked" : enrolled.includes(n) ? "enrolled" : "";
+          const label = FINGERS.find((x) => x.n === n)!.label;
+          // A point on the finger's centre line, turned with the finger (labels stay upright).
+          const turn = (y: number) => {
+            const a = (rot * Math.PI) / 180;
+            return { x: cx - (y - base) * Math.sin(a), y: base + (y - base) * Math.cos(a) };
+          };
+          const tip = turn(f.y - 13);
+          const mid = turn(f.y + f.h * 0.55);
+          return (
+            <g key={f.pos} className={`finger ${state}`} role="button" tabIndex={disabled ? -1 : 0} aria-pressed={picked === n} aria-disabled={disabled}
+              aria-label={`${label}${enrolled.includes(n) ? "، ثبت شده" : ""}`}
+              onClick={() => { if (!disabled) onPick(n); }}
+              onKeyDown={(e) => { if (!disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onPick(n); } }}>
+              <g transform={`rotate(${rot} ${cx} ${base})`}>
+                <rect x={x - 6} y={f.y - 6} width={f.w + 12} height={f.h + 12} rx={(f.w + 12) / 2} className="finger-hit" />
+                <rect x={x} y={f.y} width={f.w} height={f.h} rx={f.w / 2} className="finger-body" fill={`url(#skin-${side})`} />
+                <rect x={x + f.w * 0.2} y={f.y + 4} width={f.w * 0.6} height={f.w * 0.62} rx={f.w * 0.28} className="finger-nail" />
+              </g>
+              <text x={tip.x} y={tip.y + 5} textAnchor="middle" className="finger-no">{fa(f.pos)}</text>
+              {enrolled.includes(n) && picked !== n && <path d={`M${mid.x - 6} ${mid.y} l4 4 l8 -9`} className="finger-check" />}
+            </g>
+          );
+        })}
+      </svg>
+      <figcaption>{side === "right" ? "دست راست" : "دست چپ"}</figcaption>
+    </figure>
+  );
+}
+
 export function Enroll({ memberId, name, onClose }: { memberId: string; name: string; onClose: (added: boolean) => void }) {
   const [finger, setFinger] = useState(6);
   const [state, setState] = useState<"pick" | "busy" | "waiting" | "checking" | "done" | "missing">("pick");
   const [error, setError] = useState("");
   const [count, setCount] = useState(0);
   const [before, setBefore] = useState<number | null>(null);
+  // Which fingers the device already has for this member (shown on the hands).
+  const [enrolled, setEnrolled] = useState<number[]>([]);
   // How many fingers the device has now, to tell a new one from an old one afterwards.
   useEffect(() => {
-    api.checkMemberK50(memberId).then((r) => { if (r.ok) setBefore(r.exists ? r.fingers ?? 0 : 0); }).catch(() => {});
+    api.checkMemberK50(memberId).then((r) => {
+      if (!r.ok) return;
+      setBefore(r.exists ? r.fingers ?? 0 : 0);
+      const list = r.exists ? r.finger_list ?? [] : [];
+      setEnrolled(list);
+      // Start on a finger the device does not have yet: right index, then left index.
+      if (list.includes(6)) setFinger(list.includes(3) ? [7, 2, 5, 4, 8, 1, 9, 0].find((n) => !list.includes(n)) ?? 6 : 3);
+    }).catch(() => {});
   }, [memberId]);
   async function verify() {
     setState("checking");
@@ -159,6 +238,7 @@ export function Enroll({ memberId, name, onClose }: { memberId: string; name: st
       const r = await api.checkMemberK50(memberId);
       const now = r.ok && r.exists ? r.fingers ?? 0 : 0;
       setCount(now);
+      if (r.ok && r.exists && r.finger_list) setEnrolled(r.finger_list);
       setState(r.ok && now > (before ?? 0) ? "done" : "missing");
       if (!r.ok) setError(k50ErrorText(r.error));
     } catch (e) {
@@ -177,58 +257,90 @@ export function Enroll({ memberId, name, onClose }: { memberId: string; name: st
       setState("pick");
     }
   }
+  const step = state === "pick" || state === "busy" ? 1 : state === "waiting" ? 2 : 3;
+  const label = FINGERS.find((f) => f.n === finger)?.label ?? "";
+  const picking = state === "pick" || state === "busy";
+  const failed = state === "missing" ? finger : null;
+  const status = state === "busy" ? { tone: "wait", text: "در حال آماده کردن دستگاه…" }
+    : state === "waiting" ? { tone: "live", text: "دستگاه منتظر انگشت است" }
+    : state === "checking" ? { tone: "wait", text: "در حال پرسیدن از دستگاه…" }
+    : state === "done" ? { tone: "good", text: "انگشت ثبت شد" }
+    : state === "missing" ? { tone: "bad", text: "انگشت تازه‌ای دیده نشد" }
+    : { tone: "idle", text: "یک انگشت را انتخاب کنید" };
   return (
-    <Modal label="ثبت انگشت" onClose={() => onClose(state === "done")}>
-      <h2>ثبت انگشت {name}</h2>
+    <Modal label="ثبت اثر انگشت" onClose={() => onClose(state === "done")} className="enroll-modal">
+      <header className="enroll-head">
+        <span className="enroll-mark"><Icon name="fingerprint" /></span>
+        <div>
+          <h2>ثبت اثر انگشت</h2>
+          <p className="muted small">{name}</p>
+        </div>
+      </header>
       <ol className="enroll-steps" aria-label="قدم‌ها">
-        <li className={state === "pick" || state === "busy" ? "on" : "done"}>انتخاب انگشت</li>
-        <li className={state === "waiting" ? "on" : state === "checking" || state === "done" || state === "missing" ? "done" : ""}>سه بار روی دستگاه</li>
-        <li className={state === "checking" || state === "done" || state === "missing" ? "on" : ""}>بررسی</li>
+        {["انتخاب انگشت", "سه بار روی دستگاه", "بررسی"].map((t, i) => (
+          <li key={t} className={step === i + 1 ? "on" : step > i + 1 ? "done" : ""} aria-current={step === i + 1 ? "step" : undefined}>
+            <span className="dot" aria-hidden="true" />{t}
+          </li>
+        ))}
       </ol>
-      {state === "pick" || state === "busy" ? (
-        <>
-          <p className="muted">کدام انگشت؟</p>
-          <div className="finger-grid">
-            {FINGERS.map((f) => (
-              <button key={f.n} type="button" className={`btn ghost small ${finger === f.n ? "picked" : ""}`} onClick={() => setFinger(f.n)}>{f.label}</button>
-            ))}
+      <div className="enroll-body">
+        <div className="hands" aria-label="انگشت را روی دست انتخاب کنید">
+          <Hand side="right" picked={finger} enrolled={enrolled} failed={failed} disabled={!picking} onPick={setFinger} />
+          <Hand side="left" picked={finger} enrolled={enrolled} failed={failed} disabled={!picking} onPick={setFinger} />
+        </div>
+        <aside className={`enroll-panel tone-${status.tone}`} aria-live="polite">
+          <div className="enroll-status">
+            <span className={`pulse ${status.tone}`} aria-hidden="true"><Icon name="fingerprint" /></span>
+            <strong>{status.text}</strong>
           </div>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="actions">
-            <button className="btn big" disabled={state === "busy"} onClick={() => void start()}>{state === "busy" ? "در حال آماده کردن دستگاه…" : "دستگاه را آماده کن"}</button>
+          <div className="enroll-picked">
+            <span className="muted small">انگشت انتخاب‌شده</span>
+            <b>{label}</b>
+          </div>
+          <p className="enroll-say">
+            {picking ? <>روی دست‌ها انگشت را بزنید، بعد «آماده کردن دستگاه». انگشت‌های سبز با تیک از قبل ثبت شده‌اند.</>
+              : state === "waiting" ? <>{name} <strong>{label}</strong> را <strong>سه بار</strong> روی حسگر دستگاه بگذارد و بردارد تا دستگاه بگوید ثبت شد. بعد «ثبت شد، بررسی کن».</>
+              : state === "checking" ? <>برنامه از دستگاه می‌پرسد چند انگشت دارد.</>
+              : state === "done" ? <>حالا {fa(count)} انگشت از {name} روی دستگاه است. برای روزی که این انگشت زخمی شد، بهتر است یک انگشت دیگر هم ثبت شود.</>
+              : <>{error || "شاید سه بار کامل نشد یا وقت دستگاه تمام شد."} دوباره امتحان کنید.</>}
+          </p>
+          {error && picking && <p className="form-error" role="alert">{error}</p>}
+          <ul className="enroll-legend" aria-label="راهنمای رنگ‌ها">
+            <li><i className="lg-idle" />عادی</li>
+            <li><i className="lg-picked" />انتخاب‌شده</li>
+            <li><i className="lg-enrolled" />ثبت‌شده</li>
+            <li><i className="lg-failed" />خطا</li>
+          </ul>
+        </aside>
+      </div>
+      <div className="actions enroll-actions">
+        {picking ? (
+          <>
+            <button className="btn big" disabled={state === "busy"} onClick={() => void start()}>{state === "busy" ? "در حال آماده کردن دستگاه…" : "آماده کردن دستگاه"}</button>
             <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
-          </div>
-        </>
-      ) : state === "waiting" ? (
-        <>
-          <p className="form-ok">دستگاه آماده است.</p>
-          <p>{name} <strong>{FINGERS.find((f) => f.n === finger)?.label}</strong> را <strong>سه بار</strong> روی دستگاه بگذارد و بردارد، تا دستگاه بگوید ثبت شد.</p>
-          <div className="actions">
+          </>
+        ) : state === "waiting" ? (
+          <>
             <button className="btn big" autoFocus onClick={() => void verify()}>ثبت شد، بررسی کن</button>
             <button className="btn ghost" onClick={() => setState("pick")}>از نو</button>
-          </div>
-        </>
-      ) : state === "checking" ? (
-        <p className="muted" role="status">در حال پرسیدن از دستگاه…</p>
-      ) : state === "done" ? (
-        <>
-          <p className="form-ok" role="status">انگشت ثبت شد. حالا {fa(count)} انگشت از {name} روی دستگاه است.</p>
-          <p className="muted small">برای وقتی که این انگشت زخمی شد، بهتر است یک انگشت دیگر هم ثبت شود.</p>
-          <div className="actions">
+          </>
+        ) : state === "checking" ? (
+          <button className="btn big" disabled>در حال بررسی…</button>
+        ) : state === "done" ? (
+          <>
             <button className="btn big" autoFocus onClick={() => onClose(true)}>تمام</button>
-            <button className="btn ghost" onClick={() => { setBefore(count); setState("pick"); setFinger(finger === 6 ? 5 : 6); }}>انگشت دیگر</button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="form-error" role="alert">{error || "دستگاه انگشت تازه‌ای نشان نمی‌دهد."}</p>
-          <p className="muted small">شاید سه بار کامل نشد یا دستگاه وقتش تمام شد. دوباره امتحان کنید.</p>
-          <div className="actions">
+            <button className="btn ghost" onClick={() => {
+              setBefore(count); setState("pick");
+              setFinger([6, 3, 7, 2, 5, 4, 8, 1, 9, 0].find((n) => !enrolled.includes(n)) ?? finger);
+            }}>انگشت دیگر</button>
+          </>
+        ) : (
+          <>
             <button className="btn big" autoFocus onClick={() => { setError(""); setState("pick"); }}>دوباره</button>
             <button className="btn ghost" onClick={() => onClose(false)}>بستن</button>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </Modal>
   );
 }
