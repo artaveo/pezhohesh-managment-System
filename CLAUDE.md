@@ -47,6 +47,23 @@ has no own database and works on the hub directly, naming itself per connection 
 `online-url.txt` (hub), `online-device.txt` / `online-device-paused.txt`. These hold
 passwords: never print them. The K50 device is driven from the office PC only.
 
+## The fingerprint device (ZKTeco K50, `api/src/k50.rs` + `K50Helper.cs`)
+
+The K50 stops answering the network (until power-cycled) when talks are cut off half way or
+it is kept busy. Keep these when changing device code:
+- Every helper request carries a `budget`; the helper stops new work and long reads when it
+  is spent and always unlocks and disconnects. The app kills a helper only after `GRACE`.
+- Writes lock the device with `DisableDeviceWithTimeOut` (falls back to `EnableDevice`).
+- One helper at a time per computer (system mutex `PezhoheshK50Device`), one talk per API
+  (`DEVICE` lock). Before the API stops, `k50::quiesce` waits for a talk under way; the
+  desktop calls `POST /api/v1/k50/quiesce` before closing the API.
+- Punches: the device keeps every punch (capacity ~80,000). Read only when the count changed
+  (`k50_logs_count`), from `k50_logs_since` with `ReadTimeGLogData` where it works.
+- A device that does not answer is retried with backoff (2 min up to 30 min); `diagnose`
+  tells other network / no answer / IP taken by another device / device busy.
+- ZKAccess open on the same PC is detected (`zk_program_open`); punches are then read every
+  30 min and the device page warns.
+
 ## Building on this laptop (Snapdragon ARM64, no MSVC)
 
 Rust is `stable-aarch64-pc-windows-gnullvm` with LLVM-MinGW. Put LLVM-MinGW on PATH in

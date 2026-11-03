@@ -32,6 +32,7 @@ fn set_database_password(api: tauri::State<'_, Api>, password: String) -> Result
     let file = dir.join("database-url.txt");
     let old = std::fs::read_to_string(&file).ok().and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
     std::fs::write(&file, with_password(old.as_deref(), &password)).map_err(|e| e.to_string())?;
+    quiet_device();
     let mut child = api.0.lock().unwrap();
     if let Some(mut c) = child.take() {
         let _ = c.kill();
@@ -48,6 +49,7 @@ fn set_database_password(api: tauri::State<'_, Api>, password: String) -> Result
 fn use_local_database(api: tauri::State<'_, Api>) -> Result<(), String> {
     let dir = std::path::Path::new(&std::env::var_os("APPDATA").ok_or("no_appdata")?).join("Pezhohesh");
     std::fs::rename(dir.join("online-device.txt"), dir.join("online-device-paused.txt")).map_err(|e| e.to_string())?;
+    quiet_device();
     let mut child = api.0.lock().unwrap();
     if let Some(mut c) = child.take() {
         let _ = c.kill();
@@ -74,6 +76,23 @@ fn with_password(old: Option<&str>, password: &str) -> String {
             format!("postgres://{user}:{encoded}@{host}")
         }
         None => format!("postgres://postgres:{encoded}@localhost:5432/pezhohesh"),
+    }
+}
+
+/// Before the API is stopped: asks it to finish a talk with the fingerprint device under way
+/// and start no other (POST /api/v1/k50/quiesce). The K50 stops answering the network when a
+/// talk is cut off half way. Waits at most a minute and a half; an API that is not running
+/// answers nothing and nothing is waited for.
+fn quiet_device() {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8750));
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(95)));
+    let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+    if s.write_all(b"POST /api/v1/k50/quiesce HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").is_ok() {
+        let mut answer = Vec::new();
+        let _ = s.read_to_end(&mut answer);
     }
 }
 
@@ -239,6 +258,8 @@ fn main() {
             if let RunEvent::Exit = event {
                 CLOSING.store(true, Ordering::SeqCst);
                 hotspot::close_if_opened();
+                // The window is already gone; the API is stopped once the device is left properly.
+                quiet_device();
                 if let Some(mut child) = app.state::<Api>().0.lock().unwrap().take() {
                     let _ = child.kill();
                 }

@@ -883,6 +883,8 @@ pub async fn server_state(State(s): State<AppState>, user: CurrentUser) -> Resul
 fn restart_soon() {
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(800)).await;
+        // A talk with the fingerprint device is finished first, never cut off.
+        crate::k50::quiesce(Duration::from_secs(90)).await;
         tracing::info!("restarting for the new database");
         std::process::exit(0);
     });

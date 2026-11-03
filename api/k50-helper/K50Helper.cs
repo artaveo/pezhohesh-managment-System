@@ -10,6 +10,14 @@
 // { "sdk": "status" } says which copy loads; neither reaches the device.
 // Nothing here deletes a user or a finger; a member who should not come in is disabled.
 //
+// The device is small and gets stuck when a talk with it is cut off half way (it then stops
+// answering the network until it is restarted). So every talk ends here, properly: the
+// request carries a time "budget" in seconds, and once it is spent no new work starts and the
+// long reads stop, the device is unlocked and the connection is closed. Writes lock the
+// device with a timeout of its own (DisableDeviceWithTimeOut), so even a helper that is
+// killed leaves a device that unlocks itself. Only one helper talks to the device at a time
+// on this computer (a system-wide mutex), whichever copy of the app started it.
+//
 // Built with the C# compiler that ships with Windows (.NET Framework 4), which knows only
 // C# 5: no $"" strings, no ?. and no `out var` here. See scripts/prepare-sidecar.mjs.
 using System;
@@ -27,6 +35,10 @@ static class K50Helper
 {
     static dynamic zk;
     static int m;
+    // When this talk has to be wrapping up (from the request's "budget").
+    static DateTime deadline = DateTime.MaxValue;
+    static bool Late() { return DateTime.UtcNow > deadline; }
+    static int SecondsLeft() { return deadline == DateTime.MaxValue ? 600 : Math.Max(0, (int)(deadline - DateTime.UtcNow).TotalSeconds); }
     // The valid-date call differs between SDK versions; the first form the device takes is kept.
     static int? dateForm;
 
@@ -71,6 +83,22 @@ static class K50Helper
 
     static Dictionary<string, object> Run(Dictionary<string, object> req)
     {
+        var budget = Int(req, "budget");
+        if (budget > 0) deadline = DateTime.UtcNow.AddSeconds(budget);
+        // One talk with the device at a time on this computer, even from two copies of the app.
+        System.Threading.Mutex one;
+        try { one = new System.Threading.Mutex(false, "Global\\PezhoheshK50Device"); }
+        catch { one = new System.Threading.Mutex(false, "Local\\PezhoheshK50Device"); }
+        bool mine;
+        try { mine = one.WaitOne(TimeSpan.FromSeconds(Math.Min(60, Math.Max(5, SecondsLeft() / 2)))); }
+        catch (System.Threading.AbandonedMutexException) { mine = true; }  // the last helper was stopped; the device is free
+        if (!mine) return Obj("ok", false, "error", "busy");
+        try { return Talk(req); }
+        finally { one.ReleaseMutex(); }
+    }
+
+    static Dictionary<string, object> Talk(Dictionary<string, object> req)
+    {
         m = Int(req, "machine");
         if (m <= 0) m = 1;
         var key = Int(req, "key");
@@ -83,13 +111,15 @@ static class K50Helper
         if (req.TryGetValue("ops", out list) && list is IEnumerable)
             foreach (var o in (IEnumerable)list) ops.Add(o as Dictionary<string, object> ?? new Dictionary<string, object>());
 
-        var writes = ops.Any(o => Str(o, "op") == "set_user" || Str(o, "op") == "set_time" || Str(o, "op") == "put_fingers" || Str(o, "op") == "delete_user");
+        var writes = ops.Any(o => new[] { "set_user", "set_time", "put_fingers", "delete_user", "move_fingers", "clear_logs" }.Contains(Str(o, "op")));
         var results = new ArrayList();
         try
         {
-            if (writes) zk.EnableDevice(m, false);
+            if (writes) Lock();
             foreach (var o in ops)
             {
+                // Out of time: the rest is left for the next talk, and this one ends properly.
+                if (Late()) { results.Add(Obj("ok", false, "error", "out_of_time")); continue; }
                 try { results.Add(Op(o)); }
                 catch (Exception e) { results.Add(Obj("ok", false, "error", "exception", "detail", e.Message)); }
             }
@@ -104,6 +134,21 @@ static class K50Helper
             try { zk.Disconnect(); } catch { }
         }
         return Obj("ok", true, "results", results);
+    }
+
+    // Locks the device's keypad and fingers while writing. With a timeout where the SDK has
+    // one, so the device unlocks itself if this helper never gets to unlock it.
+    static void Lock()
+    {
+        if (Has("DisableDeviceWithTimeOut"))
+        {
+            try
+            {
+                if ((bool)zk.DisableDeviceWithTimeOut(m, Math.Min(900, SecondsLeft() + 30))) return;
+            }
+            catch { }
+        }
+        zk.EnableDevice(m, false);
     }
 
     static Dictionary<string, object> Op(Dictionary<string, object> o)
@@ -127,12 +172,14 @@ static class K50Helper
                 if (!ok) ok = zk.StartEnroll(int.Parse(no, CultureInfo.InvariantCulture), f);
                 return ok ? Obj("ok", true) : Obj("ok", false, "error", "enroll_failed", "code", LastError());
             }
-            case "logs": return Logs(Str(o, "since"));
+            case "logs": return Logs(Str(o, "since"), o.ContainsKey("known") ? Int(o, "known") : -1);
             case "users": return Users(Bool(o, "valid"));
             case "fingers": return Fingers();
             case "put_fingers": return PutFingers(o);
             case "move_fingers": return MoveFingers(Str(o, "from"), Str(o, "to"));
             case "set_time": return Obj("ok", (bool)zk.SetDeviceTime(m));
+            // Only the punches; users, fingers and settings stay. The app has read them all first.
+            case "clear_logs": return (bool)zk.ClearGLog(m) ? Obj("ok", true) : Obj("ok", false, "error", "clear_failed", "code", LastError());
             case "time":
             {
                 int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
@@ -147,7 +194,9 @@ static class K50Helper
     {
         string sn = "", fw = "", plat = "";
         int users = 0, fps = 0, logs = 0;
+        string mac = "";
         zk.GetSerialNumber(m, ref sn);
+        try { zk.GetDeviceMAC(m, ref mac); } catch { }
         zk.GetFirmwareVersion(m, ref fw);
         try { zk.GetPlatform(m, ref plat); } catch { }
         zk.GetDeviceStatus(m, 2, ref users);
@@ -156,9 +205,9 @@ static class K50Helper
         int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
         zk.GetDeviceTime(m, ref y, ref mo, ref d, ref h, ref mi, ref se);
         var calls = new Dictionary<string, object>();
-        foreach (var c in new[] { "SetUserValidDate", "GetUserValidDate", "SSR_SetUserInfo", "StartEnrollEx", "SSR_GetGeneralLogData" })
+        foreach (var c in new[] { "SetUserValidDate", "GetUserValidDate", "SSR_SetUserInfo", "StartEnrollEx", "SSR_GetGeneralLogData", "DisableDeviceWithTimeOut", "ReadTimeGLogData" })
             calls[c] = Has(c);
-        return Obj("ok", true, "serial", sn, "firmware", fw, "platform", plat, "users", users, "fingers", fps, "logs", logs,
+        return Obj("ok", true, "serial", sn, "mac", mac, "firmware", fw, "platform", plat, "users", users, "fingers", fps, "logs", logs,
             "time", Stamp(y, mo, d, h, mi, se), "calls", calls, "bits", IntPtr.Size * 8);
     }
 
@@ -311,21 +360,44 @@ static class K50Helper
         return digits.Length >= 8 ? digits.Substring(0, 8) : digits;
     }
 
-    // Every punch after `since` ("yyyy-MM-dd HH:mm:ss", the device's own clock).
-    static Dictionary<string, object> Logs(string since)
+    // Every punch after `since` ("yyyy-MM-dd HH:mm:ss", the device's own clock). The device
+    // keeps every punch it ever took (tens of thousands), so reading them all each time is a
+    // long, heavy talk. First the count is asked: the same as `known` means nothing new. Then,
+    // where the device can, only the punches from `since` on are read; the whole list only
+    // when that is not possible.
+    static Dictionary<string, object> Logs(string since, int known)
     {
+        int count = -1;
+        try { if (!(bool)zk.GetDeviceStatus(m, 6, ref count)) count = -1; } catch { count = -1; }
+        if (count >= 0 && count == known) return Obj("ok", true, "logs", new ArrayList(), "count", count, "read", "none");
         var list = new ArrayList();
-        if ((bool)zk.ReadGeneralLogData(m))
+        string how = "all";
+        bool partial = false;
+        if (since != "" && Has("ReadTimeGLogData"))
         {
-            string no = "";
-            int vm = 0, io = 0, y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0, wc = 0;
-            while ((bool)zk.SSR_GetGeneralLogData(m, ref no, ref vm, ref io, ref y, ref mo, ref d, ref h, ref mi, ref se, ref wc))
-            {
-                var at = Stamp(y, mo, d, h, mi, se);
-                if (since == "" || string.CompareOrdinal(at, since) > 0) list.Add(Obj("no", no, "at", at, "verify", vm, "io", io));
-            }
+            bool read = false;
+            try { read = (bool)zk.ReadTimeGLogData(m, since, Stamp(DateTime.Now.Year + 1, 1, 1, 0, 0, 0)); } catch { }
+            if (read) partial = ReadLogs(since, list);
+            // Some firmware takes the call and gives nothing back: then the whole list.
+            if (list.Count > 0 || (count >= 0 && known >= 0 && count <= known)) how = "since";
+            else list.Clear();
         }
-        return Obj("ok", true, "logs", list);
+        if (how == "all" && (bool)zk.ReadGeneralLogData(m)) partial = ReadLogs(since, list);
+        return Obj("ok", true, "logs", list, "count", count, "read", how, "partial", partial);
+    }
+
+    // The punches the SDK holds after a read, newer than `since`. True when time ran out first.
+    static bool ReadLogs(string since, ArrayList list)
+    {
+        string no = "";
+        int vm = 0, io = 0, y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0, wc = 0;
+        while ((bool)zk.SSR_GetGeneralLogData(m, ref no, ref vm, ref io, ref y, ref mo, ref d, ref h, ref mi, ref se, ref wc))
+        {
+            var at = Stamp(y, mo, d, h, mi, se);
+            if (since == "" || string.CompareOrdinal(at, since) > 0) list.Add(Obj("no", no, "at", at, "verify", vm, "io", io));
+            if (Late()) return true;
+        }
+        return false;
     }
 
     // Every user on the device (ID, name, admin or not), to compare with the app; with
@@ -344,6 +416,7 @@ static class K50Helper
         if (valid)
             foreach (var u in list)
             {
+                if (Late()) return Obj("ok", false, "error", "out_of_time");
                 try
                 {
                     int exp = 0, cnt = 0;
@@ -374,6 +447,7 @@ static class K50Helper
         foreach (var no in nos)
             for (var f = 0; f < 10; f++)
             {
+                if (Late()) return Obj("ok", false, "error", "out_of_time");
                 string tmp = "";
                 int len = 0, flag = 1;
                 bool got;

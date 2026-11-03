@@ -140,6 +140,8 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     tokio::spawn(async move {
         let _sync = sync;
         tokio::time::sleep(Duration::from_millis(1500)).await;
+        // A talk with the fingerprint device is finished first, never cut off.
+        crate::k50::quiesce(Duration::from_secs(90)).await;
         std::process::exit(0);
     });
     Ok(Json(Restored { before: before_name, files }))

@@ -74,13 +74,31 @@ export type K50DeviceUser = {
   enabled: boolean; member_id: string | null; start: string | null; end: string | null; saved_fingers: number;
 };
 export type K50DeviceEdit = { no: string; was: string; name: string; enabled: boolean; start: string | null; end: string | null };
-export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
+export type K50Round = {
+  at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number;
+  /** Why the device did not answer, as far as the network shows. */
+  diagnosis: K50Diagnosis | null;
+};
+export type K50Diagnosis = "other_network" | "no_answer" | "other_device" | "answers";
+/** What the desk can do when the device does not answer, by what the network showed. */
+export const K50_DIAGNOSIS: Record<K50Diagnosis, string> = {
+  other_network: "این لپ‌تاپ به شبکهٔ دستگاه وصل نیست (شاید به Wi-Fi دیگر یا هات‌اسپات موبایل وصل شده). لپ‌تاپ را به همان Wi-Fi یا کیبل دفتر وصل کنید.",
+  no_answer: "هیچ چیزی در شبکه به آدرس دستگاه جواب نمی‌دهد. اگر دستگاه روشن است و انگشت را قبول می‌کند، بخش شبکهٔ آن گیر کرده: دستگاه را خاموش و روشن کنید. اگر دوباره شد، کیبل و سویچ را ببینید.",
+  other_device: "یک دستگاه دیگر (موبایل یا کمپیوتر) همین آدرس IP دستگاه را گرفته است. در مودم برای دستگاه یک IP ثابت بیرون از محدودهٔ DHCP بگذارید، یا IP دستگاه را عوض کنید.",
+  answers: "دستگاه در شبکه هست ولی ارتباط را قبول نکرد. شاید ZKAccess یا برنامهٔ دیگری به آن وصل است؛ آن را ببندید. اگر رمز ارتباط دستگاه عوض شده، اینجا هم عوضش کنید.",
+};
 export type K50Status = {
   config: K50Config; last: K50Round | null; pending: number; sent: number; punches_today: number;
   errors: { member_no: number; name: string; error: string; error_at: string }[];
   /** Fingers in the app's own copy, and the last copy from the device. */
   fingers_saved: number; fingers_backup: { at: string; users: number; fingers: number; changed: number } | null;
   dates_import: { at: string; added: number } | null;
+  /** ZKAccess (or another ZKTeco program) is open on this laptop. */
+  zk_program_open: boolean;
+  /** The device did not answer: the next try (seconds since 1970) and failures in a row. */
+  retry_at: number | null; fails: number;
+  /** Punches the device holds, as counted at the last read, and from how many the page warns. */
+  logs_on_device: number | null; logs_warn: number;
 };
 export type K50DateRow = { no: string; device_name: string; app_name: string; start: string | null; end: string | null; taken: boolean };
 export type K50Dates = {
@@ -688,6 +706,7 @@ export const api = {
   k50Held: () => request<K50Held[]>("/k50/held"),
   lookK50: (nos: number[]) => request<{ Ok?: K50Looked[]; Err?: string }>("/k50/look", { method: "POST", body: { nos } }),
   freeK50: (nos: number[]) => request<{ Ok?: K50Freed[]; Err?: string }>("/k50/free", { method: "POST", body: { nos } }),
+  k50ClearLogs: () => request<K50Answer>("/k50/logs/clear", { method: "POST" }),
   k50Time: () => request<K50Answer & { time?: string }>("/k50/time", { method: "POST" }),
   memberK50: (id: string) => request<MemberK50>(`/members/${id}/k50`),
   checkMemberK50: (id: string) => request<K50User>(`/members/${id}/k50/check`, { method: "POST" }),
@@ -846,6 +865,11 @@ export function k50ErrorText(error: string | null | undefined): string {
   if (e === "sdk_same_folder") return "این همان پوشهٔ خود برنامه است.";
   if (e === "sdk_copy_failed") return "کپی SDK کامل نشد. دوباره امتحان کنید؛ جزئیات در api.log است.";
   if (e === "timeout") return "دستگاه دیر جواب داد. چند لحظه بعد دوباره امتحان کنید.";
+  if (e === "busy") return "یک کار دیگر با دستگاه در جریان است. چند لحظه بعد دوباره امتحان کنید.";
+  if (e === "closing") return "برنامه در حال بسته شدن است.";
+  if (e === "logs_not_read") return "اول باید همهٔ حاضری‌های دستگاه در برنامه خوانده شود. چند دقیقه بعد دوباره امتحان کنید.";
+  if (e.startsWith("clear_failed")) return "دستگاه حاضری‌ها را پاک نکرد.";
+  if (e === "out_of_time") return "کار با دستگاه بیشتر از وقتش طول کشید و نیمه‌کاره درست تمام شد؛ بقیه در نوبت بعد انجام می‌شود.";
   if (e === "no_ip") return "آدرس دستگاه هنوز تنظیم نشده.";
   if (e === "not_windows") return "این کار فقط روی لپ‌تاپ ویندوزی دفتر ممکن است.";
   if (e === "no_helper") return "بخش ارتباط با دستگاه انگشت (pezhohesh-k50.exe) کنار برنامه پیدا نشد. برنامه را دوباره نصب کنید.";

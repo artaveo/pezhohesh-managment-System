@@ -7,9 +7,16 @@
 //! The device is driven through ZKTeco's own SDK (installed with ZKAccess), by the small
 //! 32-bit helper `pezhohesh-k50.exe` (source in `api/k50-helper`), installed next to this API.
 //! ZKAccess has to be closed while the app talks to the device.
+//!
+//! The K50 stops answering the network (until it is restarted) when talks with it are cut
+//! off half way, or when it is kept busy. So: every talk has a time budget the helper keeps
+//! to and ends properly (the app stops it only well after that); a device that does not
+//! answer is asked again less and less often; punches are read only when the device has
+//! new ones; and before this API stops it waits for a talk under way. When the device does
+//! not answer, `diagnose` says why as far as the network shows it.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -60,6 +67,8 @@ pub struct Last {
     pushed: u32,
     failed: u32,
     punches: u32,
+    /// Why the device did not answer, as far as the network shows (see `diagnose`).
+    diagnosis: Option<&'static str>,
 }
 
 static LAST: Mutex<Option<Last>> = Mutex::new(None);
@@ -68,6 +77,69 @@ static DEVICE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static POKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// While someone puts their finger on the device, the rounds leave it alone (seconds since 1970).
 static ENROLLING_UNTIL: AtomicU64 = AtomicU64::new(0);
+/// The device did not answer: the rounds wait until then (seconds since 1970), longer after
+/// each failure in a row, so a device that is stuck is not kept busy with knocks.
+static RETRY_AT: AtomicU64 = AtomicU64::new(0);
+static FAILS: AtomicU64 = AtomicU64::new(0);
+/// This API is stopping: no new talk with the device starts.
+static QUIET: AtomicBool = AtomicBool::new(false);
+/// A helper gets this much more than its budget before it is stopped by force.
+const GRACE: Duration = Duration::from_secs(30);
+
+/// The wait before the next round after `fails` failures in a row: 2, 4, 8, 16, then 30 minutes.
+fn backoff(fails: u64) -> u64 {
+    (120u64 << fails.saturating_sub(1).min(4)).min(1800)
+}
+
+/// The device was not reached at all (as opposed to refusing one member).
+fn unreachable(error: &str) -> bool {
+    error.starts_with("connect_failed") || error == "timeout" || error == "busy"
+}
+
+/// Before this API stops (closing, a restore, another database): no new talk starts, and a
+/// talk under way is waited for, up to `max`.
+pub async fn quiesce(max: Duration) {
+    QUIET.store(true, Ordering::SeqCst);
+    if tokio::time::timeout(max, DEVICE.lock()).await.is_err() {
+        tracing::warn!("k50: a talk with the device was still going when the API stopped");
+    }
+}
+
+/// POST /api/v1/k50/quiesce: the desktop app asks this before it closes the API (local only).
+pub async fn quiesce_now() -> StatusCode {
+    quiesce(Duration::from_secs(90)).await;
+    StatusCode::NO_CONTENT
+}
+
+/// The K50 holds 80,000 punches. It never forgets one by itself, and every read of them gets
+/// longer as they pile up; when it is full it stops recording. The device page warns from here.
+pub const LOGS_WARN: i64 = 60_000;
+
+/// POST /api/v1/k50/logs/clear (partners): takes the punches off the device once the app has
+/// every one of them (they stay in the app's attendance). Users, fingers and settings stay.
+pub async fn clear_logs(State(s): State<AppState>, user: CurrentUser) -> Result<Json<DeviceAnswer>, ApiError> {
+    if !user.is_partner() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    let cfg = config(&s.db).await?;
+    check_config(&cfg)?;
+    // First every punch not yet in the app; a read cut short or failed stops here (the count
+    // is written again only by a whole read).
+    sqlx::query("DELETE FROM settings WHERE key = 'k50_logs_count'").execute(&s.db).await?;
+    if let Err(e) = pull_punches(&s.db, &cfg).await {
+        return Ok(DeviceAnswer::from(Err::<Value, String>(e)));
+    }
+    let complete: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM settings WHERE key = 'k50_logs_count')").fetch_one(&s.db).await?;
+    if !complete {
+        return Ok(DeviceAnswer::from(Err::<Value, String>("logs_not_read".into())));
+    }
+    let r = talk(&cfg, vec![json!({ "op": "clear_logs" })], Duration::from_secs(60)).await.map(|mut a| a.remove(0));
+    if matches!(&r, Ok(a) if a["ok"] == json!(true)) {
+        save_setting(&s.db, "k50_logs_count", json!(0)).await?;
+        tracing::warn!("k50: punches cleared from the device by {}", user.username);
+    }
+    Ok(DeviceAnswer::from(r))
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -100,9 +172,19 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
     if cfg.ip.trim().parse::<Ipv4Addr>().is_err() {
         return Err("no_ip".into());
     }
+    if QUIET.load(Ordering::SeqCst) {
+        return Err("closing".into());
+    }
     let _one = DEVICE.lock().await;
-    let request = json!({ "ip": cfg.ip.trim(), "port": cfg.port, "machine": cfg.machine, "key": cfg.comm_key, "ops": ops });
-    let answer = ask_helper(&request, wait).await?;
+    if QUIET.load(Ordering::SeqCst) {
+        return Err("closing".into());
+    }
+    // The helper ends the talk itself within `wait`; it is stopped by force only well after.
+    let request = json!({
+        "ip": cfg.ip.trim(), "port": cfg.port, "machine": cfg.machine, "key": cfg.comm_key,
+        "budget": wait.as_secs(), "ops": ops,
+    });
+    let answer = ask_helper(&request, wait + GRACE).await?;
     if answer["ok"] != json!(true) {
         let error = answer["error"].as_str().unwrap_or("failed");
         return Err(match answer["code"].as_i64() {
@@ -114,6 +196,9 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
     if results.len() != ops.len() {
         return Err("helper: short answer".into());
     }
+    // The device answered: the rounds go back to their usual pace.
+    FAILS.store(0, Ordering::SeqCst);
+    RETRY_AT.store(0, Ordering::SeqCst);
     Ok(results)
 }
 
@@ -511,7 +596,17 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
         .await
         .map_err(|e| e.to_string())?;
     let since = since.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
-    let answers = talk(cfg, vec![json!({ "op": "logs", "since": since })], Duration::from_secs(180)).await?;
+    // How many punches the device held last time: the same count means nothing new to read.
+    let known: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::bigint FROM settings WHERE key = 'k50_logs_count'")
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let mut op = json!({ "op": "logs", "since": since });
+    if let Some(n) = known.filter(|_| !since.is_empty()) {
+        op["known"] = json!(n);
+    }
+    let answers = talk(cfg, vec![op], Duration::from_secs(180)).await?;
     let a = &answers[0];
     if a["ok"] != json!(true) {
         return Err(a["error"].as_str().unwrap_or("logs_failed").to_string());
@@ -545,6 +640,11 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
     .rows_affected();
     if let Some(newest) = newest.filter(|n| *n > since) {
         save_setting(db, "k50_logs_since", json!(newest)).await.map_err(|e| e.to_string())?;
+    }
+    // A read cut short by time is finished next round from where it stopped, so the count is
+    // kept only for a whole read.
+    if let Some(count) = a["count"].as_i64().filter(|c| *c >= 0 && a["partial"] != json!(true)) {
+        save_setting(db, "k50_logs_count", json!(count)).await.map_err(|e| e.to_string())?;
     }
     Ok(added as u32)
 }
@@ -588,11 +688,142 @@ async fn round(db: &PgPool, cfg: &Config, punches: bool, batches: u32) -> Last {
         }
     }
     last.ok = last.error.is_none();
-    if let Some(e) = &last.error {
-        tracing::warn!("k50: {e}");
+    match &last.error {
+        Some(e) if unreachable(e) => {
+            let ip = cfg.ip.trim().parse().ok();
+            last.diagnosis = match ip {
+                Some(ip) => Some(diagnose(db, ip).await),
+                None => None,
+            };
+            let fails = FAILS.fetch_add(1, Ordering::SeqCst) + 1;
+            RETRY_AT.store(now_secs() + backoff(fails), Ordering::SeqCst);
+            tracing::warn!("k50: {e} ({}; try {fails}, next in {} min)", last.diagnosis.unwrap_or("?"), backoff(fails) / 60);
+        }
+        Some(e) => tracing::warn!("k50: {e}"),
+        None => {
+            if let Ok(ip) = cfg.ip.trim().parse() {
+                remember_mac(db, ip).await;
+            }
+        }
     }
     *LAST.lock().unwrap() = Some(last.clone());
     last
+}
+
+// ---------------------------------------------------------------------------
+// When the device does not answer
+
+/// Why the device did not answer, as far as this computer's network shows it:
+/// - `other_network`: this computer is not on the device's network (another Wi-Fi, a phone's
+///   hotspot, or the cable is out);
+/// - `no_answer`: nothing on the network answers for the device's address (it is off, its
+///   cable is out, or its network part is stuck; restarting the device brings it back);
+/// - `other_device`: another device answers for that address (two have the same IP);
+/// - `answers`: the device is on the network but did not take the connection (another
+///   program, such as ZKAccess, may be talking to it, or the communication key differs).
+async fn diagnose(db: &PgPool, ip: Ipv4Addr) -> &'static str {
+    if !on_network(ip) {
+        return "other_network";
+    }
+    let Some(mac) = tokio::task::spawn_blocking(move || arp(ip)).await.ok().flatten() else { return "no_answer" };
+    let known: Option<String> = sqlx::query_scalar("SELECT value #>> '{}' FROM settings WHERE key = 'k50_mac'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    match known {
+        Some(k) if !k.eq_ignore_ascii_case(&mac) => "other_device",
+        _ => "answers",
+    }
+}
+
+/// Some network of this computer holds `ip`.
+fn on_network(ip: Ipv4Addr) -> bool {
+    if_addrs::get_if_addrs().unwrap_or_default().into_iter().any(|i| match i.addr {
+        if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() => {
+            let mask = u32::from(v4.netmask);
+            mask != 0 && u32::from(v4.ip) & mask == u32::from(ip) & mask
+        }
+        _ => false,
+    })
+}
+
+/// The hardware address that answers for `ip` on the local network (an ARP request), if any.
+#[cfg(windows)]
+fn arp(ip: Ipv4Addr) -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::SendARP;
+    let mut mac = [0u8; 8];
+    let mut len = mac.len() as u32;
+    // SAFETY: SendARP writes at most `len` bytes into `mac` and the length it wrote into `len`.
+    let r = unsafe { SendARP(u32::from_ne_bytes(ip.octets()), 0, mac.as_mut_ptr().cast(), &mut len) };
+    (r == 0 && len >= 6).then(|| mac[..6].iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join("-"))
+}
+
+#[cfg(not(windows))]
+fn arp(_ip: Ipv4Addr) -> Option<String> {
+    None
+}
+
+/// After a good round: the device's hardware address, so another device taking its IP later
+/// can be told apart.
+async fn remember_mac(db: &PgPool, ip: Ipv4Addr) {
+    if let Some(mac) = tokio::task::spawn_blocking(move || arp(ip)).await.ok().flatten() {
+        let _ = sqlx::query(
+            "INSERT INTO settings (key, value) VALUES ('k50_mac', to_jsonb($1::text)) \
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now() WHERE settings.value IS DISTINCT FROM EXCLUDED.value",
+        )
+        .bind(mac)
+        .execute(db)
+        .await;
+    }
+}
+
+/// ZKAccess (or another ZKTeco program) is open on this computer. It keeps its own connection
+/// to the device, and the K50 does not take two programs well: the app then reads punches
+/// less often and the device page says so.
+#[cfg(windows)]
+pub fn zk_program_open() -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+    let zk = |path: &str| {
+        let p = path.to_lowercase();
+        ["\\zkaccess", "\\zktime", "\\zkbio", "\\att2008", "zkaccess"].iter().any(|n| p.contains(n))
+    };
+    // SAFETY: plain Win32 calls; every handle opened here is closed here.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = false;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        while more && !found {
+            let name = String::from_utf16_lossy(&e.szExeFile[..e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len())]);
+            found = zk(&name);
+            if !found {
+                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID);
+                if !h.is_null() {
+                    let mut buf = [0u16; 1024];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0 {
+                        found = zk(&String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                    CloseHandle(h);
+                }
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}
+
+#[cfg(not(windows))]
+pub fn zk_program_open() -> bool {
+    false
 }
 
 /// Every two minutes (and soon after a membership changes) the device is brought up to
@@ -614,12 +845,19 @@ pub async fn schedule(db: PgPool) {
         if !cfg.enabled || cfg.ip.trim().is_empty() || now_secs() < ENROLLING_UNTIL.load(Ordering::SeqCst) {
             continue;
         }
-        let punches = since_punches >= Duration::from_secs(600);
+        // The device did not answer lately: leave it alone until its next try.
+        if now_secs() < RETRY_AT.load(Ordering::SeqCst) || QUIET.load(Ordering::SeqCst) {
+            continue;
+        }
+        // With ZKAccess open the device has two programs to serve: punches every half hour.
+        let every = if tokio::task::spawn_blocking(zk_program_open).await.unwrap_or(false) { 1800 } else { 600 };
+        let punches = since_punches >= Duration::from_secs(every);
         let last = round(&db, &cfg, punches, 5).await;
         if punches && last.ok {
             since_punches = Duration::ZERO;
         }
-        if last.ok && fingers_due(&db).await {
+        // The daily copy of every finger is a long talk: done when no one has just come in.
+        if last.ok && punches && last.punches == 0 && fingers_due(&db).await {
             if let Err(e) = backup_fingers(&db, &cfg).await {
                 tracing::warn!("k50 fingers backup: {e}");
             }
@@ -650,6 +888,14 @@ pub struct Status {
     fingers_backup: Option<Value>,
     /// When dates were last taken from the device, and for how many members.
     dates_import: Option<Value>,
+    /// ZKAccess (or another ZKTeco program) is open on this computer.
+    zk_program_open: bool,
+    /// The device did not answer: the next try (seconds since 1970) and failures in a row.
+    retry_at: Option<u64>,
+    fails: u64,
+    /// Punches the device holds (as counted at the last read), and from how many the page warns.
+    logs_on_device: Option<i64>,
+    logs_warn: i64,
 }
 
 #[derive(Serialize, FromRow)]
@@ -679,7 +925,17 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
     let fingers_backup: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_fingers_at'").fetch_optional(&s.db).await?;
     let dates_import: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_dates_import'").fetch_optional(&s.db).await?;
     let last = LAST.lock().unwrap().clone();
+    let logs_on_device: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::bigint FROM settings WHERE key = 'k50_logs_count'")
+        .fetch_optional(&s.db)
+        .await?
+        .flatten();
+    let retry_at = Some(RETRY_AT.load(Ordering::SeqCst)).filter(|t| *t > now_secs());
     Ok(Json(Status {
+        zk_program_open: tokio::task::spawn_blocking(zk_program_open).await.unwrap_or(false),
+        retry_at,
+        fails: FAILS.load(Ordering::SeqCst),
+        logs_on_device,
+        logs_warn: LOGS_WARN,
         config: config(&s.db).await?,
         last,
         pending,
@@ -1931,6 +2187,13 @@ mod tests {
         assert!(!same_person("Moh", "محمد رضا سادات"));
         assert!(!same_person("S Baqir", "سید رضا حسینی"));
         assert!(!same_person("Hussain", "محمد رضا حسینی"));
+    }
+
+    #[test]
+    fn a_device_that_does_not_answer_is_asked_less_often() {
+        assert_eq!([1, 2, 3, 4, 5, 9].map(super::backoff), [120, 240, 480, 960, 1800, 1800]);
+        assert!(super::unreachable("connect_failed (-307)") && super::unreachable("timeout") && super::unreachable("busy"));
+        assert!(!super::unreachable("set_user_failed (-2)"));
     }
 
     #[test]

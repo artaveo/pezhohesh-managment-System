@@ -152,6 +152,7 @@ async fn run() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
+            k50::quiesce(Duration::from_secs(90)).await;
         })
         .await?;
     Ok(())
@@ -230,7 +231,7 @@ fn problem_of(e: &anyhow::Error) -> &'static str {
 async fn wait_for_database(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let core = s.core.read().unwrap().clone();
     // «وصل به سرور مرکزی» is for a computer whose own database is not there.
-    if core.ready || matches!(req.uri().path(), "/health" | "/api/v1/setup/connect") {
+    if core.ready || matches!(req.uri().path(), "/health" | "/api/v1/setup/connect" | "/api/v1/k50/quiesce") {
         return next.run(req).await;
     }
     let body = json!({ "error": core.problem.unwrap_or("starting"), "detail": core.detail });
@@ -388,6 +389,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/look", post(k50::look))
         .route("/api/v1/k50/free", post(k50::free))
         .route("/api/v1/k50/device-user", post(k50::edit_device_user))
+        .route("/api/v1/k50/quiesce", post(k50::quiesce_now))
+        .route("/api/v1/k50/logs/clear", post(k50::clear_logs))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, type K50Comparison, type K50Config, type K50Dates, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, K50_DIAGNOSIS, type K50Comparison, type K50Config, type K50Dates, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
@@ -19,7 +19,9 @@ export function Device() {
   const [form, setForm] = useState<K50Config | null>(null);
   const [info, setInfo] = useState<K50Info | null>(null);
   const [found, setFound] = useState<{ ip: string; via: string }[] | null>(null);
-  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates" | "names">("");
+  const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates" | "names" | "clear">("");
+  // Clearing the device's punches asks twice.
+  const [clearing, setClearing] = useState(false);
   const [dates, setDates] = useState<K50Dates | null>(null);
   const [withDiffers, setWithDiffers] = useState(false);
   const [sdk, setSdk] = useState<K50Sdk | null>(null);
@@ -109,6 +111,11 @@ export function Device() {
     setDates(r.Ok);
     if (r.Ok.committed) toast(`تاریخ عضویت ${fa(r.Ok.added.length)} عضو از دستگاه ثبت شد.`);
   });
+  const clearLogs = () => run("clear", async () => {
+    setClearing(false);
+    const r = await api.k50ClearLogs();
+    if (r.ok) toast("حاضری‌ها از دستگاه پاک شد؛ همه در برنامه مانده‌اند."); else setError(k50ErrorText(r.error));
+  });
   const fixTime = () => run("time", async () => {
     const r = await api.k50Time();
     if (r.ok) toast(`ساعت دستگاه درست شد${r.time ? `: ${r.time}` : ""}.`); else setError(k50ErrorText(r.error));
@@ -126,15 +133,45 @@ export function Device() {
           : !saved.enabled ? <p className="notice warn">به‌روز نگه داشتن خودکار خاموش است؛ فقط وقتی دکمه را بزنید چیزی به دستگاه می‌رود.</p>
           : last ? (
             <p className={last.ok ? "form-ok" : "form-error"}>
-              {last.ok ? "آخرین همگام‌سازی درست انجام شد" : `آخرین همگام‌سازی نشد: ${k50ErrorText(last.error)}`}
+              {last.ok ? "آخرین همگام‌سازی درست انجام شد" : `آخرین همگام‌سازی نشد: ${last.diagnosis ? K50_DIAGNOSIS[last.diagnosis] : k50ErrorText(last.error)}`}
               {last.at && <> ({when(last.at)})</>}
             </p>
-          ) : <p className="muted">برنامه هر دو دقیقه دستگاه را به‌روز می‌کند و هر ده دقیقه حاضری‌ها را می‌خواند.</p>}
+          ) : <p className="muted">برنامه هر دو دقیقه دستگاه را به‌روز می‌کند و هر ده دقیقه حاضری‌های تازه را می‌خواند.</p>}
+        {saved.enabled && s.retry_at && (
+          <p className="muted small">
+            دستگاه {fa(s.fails)} بار پشت سر هم جواب نداد. تا دستگاه سر حال بیاید، برنامه کمتر سراغش می‌رود؛ تلاش بعدی {when(new Date(s.retry_at * 1000).toISOString())}.
+            «همین حالا همگام کن» همیشه همان لحظه امتحان می‌کند.
+          </p>
+        )}
+        {s.zk_program_open && (
+          <p className="notice warn">
+            ZKAccess روی همین لپ‌تاپ باز است. دستگاه K50 با دو برنامهٔ هم‌زمان خوب کار نمی‌کند و گاهی از شبکه می‌افتد.
+            تا وقتی باز است، برنامه حاضری‌ها را هر نیم ساعت می‌خواند. اگر به ZKAccess نیاز ندارید، آن را ببندید.
+          </p>
+        )}
         <div className="stats-row">
           <div><span className="muted small">روی دستگاه فرستاده شده</span><strong>{fa(s.sent)}</strong></div>
           <div><span className="muted small">در نوبت فرستادن</span><strong>{fa(s.pending)}</strong></div>
           <div><span className="muted small">حاضری امروز</span><strong>{fa(s.punches_today)}</strong></div>
+          {s.logs_on_device !== null && <div><span className="muted small">حاضری‌های نگه‌داشته روی دستگاه</span><strong>{fa(s.logs_on_device)}</strong></div>}
         </div>
+        {s.logs_on_device !== null && s.logs_on_device >= s.logs_warn && (
+          <div className="notice warn logs-full">
+            <p>
+              حافظهٔ حاضری دستگاه نزدیک پر شدن است ({fa(s.logs_on_device)} از حدود {fa(80000)}). وقتی پر شود، دستگاه حاضری تازه را ثبت نمی‌کند
+              و هر بار خواندن حاضری‌ها طولانی‌تر می‌شود. همهٔ این حاضری‌ها در برنامه هم هست، پس می‌شود آن‌ها را از خود دستگاه پاک کرد.
+              عضوها، انگشت‌ها و تنظیمات دستگاه دست نمی‌خورد. اگر ZKAccess را برای گزارش حاضری به کار می‌برید، اول حاضری‌ها را در آن هم بگیرید.
+            </p>
+            {!clearing
+              ? <button className="btn ghost small" disabled={!!busy} onClick={() => setClearing(true)}>پاک کردن حاضری‌ها از دستگاه…</button>
+              : (
+                <div className="actions">
+                  <button className="btn danger small" disabled={!!busy} onClick={() => void clearLogs()}>{busy === "clear" ? "در حال پاک کردن…" : "بله، اول بخوان و بعد پاک کن"}</button>
+                  <button className="btn ghost small" disabled={!!busy} onClick={() => setClearing(false)}>نه</button>
+                </div>
+              )}
+          </div>
+        )}
         <div className="actions">
           <button className="btn big" disabled={!!busy || !saved.ip} onClick={() => void sync()}>{busy === "sync" ? "در حال همگام‌سازی…" : "همین حالا همگام کن"}</button>
           <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void fixTime()}>{busy === "time" ? "…" : "ساعت دستگاه را با این لپ‌تاپ یکی کن"}</button>
