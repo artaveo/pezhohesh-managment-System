@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, errorText, ROLE_LABEL, SECTION_LABEL, type PersonRow, type Role, type RoleAccess, type Section, type UserRow } from "../lib/api";
+import { api, errorText, ROLE_LABEL, SECTION_LABEL, SECTION_TREE, type PersonRow, type Role, type RoleAccess, type Section, type UserRow } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { fa, formatShort } from "../lib/solar";
 
@@ -59,9 +59,10 @@ export function Users() {
                 <td><strong>{u.full_name}</strong>{u.id === me?.id && <span className="chip">شما</span>}</td>
                 <td><bdi dir="ltr">{u.username}</bdi></td>
                 <td>
-                  <select value={u.role} disabled={u.id === me?.id}
+                  <select value={u.role} disabled={u.id === me?.id || (me?.role !== "partner" && u.role === "partner")}
                     onChange={(e) => void change(u.id, { role: e.target.value as Role }, `نقش ${u.full_name} عوض شد.`)}>
-                    {(Object.keys(ROLE_LABEL) as Role[]).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                    {(Object.keys(ROLE_LABEL) as Role[]).filter((r) => me?.role === "partner" || r !== "partner" || u.role === "partner")
+                      .map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                   </select>
                   {u.role === "pec_staff" && (
                     <label className="check">
@@ -78,7 +79,7 @@ export function Users() {
                     : <span className="status on">فعال</span>}
                 </td>
                 <td>
-                  {u.id !== me?.id && (
+                  {u.id !== me?.id && (me?.role === "partner" || u.role !== "partner") && (
                     <div className="row-actions">
                       <button className="btn ghost small" onClick={() => void resetPassword(u)}>رمز موقت تازه</button>
                       <button className="btn ghost small"
@@ -95,8 +96,8 @@ export function Users() {
         {!rows && !error && <p className="muted">در حال بارگذاری…</p>}
       </div>
 
-      <RoleSections />
-      <People onMerged={(msg) => { setNotice(msg); void load(); }} />
+      {me?.role === "partner" && <RoleSections />}
+      {me?.role === "partner" && <People onMerged={(msg) => { setNotice(msg); void load(); }} />}
     </div>
   );
 }
@@ -113,10 +114,10 @@ function RoleSections() {
   const [saved, setSaved] = useState("");
   useEffect(() => { api.roleAccess().then(setData, (e) => setError(errorText(e))); }, []);
 
-  async function toggle(role: Role, section: Section, on: boolean) {
+  async function set(role: Role, changes: Section[], on: boolean) {
     if (!data) return;
     const row = data.roles.find((r) => r.role === role)!;
-    const sections = on ? [...row.sections, section] : row.sections.filter((x) => x !== section);
+    const sections = on ? [...new Set([...row.sections, ...changes])] : row.sections.filter((x) => !changes.includes(x));
     setData({ roles: data.roles.map((r) => (r.role === role ? { ...r, sections } : r)) });
     setError("");
     setSaved("");
@@ -133,7 +134,7 @@ function RoleSections() {
     <section className="glass role-sections">
       <h2>هر نقش چه بخش‌هایی را ببیند</h2>
       <p className="muted small">
-        شرکا همیشه همه چیز را می‌بینند. برای مدیر و کارمند خدمات تحصیلی تیک بزنید؛ همان لحظه ذخیره می‌شود.
+        همهٔ بخش‌های منو این‌جاست، به همان ترتیب. شرکا همیشه همه چیز را می‌بینند. برای مدیر و کارمند خدمات تحصیلی تیک بزنید؛ همان لحظه ذخیره می‌شود.
         کاربرانی که الان وارد هستند فهرست تازه را با ورود بعدی می‌بینند، ولی بخش بسته از همین حالا برایشان باز نمی‌شود.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -143,12 +144,47 @@ function RoleSections() {
           {data.roles.map((r) => (
             <fieldset key={r.role}>
               <legend>{ROLE_LABEL[r.role]}</legend>
-              {r.possible.map((sec) => (
-                <label key={sec} className="check big">
-                  <input type="checkbox" checked={r.sections.includes(sec)} onChange={(e) => void toggle(r.role, sec, e.target.checked)} />
-                  {SECTION_LABEL[sec]}
-                </label>
-              ))}
+              {SECTION_TREE.map((g) => {
+                const items = g.items.filter((it) => (it.id ? r.possible.includes(it.id) : it.parts!.some((p) => r.possible.includes(p))));
+                if (!items.length) return null;
+                return (
+                  <div key={g.group || "top"} className="role-group">
+                    {g.group && <div className="role-group-title">{g.group}</div>}
+                    {items.map((it) => {
+                      if (it.id) {
+                        return (
+                          <div key={it.id}>
+                            <label className="check big">
+                              <input type="checkbox" checked={r.sections.includes(it.id)} onChange={(e) => void set(r.role, [it.id!], e.target.checked)} />
+                              {SECTION_LABEL[it.id]}
+                            </label>
+                            {it.note && <p className="muted small role-note">{it.note}</p>}
+                          </div>
+                        );
+                      }
+                      const parts = it.parts!.filter((p) => r.possible.includes(p));
+                      const on = parts.filter((p) => r.sections.includes(p)).length;
+                      return (
+                        <div key={it.label}>
+                          <label className="check big">
+                            <input type="checkbox" checked={on === parts.length} ref={(el) => { if (el) el.indeterminate = on > 0 && on < parts.length; }}
+                              onChange={(e) => void set(r.role, parts, e.target.checked)} />
+                            {it.label}
+                          </label>
+                          <div className="role-parts">
+                            {parts.map((p) => (
+                              <label key={p} className="check">
+                                <input type="checkbox" checked={r.sections.includes(p)} onChange={(e) => void set(r.role, [p], e.target.checked)} />
+                                {SECTION_LABEL[p]}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
               {r.role === "pec_staff" && (
                 <p className="muted small">بخش‌های قرائت‌خانه به حساب‌های خدمات تحصیلی داده نمی‌شود؛ دیتابیس هم به این نقش اجازهٔ دیدن آن‌ها را نمی‌دهد. برای کسی که هر دو کار را می‌کند، نقش «مدیر» بدهید.</p>
               )}
@@ -240,6 +276,7 @@ function People({ onMerged }: { onMerged: (msg: string) => void }) {
 }
 
 function NewUser({ onDone, onCancel }: { onDone: (msg: string) => void; onCancel: () => void }) {
+  const { user: me } = useAuth();
   const [fullName, setFullName] = useState("");
   const [person, setPerson] = useState("");
   const [people, setPeople] = useState<PersonRow[]>([]);
@@ -283,7 +320,7 @@ function NewUser({ onDone, onCancel }: { onDone: (msg: string) => void; onCancel
       </div>
       <fieldset className="roles">
         <legend>نقش</legend>
-        {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
+        {(Object.keys(ROLE_LABEL) as Role[]).filter((r) => me?.role === "partner" || r !== "partner").map((r) => (
           <label key={r} className={`role-option${role === r ? " on" : ""}`}>
             <input type="radio" name="role" value={r} checked={role === r} onChange={() => setRole(r)} />
             <strong>{ROLE_LABEL[r]}</strong>

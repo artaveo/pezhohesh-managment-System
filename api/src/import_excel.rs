@@ -726,7 +726,7 @@ pub async fn import(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Report>, ApiError> {
-    if !user.is_partner() {
+    if !user.may("import") {
         return Err(ApiError::FORBIDDEN);
     }
     if !(1390..=1500).contains(&p.year) {

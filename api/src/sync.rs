@@ -186,7 +186,7 @@ async fn migrate_hub(hub: &PgPool) -> Result<(), String> {
     // on the connection, and a pooled one would then block every later try.
     let url = hub.connect_options();
     let mut c = sqlx::postgres::PgConnection::connect_with(&url).await.map_err(hub_error)?;
-    let result = migrator.run(&mut c).await.map_err(|e| format!("hub_migration: {e}"));
+    let result = migrator.run_direct(&mut c).await.map_err(|e| format!("hub_migration: {e}"));
     let _ = c.close().await;
     result
 }

@@ -25,6 +25,8 @@ pub struct Point {
     kind: &'static str,
     /// From the monthly folder: the last backup of a month, kept for good.
     monthly: bool,
+    /// Why it was taken: manual | auto | before-restore | old (before v1.0).
+    made: &'static str,
     folder: String,
     size: u64,
     modified: Option<DateTime<Utc>>,
@@ -38,6 +40,7 @@ async fn points(db: &PgPool) -> Result<Vec<Point>, sqlx::Error> {
             for (dir, monthly) in [(base.clone(), false), (base.join(backup::MONTHLY_FOLDER), true)] {
                 for f in backup::backups_in(&dir) {
                     list.push(Point {
+                        made: f.made,
                         path: dir.join(&f.name).display().to_string(),
                         name: f.name,
                         kind,
@@ -96,11 +99,11 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     let file = points(&s.db).await?.into_iter().find(|p| p.path == b.path).ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
     let url = crate::database_url();
 
-    let before = backup::run_backup(&s.db, &url).await?;
+    let before = backup::run_backup(&s.db, &url, backup::Made::BeforeRestore).await?;
     if !before.ok {
         return Err(ApiError(StatusCode::CONFLICT, "safety_backup_failed"));
     }
-    let before_name = points(&s.db).await?.into_iter().next().map(|p| p.name);
+    let before_name = before.file();
 
     let _one = backup::RUNNING.lock().await;
     // No sync round from here until the restored data is settled and the API has restarted.

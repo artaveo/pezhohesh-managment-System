@@ -117,7 +117,7 @@ pub struct PriceList {
 
 /// Partners set the sale price of each card and what a GB costs; a count keeps the prices it was typed with.
 pub async fn set_cards(State(s): State<AppState>, user: CurrentUser, Json(p): Json<PriceList>) -> Result<StatusCode, ApiError> {
-    if !user.is_partner() {
+    if !user.may("prices") {
         return Err(ApiError::FORBIDDEN);
     }
     let ok = |a: f64| a.is_finite() && a >= 0.0;

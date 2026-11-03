@@ -28,7 +28,9 @@ fn partner(user: &CurrentUser) -> Result<(), ApiError> {
 
 /// GET /api/v1/people (partners)
 pub async fn list(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Person>>, ApiError> {
-    partner(&user)?;
+    if !user.may("users") {
+        return Err(ApiError::FORBIDDEN);
+    }
     let mut tx = begin_as(&s.db, &user).await?;
     let rows = sqlx::query_as(
         "SELECT p.id, p.full_name, p.title, \

@@ -48,12 +48,12 @@ export const NAV = [
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
-  { id: "audit", icon: "history", label: "چه کسی چه کرد", partner: true, group: "مدیریت" },
-  { id: "users", icon: "shield", label: "کاربران", partner: true, group: "مدیریت" },
-  { id: "prices", icon: "tag", label: "قیمت‌ها", partner: true, group: "مدیریت" },
-  { id: "backup", icon: "database", label: "پشتیبان", partner: true, group: "مدیریت" },
-  { id: "device", icon: "fingerprint", label: "دستگاه انگشت", partner: true, group: "مدیریت" },
-  { id: "import", icon: "upload", label: "ورود از اکسل", partner: true, group: "مدیریت" },
+  { id: "audit", icon: "history", label: "چه کسی چه کرد", section: "audit", group: "مدیریت" },
+  { id: "users", icon: "shield", label: "کاربران", section: "users", group: "مدیریت" },
+  { id: "prices", icon: "tag", label: "قیمت‌ها", section: "prices", group: "مدیریت" },
+  { id: "backup", icon: "database", label: "پشتیبان", section: "backup", group: "مدیریت" },
+  { id: "device", icon: "fingerprint", label: "دستگاه انگشت", section: "device", group: "مدیریت" },
+  { id: "import", icon: "upload", label: "ورود از اکسل", section: "import", group: "مدیریت" },
   { id: "settings", icon: "user", label: "تنظیمات من", group: "" },
 ] as const satisfies readonly NavItem[];
 

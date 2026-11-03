@@ -187,6 +187,92 @@ pub async fn next_member_no(State(s): State<AppState>, user: CurrentUser) -> Res
     Ok(Json(n))
 }
 
+#[derive(Deserialize)]
+pub struct NumbersQuery {
+    /// A number typed in the form: who has it, if anyone.
+    check: Option<i32>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct LastNo {
+    no: i32,
+    name: String,
+    joined_on: NaiveDate,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Gap {
+    from: i32,
+    to: i32,
+}
+
+#[derive(Serialize)]
+pub struct Checked {
+    no: i32,
+    /// free | member (a member has it) | removed (a removed member still holds it on the
+    /// device; free it first) | device (the fingerprint device has someone else under it)
+    state: &'static str,
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct Numbers {
+    /// The highest number a member holds now.
+    last: Option<LastNo>,
+    next: i32,
+    /// Empty numbers between used ones (by members or on the device), highest first.
+    gaps: Vec<Gap>,
+    gap_numbers: i64,
+    check: Option<Checked>,
+}
+
+/// GET /api/v1/members/numbers: the last ID, the next one, the empty ones in between, and
+/// whether a typed number is free. A safeguard for the desk, next to «عضو جدید».
+pub async fn member_numbers(State(s): State<AppState>, user: CurrentUser, Query(q): Query<NumbersQuery>) -> Result<Json<Numbers>, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let next: i32 = sqlx::query_scalar(NEXT_NO).fetch_one(&mut *tx).await?;
+    let last: Option<LastNo> = sqlx::query_as(
+        "SELECT member_no AS no, concat_ws(' ', first_name, last_name) AS name, joined_on FROM members \
+         WHERE no_freed_at IS NULL AND deleted_at IS NULL AND member_no < $1 ORDER BY member_no DESC LIMIT 1",
+    )
+    .bind(next)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Below the next number only; a jump of more than 1000 is where a numbering started
+    // anew (51… to 510…), not a gap.
+    let gaps_of = "WITH u AS (SELECT member_no AS n FROM members WHERE no_freed_at IS NULL UNION SELECT no FROM k50_device_ids), \
+                        o AS (SELECT n, lead(n) OVER (ORDER BY n) AS nx FROM u WHERE n < $1) \
+                   SELECT n + 1 AS from, nx - 1 AS to FROM o WHERE nx - n BETWEEN 2 AND 1001";
+    let gaps: Vec<Gap> = sqlx::query_as(&format!("{gaps_of} ORDER BY n DESC LIMIT 300")).bind(next).fetch_all(&mut *tx).await?;
+    let gap_numbers: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(sum(g.to - g.from + 1), 0)::BIGINT FROM ({gaps_of}) g"))
+        .bind(next)
+        .fetch_one(&mut *tx)
+        .await?;
+    let check = match q.check {
+        None => None,
+        Some(no) => {
+            let held: Option<(String, bool)> = sqlx::query_as(
+                "SELECT concat_ws(' ', first_name, last_name), deleted_at IS NOT NULL FROM members \
+                 WHERE member_no = $1 AND no_freed_at IS NULL ORDER BY deleted_at NULLS FIRST LIMIT 1",
+            )
+            .bind(no)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let device: Option<Option<String>> =
+                sqlx::query_scalar("SELECT name FROM k50_device_ids WHERE no = $1").bind(no).fetch_optional(&mut *tx).await?;
+            Some(match (held, device) {
+                (Some((name, false)), _) => Checked { no, state: "member", name: Some(name) },
+                (Some((name, true)), _) => Checked { no, state: "removed", name: Some(name) },
+                (None, Some(name)) => Checked { no, state: "device", name },
+                (None, None) => Checked { no, state: "free", name: None },
+            })
+        }
+    };
+    tx.commit().await?;
+    Ok(Json(Numbers { last, next, gaps, gap_numbers, check }))
+}
+
 pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b): Json<NewMember>) -> Result<Json<Saved>, ApiError> {
     hall_only(&user)?;
     check_member(&b.member)?;

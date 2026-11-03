@@ -278,6 +278,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/audit", get(audit::list))
         .route("/api/v1/members", get(lists::members).post(hall::create_member))
         .route("/api/v1/members/next-no", get(hall::next_member_no))
+        .route("/api/v1/members/numbers", get(hall::member_numbers))
         .route("/api/v1/members/:id", get(hall::member).put(hall::update_member).delete(hall::delete_member))
         .route("/api/v1/members/:id/restore", post(hall::restore_member))
         .route("/api/v1/members/:id/periods", post(hall::add_member_period))

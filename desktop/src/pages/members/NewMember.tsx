@@ -3,6 +3,7 @@ import { api, errorText, type MemberInput, type PeriodInput, type Plan } from ".
 import { iso } from "../../lib/solar";
 import { PeriodForm } from "../../components/PeriodForm";
 import { EMPTY_MEMBER, MemberFields } from "./MemberFields";
+import { NumberHelp } from "./NumberHelp";
 
 /** Registers a member and, usually in the same step, their first paid month and its bill. */
 export function NewMember({ onSaved, onCancel }: { onSaved: (memberId: string, billId: string | null) => void; onCancel: () => void }) {
@@ -37,6 +38,7 @@ export function NewMember({ onSaved, onCancel }: { onSaved: (memberId: string, b
     <form className="panel wide" onSubmit={save}>
       <h2>عضو جدید</h2>
       <MemberFields value={member} onChange={setMember} />
+      <NumberHelp value={member.member_no ?? null} onPick={(no) => setMember((m) => ({ ...m, member_no: no }))} />
       <label className="check big">
         <input type="checkbox" checked={withPeriod} onChange={(e) => setWithPeriod(e.target.checked)} />
         عضویت اول را هم ثبت کن و بل بده

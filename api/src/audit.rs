@@ -113,6 +113,7 @@ fn label(row: &Map<String, Value>) -> String {
         _ => "مدرک".to_string(),
     });
     [
+        text(row.get("file")).map(|f| format!("فایل {f}")),
         name,
         no,
         doc,
@@ -139,6 +140,8 @@ fn shape(r: Raw) -> Line {
     let after = r.after.as_ref().and_then(Value::as_object).unwrap_or(&empty);
     let gone = |m: &Map<String, Value>| m.get("deleted_at").is_some_and(|v| !v.is_null());
     let kind = match r.action.as_str() {
+        // Written by restore_merge_kept: who brought back which backup.
+        "restore" => "backup_restore",
         "insert" => "insert",
         "delete" => "remove",
         _ if !gone(before) && gone(after) => "remove",
@@ -181,7 +184,9 @@ fn shape(r: Raw) -> Line {
 
 /// GET /api/v1/audit (partners), newest first, 100 lines a page.
 pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<Params>) -> Result<Json<Page>, ApiError> {
-    partner(&user)?;
+    if !user.may("audit") {
+        return Err(ApiError::FORBIDDEN);
+    }
     let q = p.q.as_deref().map(str::trim).filter(|q| !q.is_empty()).map(|q| format!("%{q}%"));
     let mut tx = begin_as(&s.db, &user).await?;
     let raw: Vec<Raw> = sqlx::query_as(

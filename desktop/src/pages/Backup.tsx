@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncServerState, type SyncStatus } from "../lib/api";
+import { api, errorText, type BackupMade, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncServerState, type SyncStatus } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { Modal } from "../components/Modal";
 import { formatDay } from "../lib/solar";
@@ -10,8 +10,22 @@ const EVERY = [
   { h: 6, label: "هر 6 ساعت" },
   { h: 12, label: "هر 12 ساعت" },
   { h: 24, label: "روزی یک بار" },
+  { h: 48, label: "هر 2 روز یک بار" },
+  { h: 168, label: "هفته‌ای یک بار" },
   { h: 0, label: "فقط وقتی دکمه را بزنم" },
 ];
+
+/** Why a backup was taken, as a small coloured label. */
+const MADE: Record<BackupMade, { label: string; tone: string }> = {
+  manual: { label: "دستی", tone: "made-manual" },
+  auto: { label: "خودکار", tone: "made-auto" },
+  "before-restore": { label: "پیش از برگرداندن", tone: "made-restore" },
+  old: { label: "نسخهٔ قدیمی", tone: "made-old" },
+};
+function MadeChip({ made }: { made: BackupMade }) {
+  const m = MADE[made] ?? MADE.old;
+  return <span className={`chip made ${m.tone}`}>{m.label}</span>;
+}
 
 const when = (at: string) => {
   const d = new Date(at);
@@ -46,11 +60,14 @@ function why(error: string) {
  */
 export function Backup() {
   const toast = useToast();
+  const { user } = useAuth();
+  const partner = user?.role === "partner";
   const [s, setS] = useState<BackupStatus | null>(null);
   const [folders, setFolders] = useState<[string, string]>(["", ""]);
   const [usb, setUsb] = useState(true);
   const [gdrive, setGdrive] = useState(true);
   const [every, setEvery] = useState(24);
+  const [at, setAt] = useState("");
   const [keep, setKeep] = useState("30");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -63,12 +80,13 @@ export function Backup() {
       setUsb(b.plan.usb);
       setGdrive(b.plan.gdrive);
       setEvery(b.plan.every_hours);
+      setAt(b.plan.at ?? "");
       setKeep(String(b.plan.keep_days));
     }).catch((e) => setError(errorText(e)));
   }, [tick]);
 
   // Every change is saved at once: a folder typed in and then «پشتیبان بگیر» must not be lost.
-  type Patch = Partial<{ folders: [string, string]; usb: boolean; gdrive: boolean; every: number; keep: string }>;
+  type Patch = Partial<{ folders: [string, string]; usb: boolean; gdrive: boolean; every: number; at: string; keep: string }>;
   async function persist(p: Patch = {}) {
     const f = p.folders ?? folders;
     const k = Number(p.keep ?? keep);
@@ -76,7 +94,7 @@ export function Backup() {
     if (!(k >= 1 && k <= 3650)) { setError("تعداد روزها باید بین 1 و 3650 باشد."); return false; }
     setError("");
     try {
-      await api.setBackupPlan({ folders: f.filter((x) => x.trim()), usb: p.usb ?? usb, gdrive: p.gdrive ?? gdrive, every_hours: p.every ?? every, keep_days: k });
+      await api.setBackupPlan({ folders: f.filter((x) => x.trim()), usb: p.usb ?? usb, gdrive: p.gdrive ?? gdrive, every_hours: p.every ?? every, at: (p.at ?? at) || null, keep_days: k });
       toast("ذخیره شد.");
       setTick((t) => t + 1);
       return true;
@@ -119,14 +137,19 @@ export function Backup() {
       </div>
     );
   }
+  const last = (
+    <section className="panel wide">
+      <h2>آخرین پشتیبان</h2>
+      <LastOutcome last={s.last} />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions"><button className="btn big" disabled={busy} onClick={() => void now()}>{busy ? "در حال پشتیبان‌گیری…" : "پشتیبان بگیر، همین حالا"}</button></div>
+      {!partner && <p className="muted small">برگرداندن پشتیبان، جا و وقت پشتیبان‌ها و سرور مرکزی فقط دست شرکا است.</p>}
+    </section>
+  );
+  if (!partner) return <div className="page">{last}</div>;
   return (
     <div className="page">
-      <section className="panel wide">
-        <h2>آخرین پشتیبان</h2>
-        <LastOutcome last={s.last} />
-        {error && <p className="form-error" role="alert">{error}</p>}
-        <div className="actions"><button className="btn big" disabled={busy} onClick={() => void now()}>{busy ? "در حال پشتیبان‌گیری…" : "پشتیبان بگیر، همین حالا"}</button></div>
-      </section>
+      {last}
 
       <section className="panel wide">
         <h2>کجا و هر چند وقت</h2>
@@ -183,6 +206,17 @@ export function Backup() {
               {!EVERY.some((o) => o.h === every) && <option value={every}>هر {every} ساعت</option>}
             </select>
           </label>
+          {every >= 24 && (
+            <label className="field wide">
+              <span>ساعت پشتیبان</span>
+              <input type="time" dir="ltr" value={at} aria-describedby="at-hint"
+                onChange={(e) => { setAt(e.target.value); void persist({ at: e.target.value }); }} />
+              <small id="at-hint" className="muted">
+                {at ? `هر بار ساعت ${at} گرفته می‌شود. اگر کمپیوتر آن وقت خاموش باشد، همین که روشن شود اول پشتیبان می‌گیرد.`
+                  : "خالی یعنی از آخرین پشتیبان حساب می‌شود. یک ساعت بدهید (مثلاً 07:00) تا هر بار همان ساعت گرفته شود."}
+              </small>
+            </label>
+          )}
           <label className="field wide">
             <span>پشتیبان‌های چند روز اخیر بماند</span>
             <input dir="ltr" inputMode="numeric" value={keep} aria-describedby="keep-hint" onChange={(e) => setKeep(e.target.value.replace(/\D/g, "").slice(0, 4))}
@@ -225,6 +259,7 @@ function LastOutcome({ last }: { last: BackupOutcome | null }) {
     <>
       <p className={last.ok ? "form-ok" : "form-error"}>
         {!last.ok ? "پشتیبان گرفته نشد" : last.folders.some((f) => f.error) ? "پشتیبان گرفته شد، ولی نه در همه‌جا" : "پشتیبان گرفته شد"}: {when(last.at)}
+        {last.made && <> <MadeChip made={last.made} /></>}
       </p>
       <ul className="backup-folders">
         {last.folders.map((f) => (
@@ -436,6 +471,14 @@ function SyncLine({ s }: { s: SyncStatus }) {
       <p className={s.error ? "form-error" : "form-ok"}>
         {s.error ? syncWhy(s.error) : s.ok_at ? <>همگام است. آخرین بار: {when(s.ok_at)}</> : "هنوز همگام نشده."}
       </p>
+      {s.rewind_pending && (
+        <p className="notice warn">
+          پشتیبانی که روی این کمپیوتر برگردانده شد هنوز به سرور نرسیده. همین که اینترنت وصل شود فرستاده می‌شود و بقیهٔ کمپیوترها هم همان را می‌گیرند.
+        </p>
+      )}
+      {s.server_bytes !== null && (
+        <p className="muted small">حجم دیتابیس روی سرور: <bdi dir="ltr">{size(s.server_bytes)}</bdi> (Neon رایگان تا 512 MB جا می‌دهد).</p>
+      )}
       {s.error && (
         <details className="offline-details">
           <summary>جزئیات برای پشتیبانی</summary>
@@ -628,7 +671,7 @@ function Restore({ refresh }: { refresh: number }) {
     <>
       <h2>برگرداندن از پشتیبان</h2>
       <p className="muted small">
-        همهٔ پشتیبان‌های پوشه‌ها، فلش و گوگل درایو، تازه‌ترین بالا. برگرداندن، دیتابیس و عکس‌ها را همان‌طور می‌کند که در آن پشتیبان بود؛
+        همهٔ پشتیبان‌های پوشه‌ها، فلش و گوگل درایو، تازه‌ترین بالا. کنار هر کدام نوشته شده که <MadeChip made="manual" />، <MadeChip made="auto" /> یا <MadeChip made="before-restore" /> گرفته شده. برگرداندن، دیتابیس و عکس‌ها را همان‌طور می‌کند که در آن پشتیبان بود؛
         هر چه بعد از آن ثبت شده از برنامه برداشته می‌شود. پیش از برگرداندن، خود برنامه یک پشتیبان تازه از وضع فعلی می‌گیرد تا اگر اشتباه شد، آن هم برگردد.
       </p>
       <div className="segmented" role="tablist" aria-label="کدام پشتیبان‌ها">
@@ -647,8 +690,8 @@ function Restore({ refresh }: { refresh: number }) {
           <tbody>
             {shown.map((p) => (
               <tr key={p.path}>
-                <td>{p.modified ? when(p.modified) : "—"}<div className="muted small"><bdi dir="ltr">{p.name}</bdi></div></td>
-                <td>{KIND_LABEL[p.kind]}{p.monthly && <> <span className="chip">ماهانه</span></>}<div className="muted small"><bdi dir="ltr">{p.folder}</bdi></div></td>
+                <td>{p.modified ? when(p.modified) : "—"} {!p.monthly && <MadeChip made={p.made} />}{p.monthly && <> <span className="chip">ماهانه</span></>}<div className="muted small"><bdi dir="ltr">{p.name}</bdi></div></td>
+                <td>{KIND_LABEL[p.kind]}<div className="muted small"><bdi dir="ltr">{p.folder}</bdi></div></td>
                 <td className="num"><bdi dir="ltr">{size(p.size)}</bdi></td>
                 <td><button className="btn ghost small" onClick={() => { setChosen(p); setTyped(""); setError(""); }}>برگرداندن…</button></td>
               </tr>
@@ -672,6 +715,10 @@ function Restore({ refresh }: { refresh: number }) {
             <>
               <h2>برگرداندن پشتیبان {chosen.modified ? when(chosen.modified) : ""}</h2>
               <p>هر چه بعد از این زمان در برنامه ثبت شده (بل، عضو، مصرف…) از برنامه برداشته می‌شود. اول یک پشتیبان از وضع فعلی گرفته می‌شود.</p>
+              <ul className="muted small">
+                <li>اگر این کمپیوتر با سرور همگام است، همین وضع به سرور و همهٔ کمپیوترها هم می‌رود.</li>
+                <li>«چه کسی چه کرد»، حساب‌های کاربران و رمزها، و تنظیمات همین کمپیوتر عوض نمی‌شوند؛ خود برگرداندن هم با نام شما در «چه کسی چه کرد» ثبت می‌شود.</li>
+              </ul>
               <label className="field">
                 <span>برای اطمینان بنویسید: <b>{WORD}</b></span>
                 <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />

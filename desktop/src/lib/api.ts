@@ -20,12 +20,36 @@ export type User = {
 /** Sections a partner can give the manager or the education staff (see the users page). */
 export type Section =
   | "dashboard" | "memberships" | "members" | "registrations" | "books" | "hotspot" | "inbox"
-  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "pec";
+  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "pec"
+  | "audit" | "users" | "prices" | "backup" | "device" | "import";
 export const SECTION_LABEL: Record<Section, string> = {
   dashboard: "داشبورد (درآمد و مصرف)", memberships: "پذیرش و تمدید", members: "اعضا", registrations: "ثبت‌نام‌ها",
   books: "امانت کتاب", hotspot: "کارت هاتسپات", inbox: "رسیده از موبایل", receipts: "بل‌ها",
-  expenses: "مصارف و برداشت‌ها", salaries: "معاش کارمندان", shares: "سهم شرکا", reports: "گزارش مالی", pec: "خدمات تحصیلی",
+  expenses: "مصارف", salaries: "برداشت‌های کارمندان و معاش", shares: "برداشت‌ها و سهم شرکا", reports: "گزارش مالی", pec: "خدمات تحصیلی",
+  audit: "چه کسی چه کرد", users: "کاربران", prices: "قیمت‌ها", backup: "پشتیبان", device: "دستگاه انگشت", import: "ورود از اکسل",
 };
+/**
+ * The permissions page, in the order and groups of the menu. An item with `parts` is one
+ * menu item with parts inside it; each part is ticked on its own.
+ */
+export const SECTION_TREE: { group: string; items: { label?: string; id?: Section; parts?: Section[]; note?: string }[] }[] = [
+  { group: "", items: [{ id: "dashboard" }] },
+  { group: "کار روزانه", items: [{ id: "memberships" }, { id: "members" }, { id: "registrations" }, { id: "inbox" }, { id: "books" }, { id: "hotspot" }] },
+  { group: "حساب و پول", items: [
+    { id: "receipts" },
+    { label: "مصارف و برداشت‌ها", parts: ["expenses", "salaries", "shares"] },
+    { id: "reports" },
+  ] },
+  { group: "خدمات تحصیلی", items: [{ id: "pec", note: "بخش‌های داخل خدمات تحصیلی وقتی آن بخش ساخته شد همین‌جا یکی‌یکی می‌آیند." }] },
+  { group: "مدیریت", items: [
+    { id: "audit" },
+    { id: "users", note: "حساب‌های غیر شریک را می‌سازد و عوض می‌کند. حساب شرکا و همین تیک‌ها فقط دست شرکا است." },
+    { id: "prices" },
+    { id: "backup", note: "پشتیبان می‌گیرد و آخرین پشتیبان را می‌بیند. برگرداندن پشتیبان، تنظیم آن و سرور فقط دست شرکا است." },
+    { id: "device" },
+    { id: "import" },
+  ] },
+];
 export type RoleAccess = { roles: { role: Role; possible: Section[]; sections: Section[] }[] };
 
 /** A photo or tazkira a member sent from their phone, waiting at the desk. */
@@ -81,10 +105,22 @@ export type RestorePoint = {
   path: string; name: string; kind: "folder" | "usb" | "gdrive";
   /** From the monthly folder: the last backup of a month, kept for good. */
   monthly: boolean;
+  /** Why it was taken; "old" for files from before v1.0. */
+  made: BackupMade;
   folder: string; size: number; modified: string | null;
 };
+export type BackupMade = "manual" | "auto" | "before-restore" | "old";
 
 export type ThemeMode = "system" | "light" | "dark";
+
+/** The last ID, the next one, empty ones in between, and who has a typed number. */
+export type MemberNumbers = {
+  last: { no: number; name: string; joined_on: string } | null;
+  next: number;
+  gaps: { from: number; to: number }[];
+  gap_numbers: number;
+  check: { no: number; state: "free" | "member" | "removed" | "device"; name: string | null } | null;
+};
 
 export type UserRow = {
   id: string;
@@ -273,16 +309,16 @@ export type AuditFilter = { from?: string; to?: string; table?: string; user?: s
 export type AuditChange = { field: string; before: unknown; after: unknown };
 export type AuditLine = {
   id: number; at: string; user: string | null; table: string; row_id: string | null;
-  kind: "insert" | "update" | "remove" | "restore" | "void";
+  kind: "insert" | "update" | "remove" | "restore" | "void" | "backup_restore";
   label: string; amount: unknown; reason: string | null; member_id: string | null; changes: AuditChange[]; restorable: boolean;
 };
 export type AuditPage = { lines: AuditLine[]; more: boolean; users: { id: string; name: string }[] };
 export type MonthSummary = { id: string; solar_year: number; solar_month: number; starts_on: string; net_balance: number; note: string | null };
 export type Withdrawal = { id: string; taken_on: string; staff_id: string; person: string; amount: number; note: string | null; paid_by: string | null; from_excel: boolean; removable: boolean };
 export type Range = { from?: string; to?: string };
-export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; keep_days: number; usb_drive?: string | null };
+export type BackupPlan = { folders: string[]; usb: boolean; gdrive: boolean; every_hours: number; at?: string | null; keep_days: number; usb_drive?: string | null };
 export type BackupOutcome = {
-  at: string | null; ok: boolean;
+  at: string | null; ok: boolean; made?: BackupMade | null;
   folders: { kind: "folder" | "usb" | "gdrive"; folder: string; file: string | null; error: string | null }[];
 };
 export type OnlineOutcome = { at: string | null; ok: boolean; error: string | null; seconds: number | null };
@@ -293,13 +329,17 @@ export type SyncStatus = {
   mode: "off" | "node" | "online" | "paused"; host: string | null; device: SyncDevice | null; local_db: boolean;
   waiting: number; problems: number; ok_at: string | null; tried_at: string | null; error: string | null; sent: number; taken: number;
   clock_off_minutes: number | null;
+  /** A restore on this computer that has not reached the server yet. */
+  rewind_pending: boolean;
+  /** The server's database size in bytes, read about once an hour. */
+  server_bytes: number | null;
 };
 export type SyncServerState = { state: "empty" | "copy" | "hub"; server_members: number | null; here_members: number; devices: string[] };
 export type SyncProblem = { id: number; at: string; tbl: string | null; op: string | null; error: string };
 export type BackupStatus = {
   plan: BackupPlan; last: BackupOutcome | null; pg_dump: string; online_only: boolean;
   usb: string | null; gdrive: string | null; drives: { root: string; prepared: boolean; picked: boolean; removable: boolean }[];
-  files: { name: string; size: number; modified: string | null }[];
+  files: { name: string; made: BackupMade; size: number; modified: string | null }[];
 };
 export type HotspotCard = { volume_gb: number; price: number; active: boolean; bought: number; sold: number; in_hand: number };
 export type HotspotCards = { cost_per_gb: number; cards: HotspotCard[] };
@@ -477,6 +517,8 @@ export const api = {
     return request<Page<Registration> & { summary: RegSummary }>(`/registrations?${qs}`, { signal });
   },
   nextMemberNo: () => request<number>("/members/next-no"),
+  memberNumbers: (check?: number | null, signal?: AbortSignal) =>
+    request<MemberNumbers>(`/members/numbers${check ? `?check=${check}` : ""}`, { signal }),
   createMember: (member: MemberInput, period: PeriodInput | null) => request<Saved>("/members", { method: "POST", body: { member, period } }),
   member: (id: string, signal?: AbortSignal) => request<MemberDetail>(`/members/${id}`, { signal }),
   updateMember: (id: string, m: MemberInput) => request<void>(`/members/${id}`, { method: "PUT", body: m }),
@@ -641,6 +683,7 @@ export function errorText(e: unknown): string {
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";
     case "forbidden": return "شما به این بخش دسترسی ندارید.";
+    case "partners_only_account": return "حساب شرکا (و حساب خود شما) را فقط یکی از شرکا عوض می‌کند.";
     case "section_closed": return "این بخش برای نقش شما بسته است. یکی از شرکا می‌تواند آن را در «کاربران» باز کند.";
     case "safety_backup_failed": return "اول یک پشتیبان تازه از وضع فعلی گرفته می‌شود، ولی نشد؛ پس چیزی برگردانده نشد. پوشه‌های پشتیبان را ببینید.";
     case "restore_failed": return "برگرداندن نشد و دیتابیس همان‌طور که بود ماند. جزئیات در api.log است.";

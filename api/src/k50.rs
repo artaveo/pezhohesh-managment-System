@@ -578,8 +578,9 @@ pub async fn schedule(db: PgPool) {
 // ---------------------------------------------------------------------------
 // The device page (partners)
 
+/// The device page: partners, and whoever a partner gave «دستگاه انگشت».
 fn partner(user: &CurrentUser) -> Result<(), ApiError> {
-    if user.is_partner() { Ok(()) } else { Err(ApiError::FORBIDDEN) }
+    if user.may("device") { Ok(()) } else { Err(ApiError::FORBIDDEN) }
 }
 
 #[derive(Serialize)]

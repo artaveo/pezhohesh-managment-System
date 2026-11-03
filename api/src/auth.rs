@@ -78,6 +78,11 @@ pub struct CurrentUser {
     /// The sections of the app this person sees (see `access`).
     #[sqlx(skip)]
     pub sections: Vec<String>,
+    /// This request is in a system section a partner gave this person (see access::ADMIN):
+    /// it runs with a partner's database rights.
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub elevated: bool,
 }
 
 const USER_COLUMNS: &str = "u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, \
@@ -86,6 +91,10 @@ const USER_COLUMNS: &str = "u.id, u.staff_id, s.full_name, u.username, u.role::t
 impl CurrentUser {
     pub fn is_partner(&self) -> bool {
         self.role == "partner"
+    }
+    /// A partner, or someone a partner gave this section.
+    pub fn may(&self, section: &str) -> bool {
+        self.is_partner() || self.sections.iter().any(|s| s == section)
     }
     pub fn sees_hall(&self) -> bool {
         self.role == "partner" || self.role == "manager"
@@ -117,7 +126,7 @@ impl FromRequestParts<AppState> for CurrentUser {
         .await?;
         let mut user = user.ok_or(ApiError::UNAUTHORIZED)?;
         user.sections = crate::access::sections_for(&state.db, &user.role).await;
-        crate::access::check(parts.uri.path(), &user)?;
+        crate::access::check(parts.uri.path(), &mut user)?;
         Ok(user)
     }
 }
@@ -125,6 +134,7 @@ impl FromRequestParts<AppState> for CurrentUser {
 /// Starts a transaction that acts as `user`: their database role, and their id for the audit log.
 pub async fn begin_as(db: &PgPool, user: &CurrentUser) -> Result<Transaction<'static, Postgres>, ApiError> {
     let role = match user.role.as_str() {
+        _ if user.elevated => "pz_partner",
         "partner" => "pz_partner",
         "manager" => "pz_manager",
         "pec_staff" => "pz_pec",
@@ -454,7 +464,7 @@ pub struct UserRow {
 }
 
 pub async fn list_users(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<UserRow>>, ApiError> {
-    if !user.is_partner() {
+    if !user.may("users") {
         return Err(ApiError::FORBIDDEN);
     }
     let mut tx = begin_as(&s.db, &user).await?;
@@ -489,8 +499,12 @@ pub async fn create_user(
     user: CurrentUser,
     Json(b): Json<CreateUser>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    if !user.is_partner() {
+    if !user.may("users") {
         return Err(ApiError::FORBIDDEN);
+    }
+    // Someone else given «کاربران» manages the other accounts, never a partner's.
+    if !user.is_partner() && b.role == "partner" {
+        return Err(ApiError(StatusCode::FORBIDDEN, "partners_only_account"));
     }
     let username = clean_username(&b.username)?;
     check_new_password(&b.password)?;
@@ -579,11 +593,17 @@ pub async fn update_user(
     Path(id): Path<Uuid>,
     Json(b): Json<UpdateUser>,
 ) -> Result<StatusCode, ApiError> {
-    if !user.is_partner() {
+    if !user.may("users") {
         return Err(ApiError::FORBIDDEN);
     }
     if let Some(r) = &b.role {
         check_role(r)?;
+    }
+    if !user.is_partner() {
+        let target: Option<String> = sqlx::query_scalar("SELECT role::text FROM app_users WHERE id = $1").bind(id).fetch_optional(&s.db).await?;
+        if target.as_deref() == Some("partner") || b.role.as_deref() == Some("partner") || id == user.id {
+            return Err(ApiError(StatusCode::FORBIDDEN, "partners_only_account"));
+        }
     }
     let hash = match &b.reset_password {
         Some(p) => {

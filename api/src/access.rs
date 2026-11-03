@@ -12,16 +12,21 @@ use sqlx::PgPool;
 use crate::auth::{begin_as, ApiError, CurrentUser};
 use crate::AppState;
 
-/// The sections a partner can hand out, in menu order.
+/// The sections a partner can hand out, in menu order: every item of the menu, and inside
+/// «مصارف و برداشت‌ها» its three parts (expenses, staff, partners).
 pub const SECTIONS: &[&str] = &[
     "dashboard", "memberships", "members", "registrations", "books", "hotspot", "inbox", "receipts", "expenses",
-    "salaries", "shares", "reports", "pec",
+    "salaries", "shares", "reports", "pec", "audit", "users", "prices", "backup", "device", "import",
 ];
 /// Study-hall sections: the manager's database rights cover these, not the education records.
 const HALL: &[&str] = &[
     "dashboard", "memberships", "members", "registrations", "books", "hotspot", "inbox", "receipts", "expenses",
-    "salaries", "shares", "reports",
+    "salaries", "shares", "reports", "audit", "users", "prices", "backup", "device", "import",
 ];
+/// Sections of running the system. Someone given one acts there with a partner's database
+/// rights (its tables are the partners' only), but what only a partner may do stays so:
+/// restoring a backup, the backup plan, the sync, partners' accounts and these permissions.
+pub const ADMIN: &[&str] = &["audit", "users", "prices", "backup", "device", "import"];
 
 /// What each role may be given at all (its database rights).
 fn possible(role: &str) -> &'static [&'static str] {
@@ -100,10 +105,34 @@ fn needs(path: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// Refuses a request for a section this person was not given.
-pub fn check(path: &str, user: &CurrentUser) -> Result<(), ApiError> {
+/// The system section a path belongs to (see ADMIN). Prices are read by the desk too, so
+/// those paths are open and only changing them asks for «قیمت‌ها».
+fn admin_section(path: &str) -> Option<&'static str> {
+    let rest = path.strip_prefix("/api/v1/")?;
+    Some(match rest.split('/').next().unwrap_or("") {
+        "audit" => "audit",
+        "users" | "people" => "users",
+        "plans" => "prices",
+        "hotspot" if rest == "hotspot/cards" => "prices",
+        "backup" => "backup",
+        "k50" => "device",
+        "import" => "import",
+        _ => return None,
+    })
+}
+
+/// Refuses a request for a section this person was not given. A request in a system
+/// section they were given runs with a partner's database rights (`elevated`).
+pub fn check(path: &str, user: &mut CurrentUser) -> Result<(), ApiError> {
     if user.is_partner() {
         return Ok(());
+    }
+    if let Some(sec) = admin_section(path) {
+        if user.sections.iter().any(|m| m == sec) {
+            user.elevated = true;
+        } else if !matches!(sec, "prices") {
+            return Err(ApiError(StatusCode::FORBIDDEN, "section_closed"));
+        }
     }
     match needs(path) {
         Some(any) if !any.iter().any(|s| user.sections.iter().any(|m| m == s)) => Err(ApiError(StatusCode::FORBIDDEN, "section_closed")),
@@ -192,5 +221,9 @@ mod tests {
         assert!(needs("/api/v1/salaries/x/month").unwrap().contains(&"salaries"));
         assert!(needs("/api/v1/bills").unwrap().contains(&"receipts"));
         assert!(!needs("/api/v1/bills").unwrap().contains(&"members"));
+        assert_eq!(admin_section("/api/v1/k50/compare"), Some("device"));
+        assert_eq!(admin_section("/api/v1/hotspot/cards"), Some("prices"));
+        assert_eq!(admin_section("/api/v1/hotspot/sales"), None);
+        assert_eq!(admin_section("/api/v1/backup/restore"), Some("backup"));
     }
 }

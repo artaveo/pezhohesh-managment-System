@@ -26,6 +26,7 @@ export const TABLES: Record<string, string> = {
   hotspot_cards: "کارت هاتسپات",
   month_summaries: "بیلانس برآوردی",
   partner_shares: "سهم شرکا",
+  backup: "پشتیبان",
 };
 
 const KIND: Record<AuditLine["kind"], string> = {
@@ -34,6 +35,7 @@ const KIND: Record<AuditLine["kind"], string> = {
   remove: "حذف کرد",
   restore: "برگرداند",
   void: "باطل کرد",
+  backup_restore: "پشتیبان را برگرداند",
 };
 
 const FIELDS: Record<string, string> = {

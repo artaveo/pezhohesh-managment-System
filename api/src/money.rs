@@ -121,7 +121,7 @@ fn check_plan(p: &PlanInput) -> Result<(), ApiError> {
 }
 
 pub async fn create_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Json<PlanInput>) -> Result<Json<Uuid>, ApiError> {
-    if !user.is_partner() {
+    if !user.may("prices") {
         return Err(ApiError::FORBIDDEN);
     }
     check_plan(&p)?;
@@ -151,7 +151,7 @@ pub async fn update_plan(
     Path(id): Path<Uuid>,
     Json(p): Json<PlanInput>,
 ) -> Result<StatusCode, ApiError> {
-    if !user.is_partner() {
+    if !user.may("prices") {
         return Err(ApiError::FORBIDDEN);
     }
     check_plan(&p)?;

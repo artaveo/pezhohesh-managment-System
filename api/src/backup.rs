@@ -47,13 +47,85 @@ pub struct Plan {
     /// Also to Google Drive ("Google Drive for desktop" signed in on this laptop).
     gdrive: bool,
     every_hours: u32,
+    /// For daily (or every few days) backups: the time of day, "07:00". If the computer is
+    /// off then, the backup is taken as soon as it is on again.
+    at: Option<String>,
     keep_days: u32,
 }
 
 impl Default for Plan {
     fn default() -> Self {
-        Plan { folders: vec![default_folder()], usb: true, usb_drive: None, usb_id: None, gdrive: true, every_hours: 24, keep_days: KEEP_DAYS_DEFAULT }
+        Plan {
+            folders: vec![default_folder()],
+            usb: true,
+            usb_drive: None,
+            usb_id: None,
+            gdrive: true,
+            every_hours: 24,
+            at: None,
+            keep_days: KEEP_DAYS_DEFAULT,
+        }
     }
+}
+
+/// Why a backup was taken; written at the end of its file name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Made {
+    /// «پشتیبان بگیر، همین حالا»
+    Manual,
+    /// On the schedule.
+    Auto,
+    /// By the app itself, just before a restore replaced everything.
+    BeforeRestore,
+}
+
+impl Made {
+    fn tag(self) -> &'static str {
+        match self {
+            Made::Manual => "manual",
+            Made::Auto => "auto",
+            Made::BeforeRestore => "before-restore",
+        }
+    }
+}
+
+/// What a file name says about why it was taken: manual, auto, before-restore, or "old"
+/// for files from before v1.0 (and the monthly copies).
+pub(crate) fn made_of(name: &str) -> &'static str {
+    let stem = name.strip_suffix(".backup").unwrap_or(name);
+    for m in [Made::Manual, Made::Auto, Made::BeforeRestore] {
+        if stem.ends_with(&format!("_{}", m.tag())) {
+            return m.tag();
+        }
+    }
+    "old"
+}
+
+/// "07:00" as hour and minute.
+fn time_of_day(at: &str) -> Option<(u32, u32)> {
+    let (h, m) = at.trim().split_once(':')?;
+    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// Whether the schedule wants a backup now, given the last good one.
+fn due(plan: &Plan, last_ok: Option<DateTime<Utc>>, now: DateTime<Local>) -> bool {
+    if plan.every_hours == 0 {
+        return false;
+    }
+    let at = plan.at.as_deref().and_then(time_of_day).filter(|_| plan.every_hours >= 24);
+    let Some((h, m)) = at else {
+        return last_ok.is_none_or(|t| now.with_timezone(&Utc) - t >= chrono::Duration::hours(plan.every_hours as i64));
+    };
+    // The last time the clock passed that time of day (today, or yesterday if not yet).
+    let today = now.date_naive().and_hms_opt(h, m, 0).and_then(|t| t.and_local_timezone(Local).earliest());
+    let Some(mut slot) = today else { return false };
+    if slot > now {
+        slot -= chrono::Duration::days(1);
+    }
+    let days = (plan.every_hours / 24).max(1) as i64;
+    let since = slot - chrono::Duration::days(days - 1);
+    last_ok.is_none_or(|t| t < since.with_timezone(&Utc))
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -63,6 +135,16 @@ pub struct Outcome {
     pub ok: bool,
     /// Per folder: the file written, or why not.
     folders: Vec<FolderOutcome>,
+    /// manual | auto | before-restore
+    #[serde(default)]
+    made: Option<String>,
+}
+
+impl Outcome {
+    /// The file name the backup got, when it was written somewhere.
+    pub fn file(&self) -> Option<String> {
+        self.folders.iter().find_map(|f| f.file.clone())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -310,23 +392,23 @@ pub fn pg_tool(name: &str) -> PathBuf {
     PathBuf::from(exe)
 }
 
-/// "pezhohesh_1405-08-05_10-30.backup": the Solar date and time it was taken.
-fn file_name(now: DateTime<Local>) -> String {
+/// "pezhohesh_1405-08-05_10-30-00_manual.backup": the Solar date and time it was taken, and why.
+fn file_name(now: DateTime<Local>, made: Made) -> String {
     let day = now.date_naive();
     let y = solar::year_of(day);
     let (m, d) = solar::month_day(day);
-    format!("pezhohesh_{y}-{m:02}-{d:02}_{}.backup", now.format("%H-%M-%S"))
+    format!("pezhohesh_{y}-{m:02}-{d:02}_{}_{}.backup", now.format("%H-%M-%S"), made.tag())
 }
 
 /// One backup at a time: the scheduler and the button never write the same file together.
 pub(crate) static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Runs one backup into every folder of the plan and keeps the outcome in settings.
-pub async fn run_backup(db: &PgPool, url: &str) -> Result<Outcome, sqlx::Error> {
+pub async fn run_backup(db: &PgPool, url: &str, made: Made) -> Result<Outcome, sqlx::Error> {
     let _one = RUNNING.lock().await;
     let plan = plan_of(db).await?;
-    let name = file_name(Local::now());
-    let mut out = Outcome { at: Some(Utc::now()), ok: false, folders: vec![] };
+    let name = file_name(Local::now(), made);
+    let mut out = Outcome { at: Some(Utc::now()), ok: false, folders: vec![], made: Some(made.tag().into()) };
     // Where to: the plan's folders, then the USB stick and Google Drive when they are there.
     let mut targets: Vec<(&str, Result<PathBuf, &str>)> =
         plan.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).map(|f| ("folder", Ok(PathBuf::from(f)))).collect();
@@ -464,7 +546,9 @@ fn prune(dir: &Path, days: u32) {
     let mut files = backups_in(dir);
     files.sort_by_key(|f| std::cmp::Reverse(f.modified));
     let cut = Utc::now() - chrono::Duration::days(days as i64);
+    let cut_restore = Utc::now() - chrono::Duration::days(days.max(90) as i64);
     for f in files.into_iter().skip(1) {
+        let cut = if made_of(&f.name) == "before-restore" { cut_restore } else { cut };
         if f.modified.is_some_and(|m| m < cut) {
             let _ = std::fs::remove_file(dir.join(&f.name));
         }
@@ -505,6 +589,8 @@ fn copy_flat(from: &Path, to: &Path) -> std::io::Result<usize> {
 #[derive(Serialize)]
 pub struct BackupFile {
     pub(crate) name: String,
+    /// manual | auto | before-restore | old
+    pub(crate) made: &'static str,
     pub(crate) size: u64,
     pub(crate) modified: Option<DateTime<Utc>>,
 }
@@ -517,8 +603,10 @@ pub(crate) fn backups_in(dir: &Path) -> Vec<BackupFile> {
         .filter(|e| is_ours(&e.file_name().to_string_lossy()))
         .filter_map(|e| {
             let meta = e.metadata().ok()?;
+            let name = e.file_name().to_string_lossy().into_owned();
             Some(BackupFile {
-                name: e.file_name().to_string_lossy().into_owned(),
+                made: made_of(&name),
+                name,
                 size: meta.len(),
                 modified: meta.modified().ok().map(DateTime::<Utc>::from),
             })
@@ -526,27 +614,27 @@ pub(crate) fn backups_in(dir: &Path) -> Vec<BackupFile> {
         .collect()
 }
 
-/// A minute after start, then every 10 minutes: a backup when the last good one is older
-/// than the plan says. After a failed try it waits an hour before trying again.
+/// A minute after start, then every minute: a backup when the plan wants one (at its time
+/// of day, or as soon as the computer is on again after missing it). After a failed try it
+/// waits an hour before trying again.
 pub async fn schedule(db: PgPool, url: String) {
     if crate::sync::online_device().is_some() && !has_postgres() {
         return;
     }
-    let mut wait = Duration::from_secs(60);
     let mut failed_at: Option<DateTime<Utc>> = None;
+    tokio::time::sleep(Duration::from_secs(60)).await;
     loop {
-        tokio::time::sleep(wait).await;
-        wait = Duration::from_secs(600);
-        let (Ok(plan), Ok(last)) = (plan_of(&db).await, setting::<Outcome>(&db, "backup_last").await) else { continue };
-        if plan.every_hours == 0 || failed_at.is_some_and(|t| Utc::now() - t < chrono::Duration::hours(1)) {
-            continue;
+        if let (Ok(plan), Ok(last)) = (plan_of(&db).await, setting::<Outcome>(&db, "backup_last").await) {
+            let waiting = failed_at.is_some_and(|t| Utc::now() - t < chrono::Duration::hours(1));
+            // The last good backup of any kind counts (a manual one at 6:50 is the 7:00 one).
+            let last_ok = last.filter(|o| o.ok).and_then(|o| o.at);
+            if !waiting && due(&plan, last_ok, Local::now()) {
+                let ok = run_backup(&db, &url, Made::Auto).await.is_ok_and(|o| o.ok);
+                failed_at = (!ok).then(Utc::now);
+                tracing::info!("scheduled backup: {}", if ok { "ok" } else { "failed" });
+            }
         }
-        let last_ok = last.filter(|o| o.ok).and_then(|o| o.at);
-        if last_ok.is_none_or(|t| Utc::now() - t >= chrono::Duration::hours(plan.every_hours as i64)) {
-            let ok = run_backup(&db, &url).await.is_ok_and(|o| o.ok);
-            failed_at = (!ok).then(Utc::now);
-            tracing::info!("scheduled backup: {}", if ok { "ok" } else { "failed" });
-        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 
@@ -573,7 +661,9 @@ fn partner(user: &CurrentUser) -> Result<(), ApiError> {
 }
 
 pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Status>, ApiError> {
-    partner(&user)?;
+    if !user.may("backup") {
+        return Err(ApiError::FORBIDDEN);
+    }
     let plan = plan_of(&s.db).await?;
     let first = plan.folders.first().map(PathBuf::from);
     let mut files = match first {
@@ -608,7 +698,20 @@ pub async fn set_plan(State(s): State<AppState>, user: CurrentUser, Json(p): Jso
     }
     // The drive is picked with its own button (prepare_usb), so a page opened earlier does not undo it.
     let stored = plan_of(&s.db).await?;
-    let plan = Plan { folders, usb: p.usb, usb_drive: stored.usb_drive, usb_id: stored.usb_id, gdrive: p.gdrive, every_hours: p.every_hours, keep_days: p.keep_days };
+    if p.at.as_deref().is_some_and(|a| !a.trim().is_empty() && time_of_day(a).is_none()) {
+        return Err(ApiError::bad("bad_backup_plan"));
+    }
+    let at = p.at.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(String::from);
+    let plan = Plan {
+        folders,
+        usb: p.usb,
+        usb_drive: stored.usb_drive,
+        usb_id: stored.usb_id,
+        gdrive: p.gdrive,
+        every_hours: p.every_hours,
+        at,
+        keep_days: p.keep_days,
+    };
     save_plan(&s.db, &user, &plan).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -658,8 +761,10 @@ pub async fn prepare_usb(State(s): State<AppState>, user: CurrentUser, Json(p): 
 }
 
 pub async fn backup_now(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Outcome>, ApiError> {
-    partner(&user)?;
-    Ok(Json(run_backup(&s.db, &crate::database_url()).await?))
+    if !user.may("backup") {
+        return Err(ApiError::FORBIDDEN);
+    }
+    Ok(Json(run_backup(&s.db, &crate::database_url(), Made::Manual).await?))
 }
 
 #[cfg(test)]
@@ -692,6 +797,38 @@ mod tests {
         assert!(!is_ours("other_db.backup"));
         let t = chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap().and_hms_opt(10, 30, 0).unwrap();
         let local = t.and_local_timezone(Local).unwrap();
-        assert_eq!(file_name(local), "pezhohesh_1405-08-05_10-30-00.backup");
+        let name = file_name(local, Made::BeforeRestore);
+        assert_eq!(name, "pezhohesh_1405-08-05_10-30-00_before-restore.backup");
+        assert!(is_ours(&name));
+        assert_eq!(made_of(&name), "before-restore");
+        assert_eq!(made_of("pezhohesh_1405-08-05_10-30-00_manual.backup"), "manual");
+        assert_eq!(made_of("pezhohesh_1405-08-05_10-30-00.backup"), "old");
+    }
+
+    #[test]
+    fn schedule_at_a_time() {
+        let at = |d: u32, h: u32, m: u32| {
+            chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap().and_hms_opt(h, m, 0).unwrap().and_local_timezone(Local).unwrap()
+        };
+        let plan = Plan { every_hours: 24, at: Some("07:00".into()), ..Plan::default() };
+        let utc = |t: DateTime<Local>| Some(t.with_timezone(&Utc));
+        // Yesterday's backup at 7:05: not due at 6:59, due from 7:00.
+        assert!(!due(&plan, utc(at(2, 7, 5)), at(3, 6, 59)));
+        assert!(due(&plan, utc(at(2, 7, 5)), at(3, 7, 0)));
+        // The laptop was off at 7: due when it is on at 9.
+        assert!(due(&plan, utc(at(2, 7, 5)), at(3, 9, 0)));
+        // Taken at 9 today: not due again until tomorrow at 7.
+        assert!(!due(&plan, utc(at(3, 9, 0)), at(3, 23, 0)));
+        assert!(!due(&plan, utc(at(3, 9, 0)), at(4, 6, 0)));
+        // Every 2 days at 7.
+        let two = Plan { every_hours: 48, ..plan.clone() };
+        assert!(!due(&two, utc(at(2, 7, 1)), at(3, 8, 0)));
+        assert!(due(&two, utc(at(2, 7, 1)), at(4, 7, 0)));
+        // Never taken: due.
+        assert!(due(&plan, None, at(3, 1, 0)));
+        // Without a time: every N hours as before.
+        let plain = Plan { every_hours: 6, at: Some("07:00".into()), ..Plan::default() };
+        assert!(due(&plain, utc(at(3, 0, 0)), at(3, 6, 0)));
+        assert!(!due(&plain, utc(at(3, 0, 0)), at(3, 5, 0)));
     }
 }
