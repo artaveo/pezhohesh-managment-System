@@ -379,6 +379,13 @@ button.sync-chip.warn:hover, button.sync-chip.bad:hover { filter: brightness(.92
 .clash-outcome, .clash .check.take { grid-column: 2; margin: 2px 0 0; font-size: .88rem; }
 .clash .check.take { margin-inline-start: 0; font-weight: 600; }
 .clash-seen { margin-inline-start: 0; font-size: .92rem; font-weight: 600; }
+/* A payment for several months: the months after the first, each with its plan and price. */
+.later-months { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.later-table th, .later-table td { padding: 6px 10px; }
+.later-table tbody th { color: var(--fg); font-variant-numeric: tabular-nums; width: 3.5em; }
+.later-table select, .later-table input { font: inherit; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); }
+.later-table input { width: 9ch; font-variant-numeric: tabular-nums; }
+.later-table select:focus, .later-table input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 @media (max-width: 720px) {
   .clash { grid-template-columns: 1fr; }
   .clash-outcome, .clash .check.take { grid-column: 1; }

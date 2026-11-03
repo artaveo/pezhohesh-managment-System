@@ -268,6 +268,8 @@ export type PeriodInput = {
   paid_on?: string | null;
   /** Months paid at once: one period and bill per month. `fee` is then each month's; `discount` and `paid` the whole. */
   months?: number;
+  /** Several months, each with its own plan and price (the first month of a new member costs more). */
+  each?: { plan_id: string; fee: number }[];
 };
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
@@ -310,7 +312,7 @@ export type Bill = {
   months: BillMonth[];
 };
 export type BillMonth = {
-  receipt_no: string; issued_on: string; start_date: string; end_date: string;
+  receipt_no: string; plan_name: string; issued_on: string; start_date: string; end_date: string;
   fee: number; discount: number; amount: number; owed: number; voided: boolean;
 };
 export type BillPage = { total: number; sum: number; rows: Bill[] };

@@ -51,7 +51,7 @@ function MonthsSheet({ bill, months, what }: { bill: Bill; months: BillMonth[]; 
         <tbody>
           {months.map((m, i) => (
             <tr key={m.receipt_no}>
-              <td>{what} · ماه {fa(i + 1)}<div className="small" dir="ltr">{m.receipt_no}</div></td>
+              <td>{m.plan_name || what} · ماه {fa(i + 1)}<div className="small" dir="ltr">{m.receipt_no}</div></td>
               <td>از {formatDay(m.start_date)}<br />تا {formatDay(m.end_date)}</td>
               <td className="num">{fa(m.fee)}</td>
             </tr>

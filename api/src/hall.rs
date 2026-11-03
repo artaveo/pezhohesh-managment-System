@@ -74,6 +74,15 @@ pub struct PeriodInput {
     /// Months paid at once (1 to 12): one period after the other, each with its own bill
     /// counted in its own month. `fee` is then each month's, `discount` and `paid` the whole.
     months: Option<u32>,
+    /// Several months, each with its own plan and price (a new member's first month costs
+    /// more than the ones after it). Overrides `months`, `plan_id` and `fee`.
+    each: Option<Vec<MonthInput>>,
+}
+
+#[derive(Deserialize)]
+pub struct MonthInput {
+    plan_id: Uuid,
+    fee: f64,
 }
 
 #[derive(Deserialize)]
@@ -533,6 +542,9 @@ pub async fn daily_seat(State(s): State<AppState>, user: CurrentUser, Json(b): J
     if b.member_id.is_none() && guest.is_none() {
         return Err(ApiError::bad("name_required"));
     }
+    if b.period.each.is_some() {
+        return Err(ApiError::bad("bad_months"));
+    }
     let mut tx = begin_as(&s.db, &user).await?;
     let daily: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM plans WHERE id = $1 AND kind = 'daily')")
         .bind(b.period.plan_id)
@@ -553,7 +565,11 @@ struct Plan {
     kind: String,
     price: f64,
     active: bool,
+    duration_days: i32,
 }
+
+const PLAN_SELECT: &str =
+    "SELECT name, kind::text AS kind, price::float8 AS price, active, duration_days FROM plans WHERE id = $1 AND deleted_at IS NULL";
 
 /// Inserts the period and, unless it is `record_only`, its bill. Returns (membership, bill).
 async fn add_period(
@@ -563,8 +579,9 @@ async fn add_period(
     guest: Option<String>,
     p: &PeriodInput,
 ) -> Result<(Uuid, Option<Uuid>), ApiError> {
-    let plan: Plan = sqlx::query_as("SELECT name, kind::text AS kind, price::float8 AS price, active FROM plans WHERE id = $1 AND deleted_at IS NULL")
-        .bind(p.plan_id)
+    let first_plan = p.each.as_ref().and_then(|e| e.first()).map_or(p.plan_id, |m| m.plan_id);
+    let plan: Plan = sqlx::query_as(PLAN_SELECT)
+        .bind(first_plan)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(ApiError::bad("bad_plan"))?;
@@ -581,14 +598,34 @@ async fn add_period(
             return Err(NOT_FOUND);
         }
     }
-    let months = p.months.unwrap_or(1);
+    let months = p.each.as_ref().map_or(p.months.unwrap_or(1), |e| e.len() as u32);
     if !(1..=12).contains(&months) || (months > 1 && plan.kind == "daily") {
         return Err(ApiError::bad("bad_months"));
     }
-    let fee = if p.record_only { 0.0 } else { p.fee.unwrap_or(plan.price) };
+    // The months, each with its plan (name, length) and price; all of the same kind.
+    let mut each: Vec<(Uuid, String, i32, f64)> = Vec::new();
+    match &p.each {
+        Some(list) => {
+            for m in list {
+                let x: Plan = sqlx::query_as(PLAN_SELECT).bind(m.plan_id).fetch_optional(&mut *tx).await?.ok_or(ApiError::bad("bad_plan"))?;
+                if !x.active || x.kind != plan.kind {
+                    return Err(ApiError::bad("bad_plan"));
+                }
+                each.push((m.plan_id, x.name, x.duration_days, m.fee));
+            }
+        }
+        None => {
+            let fee = p.fee.unwrap_or(plan.price);
+            each = (0..months).map(|_| (first_plan, plan.name.clone(), plan.duration_days, fee)).collect();
+        }
+    }
+    if p.record_only {
+        each.iter_mut().for_each(|m| m.3 = 0.0);
+    }
+    let fees: Vec<f64> = each.iter().map(|m| m.3).collect();
     let discount = if p.record_only { 0.0 } else { p.discount };
-    let total = fee * months as f64;
-    if !fee.is_finite() || fee < 0.0 || !discount.is_finite() || discount < 0.0 || discount > total {
+    let total: f64 = fees.iter().sum();
+    if fees.iter().any(|f| !f.is_finite() || *f < 0.0) || !discount.is_finite() || discount < 0.0 || discount > total {
         return Err(ApiError::bad("bad_amount"));
     }
     let due = total - discount;
@@ -597,9 +634,9 @@ async fn add_period(
     if !paid.is_finite() || paid > due || paid < 0.0 || (paid == 0.0 && due > 0.0) {
         return Err(ApiError::bad("bad_paid"));
     }
-    // Each month's share of the discount and of what is paid now.
-    let discounts = split(discount, &vec![fee; months as usize]);
-    let dues: Vec<f64> = discounts.iter().map(|d| fee - d).collect();
+    // Each month's share of the discount (by its price) and of what is paid now.
+    let discounts = split(discount, &fees);
+    let dues: Vec<f64> = fees.iter().zip(&discounts).map(|(f, d)| f - d).collect();
     let paids = split(paid, &dues);
     if dues.iter().zip(&paids).any(|(d, p)| *d > 0.0 && *p <= 0.0) {
         return Err(ApiError::bad("bad_paid"));
@@ -635,11 +672,10 @@ async fn add_period(
         None => guest.clone().unwrap_or_default(),
     };
     let day = if p.record_only { today() } else { paid_day(user, p.paid_on)? };
-    let length: i32 = sqlx::query_scalar("SELECT duration_days FROM plans WHERE id = $1").bind(p.plan_id).fetch_one(&mut *tx).await?;
     let group = (months > 1 && !p.record_only).then(Uuid::new_v4);
     let mut first: Option<(Uuid, Option<Uuid>)> = None;
-    for k in 0..months as usize {
-        let from = start + chrono::Days::new(k as u64 * length.max(1) as u64);
+    let mut from = start;
+    for (k, (plan_id, plan_name, length, fee)) in each.iter().enumerate() {
         let membership = Uuid::new_v4();
         // The end date comes from the plan's length (trigger membership_end_date).
         sqlx::query(
@@ -649,7 +685,7 @@ async fn add_period(
         .bind(membership)
         .bind(member)
         .bind(&guest)
-        .bind(p.plan_id)
+        .bind(plan_id)
         .bind(from)
         .bind(fee)
         .bind(discounts[k])
@@ -668,8 +704,8 @@ async fn add_period(
             // before the day it was paid.
             let on = if k == 0 { day } else { from.max(day) };
             let what = match group {
-                Some(_) => format!("{} · {who} · ماه {} از {months}", plan.name, k + 1),
-                None => format!("{} · {who}", plan.name),
+                Some(_) => format!("{plan_name} · {who} · ماه {} از {months}", k + 1),
+                None => format!("{plan_name} · {who}"),
             };
             let r = issue_on(tx, user, on, plan.kind.as_str(), paids[k], &what, Some(membership), None).await?;
             if group.is_some() {
@@ -678,6 +714,7 @@ async fn add_period(
             Some(r)
         };
         first.get_or_insert((membership, receipt));
+        from = from + chrono::Days::new((*length).max(1) as u64);
     }
     Ok(first.expect("at least one month"))
 }
@@ -851,6 +888,7 @@ pub struct Bill {
 #[derive(Serialize, FromRow)]
 pub struct BillMonth {
     receipt_no: String,
+    plan_name: String,
     issued_on: NaiveDate,
     start_date: NaiveDate,
     end_date: NaiveDate,
@@ -932,9 +970,9 @@ pub async fn bill(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
         .ok_or(NOT_FOUND)?;
     if let Some(g) = b.bill_group {
         b.months = sqlx::query_as(
-            "SELECT r.receipt_no, r.issued_on, ms.start_date, ms.end_date, ms.fee::float8 AS fee, ms.discount::float8 AS discount, \
+            "SELECT r.receipt_no, p.name AS plan_name, r.issued_on, ms.start_date, ms.end_date, ms.fee::float8 AS fee, ms.discount::float8 AS discount, \
                     r.amount::float8 AS amount, COALESCE(pp.owed, 0)::float8 AS owed, r.voided \
-             FROM receipts r JOIN memberships ms ON ms.id = r.membership_id \
+             FROM receipts r JOIN memberships ms ON ms.id = r.membership_id JOIN plans p ON p.id = ms.plan_id \
              LEFT JOIN v_period_paid pp ON pp.membership_id = ms.id \
              WHERE r.bill_group = $1 AND r.deleted_at IS NULL ORDER BY ms.start_date",
         )
@@ -1231,10 +1269,13 @@ mod tests {
         .fetch_one(&mut *tx)
         .await
         .unwrap();
-        let plan: Uuid = sqlx::query_scalar("SELECT id FROM plans WHERE kind = 'monthly' AND active AND deleted_at IS NULL LIMIT 1")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+        // A new member: the first month with the entry fee, the others at the renewal price.
+        let plans: Vec<(Uuid, f64)> =
+            sqlx::query_as("SELECT id, price::float8 FROM plans WHERE kind = 'monthly' AND active AND deleted_at IS NULL ORDER BY price DESC")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        let (plan, renew) = (plans[0], plans[plans.len() - 1]);
         let member = Uuid::new_v4();
         sqlx::query("INSERT INTO members (id, member_no, first_name, joined_on) VALUES ($1, 987654, 'آزمایش', current_date)")
             .bind(member)
@@ -1242,15 +1283,20 @@ mod tests {
             .await
             .unwrap();
         let p = PeriodInput {
-            plan_id: plan,
+            plan_id: plan.0,
             start_date: Some(today()),
-            fee: Some(300.0),
+            fee: None,
             discount: 30.0,
             paid: None,
             record_only: false,
             ahead: false,
             paid_on: None,
-            months: Some(3),
+            months: None,
+            each: Some(vec![
+                MonthInput { plan_id: plan.0, fee: plan.1 },
+                MonthInput { plan_id: renew.0, fee: renew.1 },
+                MonthInput { plan_id: renew.0, fee: renew.1 },
+            ]),
         };
         let (_, first) = add_period(&mut tx, &user, Some(member), None, &p).await.ok().expect("add_period");
         let rows: Vec<(NaiveDate, NaiveDate, f64, f64, NaiveDate, bool)> = sqlx::query_as(
@@ -1264,9 +1310,11 @@ mod tests {
         assert_eq!(rows[0].0, today());
         assert_eq!(rows[1].0, rows[0].1 + chrono::Days::new(1), "months follow one another");
         assert_eq!(rows[2].0, rows[1].1 + chrono::Days::new(1));
-        assert_eq!(rows.iter().map(|r| r.3).sum::<f64>(), 870.0);
+        assert_eq!(rows.iter().map(|r| r.3).sum::<f64>(), plan.1 + 2.0 * renew.1 - 30.0);
         assert_eq!((rows[0].4, rows[1].4, rows[2].4), (today(), rows[1].0, rows[2].0), "each month's money counts in its month");
-        assert!(rows.iter().all(|r| r.5 && r.2 == 10.0));
+        assert!(rows.iter().all(|r| r.5));
+        // The discount is shared by price.
+        assert!((rows.iter().map(|r| r.2).sum::<f64>() - 30.0).abs() < 1e-9);
         assert!(first.is_some());
         tx.rollback().await.unwrap();
     }
