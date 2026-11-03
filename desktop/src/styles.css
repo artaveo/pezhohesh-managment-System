@@ -479,7 +479,11 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
   body { background: #fff !important; }
   .print-only { display: block; }
   .bill-sheet { box-shadow: none; border-radius: 0; width: 148mm; height: 209mm; min-height: 0; }
+  /* On A4: pinned to the top-right corner, with a dashed cut line along the two inner edges. */
+  .print-only.bill-print.corner { position: absolute; top: 0; right: 0; }
+  .print-only.bill-print.corner .bill-sheet { border-left: .3mm dashed #9aa79a; border-bottom: .3mm dashed #9aa79a; }
 }
+.paper-tip { margin: 0; max-width: 148mm; }
 
 
 /* Member documents (photo, tazkira) */
@@ -530,6 +534,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .member-card footer strong { font-size: 13pt; font-weight: 800; letter-spacing: .3mm; color: #3d6b12; }
 @media print {
   .print-only.card-print .member-card { border-radius: 0; }
+  .print-only.card-print.a4 { position: absolute; top: 6mm; right: 6mm; }
   .print-only.card-print.a4 .member-card { border: .2mm dashed #8a9886; border-radius: 3mm; }
 }
 .member-title .member-photo + div { flex: 1; }

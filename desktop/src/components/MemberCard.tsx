@@ -38,8 +38,8 @@ export function MemberCardFace({ member, photo }: { member: Member; photo: strin
 const PAGE = {
   // A PVC card in the printer's card tray, edge to edge.
   card: "@page { size: 85.6mm 54mm; margin: 0; }",
-  // On an A4 sheet at its real size, to cut out (and laminate).
-  a4: "@page { size: A4 portrait; margin: 15mm; }",
+  // On an A4 sheet at its real size in the top-right corner, to cut out (and laminate).
+  a4: "@page { size: A4 portrait; margin: 0; }",
 };
 
 /** The card over the page, with a choice of PVC card or A4 paper, and Print. */

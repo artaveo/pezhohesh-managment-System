@@ -66,11 +66,16 @@ export function BillSheet({ bill }: { bill: Bill }) {
   );
 }
 
-/** Paper sizes a bill can print on. The sheet is drawn for A5 and scaled to the others. */
+/**
+ * How a bill goes on paper. The sheet is drawn for A5 and scaled for A6. On an A4 sheet the
+ * bill sits in the top-right corner at its real size, with a cut line, so the rest of the
+ * sheet stays clean for the next bill or for anything else.
+ */
 const PAPER = {
-  a6: { label: "A6 (نصف A5)", page: "105mm 148mm", zoom: 0.7 },
-  a5: { label: "A5", page: "A5 portrait", zoom: 1 },
-  a4: { label: "A4", page: "A4 portrait", zoom: 210 / 148 },
+  "a4-a5": { label: "A4، بل A5 در گوشه", page: "A4 portrait", zoom: 1, corner: true },
+  "a4-a6": { label: "A4، بل A6 در گوشه", page: "A4 portrait", zoom: 0.7, corner: true },
+  a5: { label: "ورق A5", page: "A5 portrait", zoom: 1, corner: false },
+  a6: { label: "ورق A6", page: "105mm 148mm", zoom: 0.7, corner: false },
 } as const;
 type Paper = keyof typeof PAPER;
 const PAPER_KEY = "pz.billPaper";
@@ -78,8 +83,10 @@ function savedPaper(): Paper {
   try {
     const v = localStorage.getItem(PAPER_KEY);
     if (v && v in PAPER) return v as Paper;
+    // Before v1.0 "a4" meant the bill stretched over the whole sheet.
+    if (v === "a4") return "a4-a5";
   } catch { /* storage blocked: use the default */ }
-  return "a5";
+  return "a4-a5";
 }
 
 /**
@@ -104,7 +111,7 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
     }, { once: true });
     // The page size and the scale of the A5 sheet, only while this bill prints.
     const style = document.createElement("style");
-    style.textContent = `@page { size: ${PAPER[paper].page}; margin: 0; } @media print { .print-only .bill-sheet { zoom: ${PAPER[paper].zoom}; } }`;
+    style.textContent = `@page { size: ${PAPER[paper].page}; margin: 0; } @media print { .print-only.bill-print .bill-sheet { zoom: ${PAPER[paper].zoom}; } }`;
     document.head.appendChild(style);
     window.addEventListener("afterprint", () => style.remove(), { once: true });
     window.print();
@@ -122,10 +129,15 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
         </label>
         <button className="btn ghost" onClick={onClose}>بستن</button>
       </div>
+      <p className="muted small no-print paper-tip">
+        {PAPER[paper].corner
+          ? "در پنجرهٔ چاپ، کاغذ را A4 و مقیاس را «Default» یا 100٪ بگذارید. بل در گوشهٔ بالا راست چاپ می‌شود و بقیهٔ ورق سفید می‌ماند."
+          : "در پنجرهٔ چاپ، اندازهٔ کاغذ را همین اندازه و مقیاس را «Default» یا 100٪ بگذارید."}
+      </p>
       {error && <p className="form-error">{error}</p>}
       {bill ? <div style={{ zoom: Math.min(PAPER[paper].zoom, 1) }}><BillSheet bill={bill} /></div> : !error && <p className="muted">در حال بارگذاری…</p>}
     {/* Printing shows only this copy, outside the app, so the bill is exactly one page. */}
-    {bill && createPortal(<div className="print-only"><BillSheet bill={bill} /></div>, document.body)}
+    {bill && createPortal(<div className={`print-only bill-print${PAPER[paper].corner ? " corner" : ""}`}><BillSheet bill={bill} /></div>, document.body)}
     </Modal>
   );
 }
