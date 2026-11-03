@@ -67,8 +67,13 @@ export type K50Comparison = {
   resend: number;
   /** Numbers of removed members the device no longer has, now free for new members. */
   freed: number;
-  rows: { no: string; device_name: string; app_name: string | null; admin: boolean; state: "same" | "differs" | "missing" }[];
+  rows: K50DeviceUser[];
 };
+export type K50DeviceUser = {
+  no: string; device_name: string; app_name: string | null; admin: boolean; state: "same" | "differs" | "missing";
+  enabled: boolean; member_id: string | null; start: string | null; end: string | null; saved_fingers: number;
+};
+export type K50DeviceEdit = { no: string; was: string; name: string; enabled: boolean; start: string | null; end: string | null };
 export type K50Round = { at: string | null; ok: boolean; error: string | null; pushed: number; failed: number; punches: number };
 export type K50Status = {
   config: K50Config; last: K50Round | null; pending: number; sent: number; punches_today: number;
@@ -638,7 +643,8 @@ export const api = {
     request<{ Ok?: K50Dates; Err?: string }>(`/k50/dates?commit=${commit}&include_differs=${includeDiffers}`, { method: "POST" }),
   backupK50Fingers: () => request<{ Ok?: { at: string; users: number; fingers: number; changed: number }; Err?: string }>("/k50/fingers", { method: "POST" }),
   /** Ok: the comparison; Err: why the device could not be read. */
-  compareK50: () => request<{ Ok?: K50Comparison; Err?: string }>("/k50/compare", { method: "POST" }),
+  compareK50: (dates = false) => request<{ Ok?: K50Comparison; Err?: string }>(`/k50/compare${dates ? "?dates=true" : ""}`, { method: "POST" }),
+  editK50User: (b: K50DeviceEdit) => request<K50Answer>("/k50/device-user", { method: "POST", body: b }),
   /** A partner says these device users are the app's members with the same numbers. */
   k50NamesOk: (rows: { no: string; device_name: string }[]) => request<void>("/k50/names/ok", { method: "POST", body: rows }),
   k50Held: () => request<K50Held[]>("/k50/held"),
@@ -688,7 +694,10 @@ export function errorText(e: unknown): string {
     case "safety_backup_failed": return "اول یک پشتیبان تازه از وضع فعلی گرفته می‌شود، ولی نشد؛ پس چیزی برگردانده نشد. پوشه‌های پشتیبان را ببینید.";
     case "restore_failed": return "برگرداندن نشد و دیتابیس همان‌طور که بود ماند. جزئیات در api.log است.";
     case "restoring": return "دیتابیس در حال برگرداندن از پشتیبان است. چند لحظه صبر کنید.";
-    case "member_no_taken": return "این شمارهٔ عضویت قبلاً به عضو دیگری داده شده.";
+    case "member_no_taken": return "این آیدی مال عضو دیگری است (یا عضو حذف‌شده‌ای که آیدی‌اش هنوز آزاد نشده). آیدی خالی دیگری انتخاب کنید.";
+    case "member_no_on_device": return "روی دستگاه انگشت، شخص دیگری با این آیدی ثبت است. آیدی خالی دیگری انتخاب کنید.";
+    case "member_number": return "این آیدی مال یک عضو برنامه است. نام و آیدی‌اش را در صفحهٔ همان عضو عوض کنید.";
+    case "bad_dates": return "تاریخ شروع و پایان را با هم بدهید و پایان پیش از شروع نباشد.";
     case "bad_member_no": return "شمارهٔ عضویت باید یک عدد مثبت باشد.";
     case "bad_plan": return "این نوع عضویت پیدا نشد یا غیرفعال است.";
     case "bad_amount": return "مبلغ درست نیست (تخفیف نباید از مبلغ بیشتر باشد).";
@@ -806,6 +815,8 @@ export function k50ErrorText(error: string | null | undefined): string {
   if (e === "member_alive") return "این آیدی مال یک عضو فعلی است. اول آن عضو را حذف کنید (یا آیدی‌اش را عوض کنید).";
   if (e.startsWith("delete_failed")) return "دستگاه این آیدی را پاک نکرد.";
   if (e === "still_there") return "دستگاه گفت پاک کرد، اما آیدی هنوز روی دستگاه است. دوباره امتحان کنید.";
+  if (e === "no_user") return "دستگاه این آیدی را ندارد. فهرست را دوباره بخوانید.";
+  if (e.startsWith("move_fingers_failed")) return "انگشت‌ها به آیدی تازه نرفت؛ آیدی کهنه با انگشت‌هایش بسته روی دستگاه ماند.";
   if (e === "device_admin") return "این آیدی روی دستگاه «مدیر دستگاه» است؛ برنامه به آن دست نمی‌زند.";
   if (e.startsWith("set_user_failed")) return "دستگاه این عضو را نپذیرفت.";
   if (e === "enroll_failed") return "دستگاه برای ثبت انگشت آماده نشد. اگر این انگشت قبلاً ثبت شده، انگشت دیگری را انتخاب کنید.";

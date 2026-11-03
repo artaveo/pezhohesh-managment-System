@@ -26,6 +26,7 @@ const HALL: &[&str] = &[
 /// Sections of running the system. Someone given one acts there with a partner's database
 /// rights (its tables are the partners' only), but what only a partner may do stays so:
 /// restoring a backup, the backup plan, the sync, partners' accounts and these permissions.
+#[allow(dead_code)]
 pub const ADMIN: &[&str] = &["audit", "users", "prices", "backup", "device", "import"];
 
 /// What each role may be given at all (its database rights).

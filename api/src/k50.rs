@@ -327,8 +327,60 @@ async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::E
     Ok(ok)
 }
 
+/// A member whose ID was changed in the app, and whose old ID on the device is surely
+/// theirs: the new ID is made with the member's dates, the fingers are moved from the old ID
+/// to the new one, and only then the old ID is taken off the device (so it is free there too).
+/// If the fingers could not be moved the old ID stays, closed, and nothing is lost.
+async fn renumber(db: &PgPool, cfg: &Config, w: &Wanted, old: i32) -> Result<bool, String> {
+    let (from, to) = (device_no(cfg, old), device_no(cfg, w.member_no));
+    // The new ID is written only if the device has no one else there (the owner check).
+    let moved = Wanted { old_no: None, imported: false, claimed: None, ..w.clone() };
+    let made = talk(cfg, set_user_ops(cfg, &moved, false), Duration::from_secs(30)).await?.remove(0);
+    if made["ok"] != json!(true) {
+        record(db, w, &made).await.map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    let fingers = talk(cfg, vec![json!({ "op": "move_fingers", "from": from, "to": to })], Duration::from_secs(60)).await?.remove(0);
+    let fingers_ok = fingers["ok"] == json!(true);
+    if fingers_ok {
+        // The app's own copy of the fingers follows the ID.
+        let _ = sqlx::query("UPDATE k50_fingers SET no = $2 WHERE no = $1 AND NOT EXISTS (SELECT 1 FROM k50_fingers f WHERE f.no = $2 AND f.finger = k50_fingers.finger)")
+            .bind(&from)
+            .bind(&to)
+            .execute(db)
+            .await;
+        let gone = talk(cfg, vec![json!({ "op": "delete_user", "no": from })], Duration::from_secs(30)).await?.remove(0);
+        if gone["ok"] == json!(true) {
+            let _ = sqlx::query("DELETE FROM k50_device_ids WHERE no = $1").bind(old).execute(db).await;
+            let _ = sqlx::query("DELETE FROM k50_fingers WHERE no = $1").bind(&from).execute(db).await;
+        } else {
+            tracing::warn!("k50 renumber {from} -> {to}: old ID not removed: {gone}");
+        }
+    } else {
+        // Keep the old ID, closed, with its fingers.
+        let _ = talk(cfg, vec![json!({ "op": "set_user", "no": from, "enabled": false, "existing": true, "owner": "" })], Duration::from_secs(30)).await;
+        tracing::warn!("k50 renumber {from} -> {to}: fingers not moved: {fingers}");
+    }
+    tracing::info!("k50: member {} moved from ID {from} to {to} (fingers: {fingers})", w.member_id);
+    record(db, w, &made).await.map_err(|e| e.to_string())
+}
+
 /// Sends a batch; the answer for the member's own number is the one that counts.
 async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), String> {
+    let (mut moved_ok, mut moved_failed) = (0, 0);
+    let mut rest = Vec::new();
+    for w in list {
+        match w.old_no {
+            Some(old) if w.imported || w.claimed == Some(true) => {
+                if renumber(db, cfg, w, old).await? { moved_ok += 1 } else { moved_failed += 1 }
+            }
+            _ => rest.push(w.clone()),
+        }
+    }
+    if rest.is_empty() {
+        return Ok((moved_ok, moved_failed));
+    }
+    let list = &rest[..];
     let mut ops = Vec::new();
     let mut own = Vec::new();
     for w in list {
@@ -351,7 +403,7 @@ async fn push(db: &PgPool, cfg: &Config, list: &[Wanted]) -> Result<(u32, u32), 
     if !created.is_empty() {
         restore_fingers(db, cfg, &created).await;
     }
-    Ok((ok, failed))
+    Ok((ok + moved_ok, failed + moved_failed))
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +833,15 @@ struct DeviceUser {
     name: String,
     #[serde(default)]
     privilege: i32,
+    #[serde(default = "yes")]
+    enabled: bool,
+    /// With `dates`: the days the device lets this user in.
+    #[serde(default)]
+    valid: Option<Value>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -793,6 +854,14 @@ pub struct Compared {
     admin: bool,
     /// "same", "differs" (the names look like two people) or "missing" (no such member).
     state: &'static str,
+    enabled: bool,
+    /// The member with that number in the app, to open their page.
+    member_id: Option<Uuid>,
+    /// Read only when asked for (`dates`): the days the device lets them in.
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    /// Fingers the app keeps a copy of under this ID.
+    saved_fingers: i64,
 }
 
 /// A name as it is compared: Arabic ي/ك as Persian ی/ک, no half-spaces, one space between
@@ -826,7 +895,7 @@ fn same_or_confirmed(confirmed: &std::collections::HashMap<i32, String>, no: &st
 /// The device keeps short names (often cut), so a device name that starts the app's name
 /// counts as the same person. Names written in English on the device (as ZKAccess has them)
 /// are compared with the app's Persian ones by their consonants (see `sounds`).
-fn same_person(device: &str, app: &str) -> bool {
+pub(crate) fn same_person(device: &str, app: &str) -> bool {
     let (d, a) = (plain_name(device), plain_name(app));
     if d.is_empty() {
         return false;
@@ -1123,10 +1192,25 @@ pub async fn dates_from_device(
 /// POST /api/v1/k50/compare: reads every user on the device (nothing is changed) and puts
 /// each next to the app's member with the same number, so a partner can see that the IDs
 /// mean the same people before the app writes anything.
-pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Result<Comparison, String>>, ApiError> {
+#[derive(Deserialize, Default)]
+pub struct CompareParams {
+    /// Also read each user's let-in days (slower: one more question per user).
+    #[serde(default)]
+    dates: bool,
+}
+
+/// POST /api/v1/k50/compare?dates=: every user on the device next to the app's member
+/// under the same number. Also the list on «کاربران دستگاه».
+pub async fn compare(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    p: Option<axum::extract::Query<CompareParams>>,
+) -> Result<Json<Result<Comparison, String>>, ApiError> {
     partner(&user)?;
+    let dates = p.map(|q| q.dates).unwrap_or(false);
     let cfg = device_for(&s.db).await?;
-    let answer = match talk(&cfg, vec![json!({ "op": "users" })], Duration::from_secs(180)).await {
+    let wait = Duration::from_secs(if dates { 600 } else { 180 });
+    let answer = match talk(&cfg, vec![json!({ "op": "users", "valid": dates })], wait).await {
         Ok(mut a) => a.remove(0),
         Err(e) => return Ok(Json(Err(e))),
     };
@@ -1182,13 +1266,16 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
         tracing::info!("k50 compare: {resend} members sent before are not on the device; sending again");
         poke();
     }
-    let names: Vec<(i32, String)> = sqlx::query_as(
-        "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)",
+    let names: Vec<(i32, String, Uuid)> = sqlx::query_as(
+        "SELECT member_no, trim(first_name || ' ' || COALESCE(last_name, '')), id FROM members WHERE deleted_at IS NULL AND member_no = ANY($1)",
     )
     .bind(&nos)
     .fetch_all(&s.db)
     .await?;
-    let app: std::collections::HashMap<i32, String> = names.into_iter().collect();
+    let ids: std::collections::HashMap<i32, Uuid> = names.iter().map(|(n, _, id)| (*n, *id)).collect();
+    let app: std::collections::HashMap<i32, String> = names.into_iter().map(|(n, name, _)| (n, name)).collect();
+    let saved: std::collections::HashMap<String, i64> =
+        sqlx::query_as::<_, (String, i64)>("SELECT no, count(*) FROM k50_fingers GROUP BY no").fetch_all(&s.db).await?.into_iter().collect();
     let confirmed = names_confirmed(&s.db).await?;
     let padded: Vec<usize> = users.iter().filter(|u| u.no.len() > 1 && u.no.starts_with('0')).map(|u| u.no.len()).collect();
     let padded_width = {
@@ -1208,7 +1295,19 @@ pub async fn compare(State(s): State<AppState>, user: CurrentUser) -> Result<Jso
                 Some(a) if u.name.trim().is_empty() || same_or_confirmed(&confirmed, &u.no, &u.name, a) => "same",
                 Some(_) => "differs",
             };
-            Compared { no: u.no.clone(), device_name: u.name.trim().to_string(), app_name, admin: u.privilege > 0, state }
+            let valid = u.valid.as_ref().filter(|v| v["expires"].as_i64() == Some(1));
+            Compared {
+                no: u.no.clone(),
+                device_name: u.name.trim().to_string(),
+                app_name,
+                admin: u.privilege > 0,
+                state,
+                enabled: u.enabled,
+                member_id: u.no.trim().parse::<i32>().ok().and_then(|n| ids.get(&n).copied()),
+                start: valid.and_then(|v| v["start"].as_str()).and_then(device_day),
+                end: valid.and_then(|v| v["end"].as_str()).and_then(device_day),
+                saved_fingers: saved.get(u.no.trim()).copied().unwrap_or(0),
+            }
         })
         .collect();
     let in_app = rows.iter().filter(|r| r.app_name.is_some()).count();
@@ -1628,6 +1727,50 @@ pub fn free_soon(db: PgPool) {
             tracing::warn!("k50 free: {e}");
         }
     });
+}
+
+#[derive(Deserialize)]
+pub struct DeviceEdit {
+    no: String,
+    /// The name the device had when the list was read; nothing is written if it changed since.
+    #[serde(default)]
+    was: String,
+    name: String,
+    enabled: bool,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+}
+
+/// POST /api/v1/k50/device-user: changes the name, the let-in days or on/off of a device
+/// user the app has no member for (one added in ZKAccess). A member's own ID is changed on
+/// the member's page instead, so the app and the device never tell two stories.
+pub async fn edit_device_user(State(s): State<AppState>, user: CurrentUser, Json(b): Json<DeviceEdit>) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    let no: i32 = b.no.trim().parse().map_err(|_| ApiError::bad("bad_number"))?;
+    let name = short_name(b.name.trim());
+    if name.is_empty() {
+        return Err(ApiError::bad("name_required"));
+    }
+    if b.start.is_some() != b.end.is_some() || matches!((b.start, b.end), (Some(a), Some(z)) if z < a) {
+        return Err(ApiError::bad("bad_dates"));
+    }
+    let member: Option<bool> = sqlx::query_scalar("SELECT true FROM members WHERE member_no = $1 AND deleted_at IS NULL").bind(no).fetch_optional(&s.db).await?;
+    if member.is_some() {
+        return Err(ApiError(StatusCode::CONFLICT, "member_number"));
+    }
+    let cfg = device_for(&s.db).await?;
+    let op = json!({
+        "op": "set_user", "no": b.no.trim(), "existing": true, "owner": b.was.trim(), "rename": true, "name": name,
+        "enabled": b.enabled, "start": b.start.map(|d| d.to_string()), "end": b.end.map(|d| d.to_string()),
+    });
+    let r = talk(&cfg, vec![op], Duration::from_secs(30)).await.map(|mut a| a.remove(0)).map(|a| {
+        if a["absent"] == json!(true) { json!({ "ok": false, "error": "no_user" }) } else { a }
+    });
+    if matches!(&r, Ok(a) if a["ok"] == json!(true)) {
+        sqlx::query("UPDATE k50_device_ids SET name = $2 WHERE no = $1").bind(no).bind(&name).execute(&s.db).await?;
+        tracing::info!("k50: device user {} changed by {}: {name}", b.no.trim(), user.id);
+    }
+    Ok(DeviceAnswer::from(r))
 }
 
 #[derive(Serialize, FromRow)]

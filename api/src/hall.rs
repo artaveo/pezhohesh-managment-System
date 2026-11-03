@@ -318,6 +318,22 @@ pub async fn update_member(
     hall_only(&user)?;
     check_member(&m)?;
     let mut tx = begin_as(&s.db, &user).await?;
+    // A new ID only if no one else has it: not a member (the unique index), and not a person
+    // the fingerprint device has under it who is not this member (added in ZKAccess).
+    if let Some(no) = m.member_no {
+        let on_device: Option<(String, i32)> = sqlx::query_as(
+            "SELECT d.name, x.member_no FROM k50_device_ids d, members x WHERE d.no = $1 AND x.id = $2 AND x.member_no <> $1",
+        )
+        .bind(no)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let full = format!("{} {}", m.first_name.trim(), clean(&m.last_name).unwrap_or_default());
+        if let Some((device_name, _)) = on_device.filter(|(d, _)| !d.trim().is_empty() && !crate::k50::same_person(d, full.trim())) {
+            tracing::info!("member {id}: ID {no} refused, the device has {device_name} there");
+            return Err(ApiError(StatusCode::CONFLICT, "member_no_on_device"));
+        }
+    }
     let done = sqlx::query(
         "UPDATE members SET member_no = COALESCE($2, member_no), first_name = $3, last_name = $4, father_name = $5, \
              phone = $6, field_of_study = $7, tazkira_no = $8, notes = $9, joined_on = COALESCE($10, joined_on) \

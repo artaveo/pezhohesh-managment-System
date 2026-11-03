@@ -16,6 +16,7 @@ import { Documents } from "./Documents";
 import { Enroll, Fingerprint } from "./Fingerprint";
 
 import { MemberFields } from "./MemberFields";
+import { NumberHelp } from "./NumberHelp";
 
 const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
 
@@ -212,6 +213,9 @@ function EditMember({ id, member, onDone }: { id: string; member: MemberDetail; 
     <section className="panel wide">
       <h2>ویرایش مشخصات</h2>
       <MemberFields value={m} onChange={setM} />
+      {member.member.member_no !== null && (
+        <NumberHelp value={m.member_no ?? null} own={member.member.member_no} onPick={(no) => setM((x) => ({ ...x, member_no: no }))} />
+      )}
       <div className="form-grid">
         <SolarDate label="تاریخ ثبت‌نام" value={m.joined_on ?? member.member.joined_on} onChange={(d) => setM({ ...m, joined_on: d })} />
       </div>

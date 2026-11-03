@@ -14,6 +14,7 @@ import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
 import { NewMember } from "./pages/members/NewMember";
 import { Bills } from "./pages/Bills";
+import { DeviceUsers } from "./pages/DeviceUsers";
 import { Money } from "./pages/Money";
 import { Prices } from "./pages/Prices";
 import { Audit } from "./pages/Audit";
@@ -53,6 +54,7 @@ export const NAV = [
   { id: "prices", icon: "tag", label: "قیمت‌ها", section: "prices", group: "مدیریت" },
   { id: "backup", icon: "database", label: "پشتیبان", section: "backup", group: "مدیریت" },
   { id: "device", icon: "fingerprint", label: "دستگاه انگشت", section: "device", group: "مدیریت" },
+  { id: "deviceUsers", icon: "users", label: "کاربران دستگاه", section: "device", group: "مدیریت" },
   { id: "import", icon: "upload", label: "ورود از اکسل", section: "import", group: "مدیریت" },
   { id: "settings", icon: "user", label: "تنظیمات من", group: "" },
 ] as const satisfies readonly NavItem[];
@@ -200,6 +202,7 @@ function Shell() {
               : page === "hotspot" ? <Hotspot />
               : page === "backup" ? <Backup />
               : page === "device" ? <Device />
+              : page === "deviceUsers" ? <DeviceUsers openMember={(id) => openMember(id)} />
               : page === "audit" ? <Audit openMember={(id) => openMember(id)} />
               : page === "inbox" ? <Inbox openMember={(id) => openMember(id)} />
               : page === "import" ? <ImportExcel done={() => setPage("dashboard")} />

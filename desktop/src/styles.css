@@ -777,3 +777,9 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .number-help .inline { font-size: .84rem; }
 .gap-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; max-height: 50vh; overflow: auto; }
 .form-ok.inline { color: var(--good); }
+
+/* «کاربران دستگاه» */
+.device-users-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.device-users-tools .search { flex: 1 1 220px; max-width: 360px; }
+.device-users-tools .segmented { flex-wrap: wrap; }
+.notice.inline { display: inline; padding: 2px 8px; }

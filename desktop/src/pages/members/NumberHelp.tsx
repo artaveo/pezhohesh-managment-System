@@ -9,7 +9,7 @@ const n = (x: number) => new Intl.NumberFormat("en-US", { useGrouping: false }).
  * free, and the empty IDs in the middle (a click puts one in the form). A safeguard so the
  * desk always knows where the numbering stands.
  */
-export function NumberHelp({ value, onPick }: { value: number | null; onPick: (no: number) => void }) {
+export function NumberHelp({ value, onPick, own }: { value: number | null; onPick: (no: number) => void; own?: number }) {
   const [info, setInfo] = useState<MemberNumbers | null>(null);
   const [gaps, setGaps] = useState(false);
   useEffect(() => {
@@ -20,11 +20,17 @@ export function NumberHelp({ value, onPick }: { value: number | null; onPick: (n
     return () => { window.clearTimeout(t); ctl.abort(); };
   }, [value]);
   if (!info) return null;
-  const c = info.check && info.check.no === value ? info.check : null;
+  // Editing a member: their own ID is not "someone else's".
+  const c = info.check && info.check.no === value && value !== own ? info.check : null;
   return (
     <div className="number-help" aria-live="polite">
       <span>آخرین آیدی: <b dir="ltr">{info.last ? n(info.last.no) : "—"}</b>{info.last && <span className="muted"> ({info.last.name})</span>}</span>
-      <span>آیدی بعدی: <b dir="ltr">{n(info.next)}</b>{value !== info.next && <> <button type="button" className="btn ghost small" onClick={() => onPick(info.next)}>همین را بگذار</button></>}</span>
+      {own === undefined
+        ? <span>آیدی بعدی: <b dir="ltr">{n(info.next)}</b>{value !== info.next && <> <button type="button" className="btn ghost small" onClick={() => onPick(info.next)}>همین را بگذار</button></>}</span>
+        : value === own
+          ? <span className="muted">آیدی فعلی این عضو. فقط برای درست کردن آیدی اشتباه، یا بردن به یک آیدی خالی عوضش کنید.</span>
+          : <span className="notice warn inline">آیدی این عضو از <b dir="ltr">{n(own)}</b> به <b dir="ltr">{value === null ? "—" : n(value)}</b> عوض می‌شود. روی دستگاه، انگشت‌هایش به آیدی تازه می‌رود و آیدی کهنه پاک و خالی می‌شود.
+              {" "}<button type="button" className="btn ghost small" onClick={() => onPick(own)}>برگرداندن</button></span>}
       {c && c.state === "member" && <span className="form-error inline">این آیدی مال {c.name} است.</span>}
       {c && c.state === "removed" && <span className="form-error inline">این آیدی هنوز مال {c.name} (حذف‌شده) است؛ اول در «دستگاه انگشت» آزادش کنید.</span>}
       {c && c.state === "device" && <span className="form-error inline">دستگاه انگشت زیر این آیدی کسی دیگر{c.name ? ` (${c.name})` : ""} را دارد.</span>}

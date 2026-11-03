@@ -131,6 +131,7 @@ static class K50Helper
             case "users": return Users(Bool(o, "valid"));
             case "fingers": return Fingers();
             case "put_fingers": return PutFingers(o);
+            case "move_fingers": return MoveFingers(Str(o, "from"), Str(o, "to"));
             case "set_time": return Obj("ok", (bool)zk.SetDeviceTime(m));
             case "time":
             {
@@ -226,6 +227,8 @@ static class K50Helper
         // Closing an ID the device does not have is nothing to do.
         if (!had && Bool(o, "existing")) return Obj("ok", true, "created", false, "absent", true);
         if (!had) { name = Str(o, "name"); pw = ""; priv = 0; }
+        // A partner changed this user's name on «کاربران دستگاه».
+        else if (Bool(o, "rename") && Str(o, "name") != "") name = Str(o, "name");
         if (!(bool)zk.SSR_SetUserInfo(m, no, name, pw, priv, Bool(o, "enabled")))
             return Obj("ok", false, "error", "set_user_failed", "code", LastError());
         object dates = null;
@@ -405,6 +408,38 @@ static class K50Helper
                 if (ok) put++; else failed++;
             }
         return Obj("ok", failed == 0, "put", put, "kept", kept, "failed", failed, "error", failed == 0 ? null : "put_fingers_failed");
+    }
+
+    // A member's ID was changed: copies every finger of `from` onto `to` (a finger `to`
+    // already has is kept). The caller removes `from` only when this says ok.
+    static Dictionary<string, object> MoveFingers(string from, string to)
+    {
+        string name = "", pw = "";
+        int priv = 0;
+        bool en = false;
+        if (!(bool)zk.SSR_GetUserInfo(m, to, ref name, ref pw, ref priv, ref en)) return Obj("ok", false, "error", "no_user");
+        if (!(bool)zk.SSR_GetUserInfo(m, from, ref name, ref pw, ref priv, ref en)) return Obj("ok", true, "moved", 0, "absent", true);
+        var getEx = Has("GetUserTmpExStr");
+        var setEx = Has("SetUserTmpExStr");
+        int moved = 0, kept = 0, failed = 0;
+        for (var f = 0; f < 10; f++)
+        {
+            string tmp = "";
+            int len = 0, flag = 1;
+            bool got;
+            try { got = getEx ? (bool)zk.GetUserTmpExStr(m, from, f, ref flag, ref tmp, ref len) : (bool)zk.SSR_GetUserTmpStr(m, from, f, ref tmp, ref len); }
+            catch { got = false; }
+            if (!got || string.IsNullOrEmpty(tmp)) continue;
+            string have = "";
+            int hlen = 0;
+            try { if ((bool)zk.SSR_GetUserTmpStr(m, to, f, ref have, ref hlen)) { kept++; continue; } } catch { }
+            bool ok;
+            try { ok = setEx ? (bool)zk.SetUserTmpExStr(m, to, f, flag, tmp) : (bool)zk.SSR_SetUserTmpStr(m, to, f, tmp); }
+            catch { ok = false; }
+            if (ok) moved++; else failed++;
+        }
+        try { zk.RefreshData(m); } catch { }
+        return Obj("ok", failed == 0, "moved", moved, "kept", kept, "failed", failed, "error", failed == 0 ? null : "move_fingers_failed");
     }
 
     static int LastError()

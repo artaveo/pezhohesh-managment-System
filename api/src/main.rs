@@ -387,6 +387,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/held", get(k50::held))
         .route("/api/v1/k50/look", post(k50::look))
         .route("/api/v1/k50/free", post(k50::free))
+        .route("/api/v1/k50/device-user", post(k50::edit_device_user))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
