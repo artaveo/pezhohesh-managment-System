@@ -19,6 +19,8 @@ pub struct ListParams {
     /// Members page, all: daily seats of guests (no member record) are listed too.
     #[serde(default)]
     guests: bool,
+    /// Members page: only some members (see member_filter); guests are left out then.
+    has: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -59,16 +61,33 @@ fn paging(p: &ListParams) -> (i64, i64) {
     (p.limit.unwrap_or(100).clamp(1, 500), p.offset.unwrap_or(0).max(0))
 }
 
+/// The members list's «نمایش» choices, as SQL on v_member_status.
+fn member_filter(has: Option<&str>) -> Result<&'static str, ApiError> {
+    Ok(match has.unwrap_or("") {
+        "" | "all" => "true",
+        "active" => "days_left >= 0",
+        "expired" => "days_left < 0",
+        "no_dates" => "end_date IS NULL",
+        "finger" => "member_no IN (SELECT k50_finger_nos())",
+        "no_finger" => "member_no NOT IN (SELECT k50_finger_nos())",
+        "no_photo" => "NOT EXISTS (SELECT 1 FROM member_documents d WHERE d.member_id = v_member_status.member_id AND d.kind = 'photo' AND d.deleted_at IS NULL)",
+        "owed" => "owed > 0",
+        _ => return Err(ApiError::bad("bad_filter")),
+    })
+}
+
 pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Query<ListParams>) -> Result<Json<Page<MemberRow>>, ApiError> {
     if !user.sees_hall() {
         return Err(ApiError::FORBIDDEN);
     }
+    let only = member_filter(p.has.as_deref())?;
+    let guests = p.guests && only == "true";
     let attention = p.scope.as_deref() != Some("all");
     let q = pattern(&p.q);
     let (limit, offset) = paging(&p);
     // $1 attention?, $2 pattern, $3/$4 window, $5 with guests
-    let filter = "($1 = false OR days_left BETWEEN -$3 AND $4) \
-        AND ($2::text IS NULL OR name ILIKE $2 OR father_name ILIKE $2 OR phone ILIKE $2 OR member_no::text LIKE $2)";
+    let filter = format!("($1 = false OR days_left BETWEEN -$3 AND $4) \
+        AND ($2::text IS NULL OR name ILIKE $2 OR father_name ILIKE $2 OR phone ILIKE $2 OR member_no::text LIKE $2) AND ({only})");
     // Guests who bought a daily seat have no member record; on the full list they show
     // as their own row, so a sign-up at the desk is always on top of the list.
     let rows_sql = format!(
@@ -96,7 +115,7 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         .bind(&q)
         .bind(MEMBER_EXPIRED_DAYS)
         .bind(MEMBER_DUE_DAYS)
-        .bind(p.guests)
+        .bind(guests)
         .fetch_one(&mut *tx)
         .await?;
     let rows: Vec<MemberRow> = sqlx::query_as(&format!(
@@ -107,7 +126,7 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     .bind(&q)
     .bind(MEMBER_EXPIRED_DAYS)
     .bind(MEMBER_DUE_DAYS)
-    .bind(p.guests)
+    .bind(guests)
     .bind(limit)
     .bind(offset)
     .fetch_all(&mut *tx)

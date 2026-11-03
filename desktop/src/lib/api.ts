@@ -413,9 +413,13 @@ export type Loan = {
 const query = (r: Record<string, string | number | undefined>) =>
   new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
 
-export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number; guests?: boolean };
+export type MemberFilter = "all" | "active" | "expired" | "no_dates" | "finger" | "no_finger" | "no_photo" | "owed";
+export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number; guests?: boolean; has?: MemberFilter };
 const listParams = (p: ListQuery) =>
-  new URLSearchParams({ scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0), guests: String(!!p.guests) });
+  new URLSearchParams({
+    scope: p.scope, q: p.q, limit: String(p.limit ?? 100), offset: String(p.offset ?? 0), guests: String(!!p.guests),
+    ...(p.has && p.has !== "all" ? { has: p.has } : {}),
+  });
 
 /** An error answer from the API: `code` is its machine-readable reason (invalid_login, locked...). */
 export class ApiError extends Error {

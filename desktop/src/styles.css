@@ -783,3 +783,5 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .device-users-tools .search { flex: 1 1 220px; max-width: 360px; }
 .device-users-tools .segmented { flex-wrap: wrap; }
 .notice.inline { display: inline; padding: 2px 8px; }
+.list-filter { display: inline-flex; align-items: center; gap: 6px; }
+.list-filter select { min-width: 150px; font: inherit; padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); min-height: 44px; }

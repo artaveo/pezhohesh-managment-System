@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, errorText, type ListQuery, type LoanRow, type MemberRow, type OwedRow, type Page } from "../lib/api";
+import { api, errorText, type ListQuery, type LoanRow, type MemberFilter, type MemberRow, type OwedRow, type Page } from "../lib/api";
 import { fa, formatDay, formatShort } from "../lib/solar";
 import { DaysLeft } from "../components/DaysLeft";
 import { BillPreview } from "../components/BillSheet";
@@ -16,6 +16,8 @@ function DueList<T>(props: {
   row: (r: T) => ReactNode;
   empty: string;
   action?: ReactNode;
+  /** A «نمایش» choice next to the search; the list reloads when it changes. */
+  filter?: { label: string; value: string; options: { id: string; label: string }[]; onChange: (v: string) => void; note?: string };
 }) {
   const [scope, setScope] = useState<"attention" | "all">("attention");
   const [q, setQ] = useState("");
@@ -33,7 +35,7 @@ function DueList<T>(props: {
     }, q ? 250 : 0);
     return () => { window.clearTimeout(t); ctl.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, q]);
+  }, [scope, q, props.filter?.value]);
 
   async function more() {
     if (!page) return;
@@ -52,9 +54,20 @@ function DueList<T>(props: {
           ))}
         </div>
         <input ref={search} className="search" type="search" placeholder={props.searchHint} aria-label={props.searchHint} value={q} onChange={(e) => setQ(e.target.value)} />
+        {props.filter && (
+          <label className="list-filter">
+            <span className="muted small">{props.filter.label}</span>
+            <select value={props.filter.value} onChange={(e) => props.filter!.onChange(e.target.value)}>
+              {props.filter.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+          </label>
+        )}
         {props.action}
       </div>
-      <p className="muted small">{props.hint[scope === "attention" ? 0 : 1]}{page ? ` · ${fa(page.total)} مورد` : ""}</p>
+      <p className="muted small">
+        {props.hint[scope === "attention" ? 0 : 1]}{page ? ` · ${fa(page.total)} مورد` : ""}
+        {props.filter?.note && <><br />{props.filter.note}</>}
+      </p>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="glass table-wrap">
         <table className="table">
@@ -71,8 +84,20 @@ function DueList<T>(props: {
   );
 }
 
+const MEMBER_FILTERS: { id: MemberFilter; label: string }[] = [
+  { id: "all", label: "همه" },
+  { id: "active", label: "عضویت جاری" },
+  { id: "expired", label: "عضویت تمام‌شده" },
+  { id: "no_finger", label: "بدون اثر انگشت" },
+  { id: "finger", label: "با اثر انگشت" },
+  { id: "no_photo", label: "بدون عکس" },
+  { id: "owed", label: "باقی‌دار" },
+  { id: "no_dates", label: "بدون تاریخ عضویت" },
+];
+
 export function MembersList({ open, add }: { open: (id: string) => void; add: () => void }) {
   const [bill, setBill] = useState<string | null>(null);
+  const [has, setHas] = useState<MemberFilter>("all");
   const [owedView, setOwedView] = useState(false);
   const [owedCount, setOwedCount] = useState(0);
   useEffect(() => {
@@ -96,7 +121,13 @@ export function MembersList({ open, add }: { open: (id: string) => void; add: ()
           "همهٔ اعضا و مهمان‌های روزانه؛ تازه‌ترین ثبت‌نام اول. اعضای اکسل که هنوز تاریخ ندارند در آخر می‌آیند.",
         ]}
         searchHint="جستجو: نام، نام پدر، شماره تماس یا شمارهٔ عضویت"
-        load={(q, signal) => api.members({ ...q, guests: true }, signal)}
+        load={(q, signal) => api.members({ ...q, guests: true, has }, signal)}
+        filter={{
+          label: "نمایش", value: has, options: MEMBER_FILTERS, onChange: (v) => setHas(v as MemberFilter),
+          note: has === "no_finger" || has === "finger"
+            ? "اثر انگشت بر پایهٔ نسخهٔ انگشت‌هایی است که این کمپیوتر از دستگاه نگه داشته (در «دستگاه انگشت»، «نسخهٔ پشتیبان اثر انگشت‌ها» تازه‌اش کنید). مهمان‌های روزانه با فیلتر نمی‌آیند."
+            : has !== "all" ? "مهمان‌های روزانه با فیلتر نمی‌آیند." : undefined,
+        }}
         empty="عضویتی نزدیک به ختم نیست."
         head={<tr><th>شماره</th><th>نام</th><th>نام پدر</th><th>شماره تماس</th><th>نوع عضویت</th><th>آخرین ثبت</th><th>ختم عضویت</th><th>وضعیت</th></tr>}
         row={(m) => {
