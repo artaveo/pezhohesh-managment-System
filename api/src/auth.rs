@@ -83,6 +83,10 @@ pub struct CurrentUser {
     #[sqlx(skip)]
     #[serde(skip)]
     pub elevated: bool,
+    /// The role_access setting, read in the same query as the session.
+    #[sqlx(default)]
+    #[serde(skip)]
+    role_access: Option<serde_json::Value>,
 }
 
 const USER_COLUMNS: &str = "u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, \
@@ -119,13 +123,13 @@ impl FromRequestParts<AppState> for CurrentUser {
              FROM app_users u JOIN staff s ON s.id = u.staff_id \
              WHERE x.token_hash = $1 AND x.user_id = u.id AND x.revoked_at IS NULL \
                AND x.expires_at > now() AND u.active AND u.deleted_at IS NULL \
-             RETURNING {USER_COLUMNS}"
+             RETURNING {USER_COLUMNS}, (SELECT value FROM settings WHERE key = 'role_access') AS role_access"
         ))
         .bind(&hash)
         .fetch_optional(&state.db)
         .await?;
         let mut user = user.ok_or(ApiError::UNAUTHORIZED)?;
-        user.sections = crate::access::sections_for(&state.db, &user.role).await;
+        user.sections = crate::access::sections_from(user.role_access.take(), &user.role);
         crate::access::check(parts.uri.path(), &mut user)?;
         Ok(user)
     }
@@ -141,8 +145,9 @@ pub async fn begin_as(db: &PgPool, user: &CurrentUser) -> Result<Transaction<'st
         _ => return Err(ApiError::FORBIDDEN),
     };
     let mut tx = db.begin().await?;
-    sqlx::query(&format!("SET LOCAL ROLE {role}")).execute(&mut *tx).await?;
-    sqlx::query("SELECT set_config('app.user_id', $1, true)")
+    // One statement for both (each is a trip to the server, slow over a weak internet).
+    sqlx::query("SELECT set_config('role', $1, true), set_config('app.user_id', $2, true)")
+        .bind(role)
         .bind(user.id.to_string())
         .execute(&mut *tx)
         .await?;

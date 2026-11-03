@@ -118,6 +118,20 @@ async fn run() -> anyhow::Result<()> {
     let db = PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(if online.is_some() { 30 } else { 5 }))
+        // sqlx pings every connection before handing it out: one more trip to the server for
+        // every request. Only a connection that sat unused for a while is checked now
+        // (the server may have closed it); connections are not kept forever either.
+        .test_before_acquire(false)
+        .before_acquire(|conn, meta| {
+            Box::pin(async move {
+                if meta.idle_for < Duration::from_secs(60) {
+                    return Ok(true);
+                }
+                Ok(sqlx::Connection::ping(conn).await.is_ok())
+            })
+        })
+        .idle_timeout(Duration::from_secs(if online.is_some() { 240 } else { 600 }))
+        .max_lifetime(Duration::from_secs(1800))
         .after_connect(move |conn, _| {
             Box::pin(async move {
                 if let Some(id) = online {

@@ -80,6 +80,12 @@ pub async fn sections_for(db: &PgPool, role: &str) -> Vec<String> {
     load(db).await.of(role)
 }
 
+/// The same, from the stored setting read along with the session (one trip to the database
+/// less on every request, which counts on the server).
+pub fn sections_from(stored: Option<serde_json::Value>, role: &str) -> Vec<String> {
+    stored.and_then(|v| serde_json::from_value::<RoleAccess>(v).ok()).unwrap_or_default().of(role)
+}
+
 /// The sections a path belongs to; a request is let through when the person has any of them.
 /// Paths not listed (sign-in, own settings, prices for the desk) are for everyone the
 /// database lets in.
