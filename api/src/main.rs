@@ -231,7 +231,7 @@ fn problem_of(e: &anyhow::Error) -> &'static str {
 async fn wait_for_database(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let core = s.core.read().unwrap().clone();
     // «وصل به سرور مرکزی» is for a computer whose own database is not there.
-    if core.ready || matches!(req.uri().path(), "/health" | "/api/v1/setup/connect" | "/api/v1/k50/quiesce") {
+    if core.ready || matches!(req.uri().path(), "/health" | "/api/v1/setup/connect" | "/api/v1/k50/quiesce" | "/api/v1/k50/hold") {
         return next.run(req).await;
     }
     let body = json!({ "error": core.problem.unwrap_or("starting"), "detail": core.detail });
@@ -390,6 +390,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/free", post(k50::free))
         .route("/api/v1/k50/device-user", post(k50::edit_device_user))
         .route("/api/v1/k50/quiesce", post(k50::quiesce_now))
+        .route("/api/v1/k50/hold", post(k50::hold_now))
         .route("/api/v1/k50/logs/clear", post(k50::clear_logs))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
         .layer(CorsLayer::permissive())

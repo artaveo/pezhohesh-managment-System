@@ -84,13 +84,25 @@ fn with_password(old: Option<&str>, password: &str) -> String {
 /// talk is cut off half way. Waits at most a minute and a half; an API that is not running
 /// answers nothing and nothing is waited for.
 fn quiet_device() {
+    api_post("/api/v1/k50/quiesce");
+}
+
+/// Before the hotspot goes on or off (the Wi-Fi changes under the device's connection): asks
+/// the API to finish a talk with the fingerprint device and start none for 45 seconds.
+pub fn hold_device() {
+    api_post("/api/v1/k50/hold?seconds=45");
+}
+
+/// A POST with no body to the local API, waiting for its answer (at most a minute and a half).
+fn api_post(path: &str) {
     use std::io::{Read, Write};
     use std::time::Duration;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8750));
     let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return };
     let _ = s.set_read_timeout(Some(Duration::from_secs(95)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-    if s.write_all(b"POST /api/v1/k50/quiesce HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").is_ok() {
+    let request = format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    if s.write_all(request.as_bytes()).is_ok() {
         let mut answer = Vec::new();
         let _ = s.read_to_end(&mut answer);
     }

@@ -68,6 +68,11 @@ export function Device() {
     setAsking(false);
     toast(enabled ? "به‌روزرسانی خودکار روشن شد." : "به‌روزرسانی خودکار خاموش شد.");
   });
+  const setClearMonthly = (clear_monthly: boolean) => run("save", async () => {
+    await api.setK50({ ...s!.config, clear_monthly });
+    setForm((f) => f && { ...f, clear_monthly });
+    toast(clear_monthly ? "حاضری‌ها ماهی یک بار از دستگاه پاک می‌شود." : "پاک کردن ماهانه خاموش شد.");
+  });
   const test = () => run("test", async () => setInfo(await api.testK50(form!)));
   const scan = () => run("scan", async () => setFound(await api.scanK50()));
   const sync = () => run("sync", async () => {
@@ -201,6 +206,19 @@ export function Device() {
             onChange={(e) => { if (e.target.checked) setAsking(true); else void setAuto(false); }} />
           برنامه خودش دستگاه را به‌روز نگه دارد (آیدی، نام و تاریخ عضویت، و خواندن حاضری‌ها)
         </label>
+        {saved.enabled && (
+          <>
+            <label className="check big">
+              <input type="checkbox" checked={!!saved.clear_monthly} disabled={!!busy} onChange={(e) => void setClearMonthly(e.target.checked)} />
+              ماهی یک بار، حاضری‌ها را بعد از خواندن از خود دستگاه پاک کن (در برنامه می‌مانند)
+            </label>
+            <p className="muted small">
+              تا حافظهٔ دستگاه پر نشود و خواندن حاضری‌ها سبک بماند. اول هر ماه، در لحظه‌ای که کسی وارد نمی‌شود، برنامه همهٔ حاضری‌ها را می‌خواند
+              و فقط اگر همه را گرفت پاک می‌کند. اگر گزارش حاضری را از ZKAccess هم می‌گیرید، این را روشن نکنید، یا پیش از اول ماه حاضری‌ها را در ZKAccess بگیرید.
+              {s.logs_cleared && <> آخرین بار {when(s.logs_cleared.at)}: {fa(s.logs_cleared.count)} حاضری پاک شد.</>}
+            </p>
+          </>
+        )}
         {!saved.enabled && saved.ip && (
           <p className="muted small">
             {!cmp ? "برای روشن کردن، اول پایین‌تر «مقایسهٔ آیدی‌ها با دستگاه» را بزنید."

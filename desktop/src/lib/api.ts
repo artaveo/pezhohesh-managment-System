@@ -60,7 +60,11 @@ export type Arrived = {
   by_phone_id: string | null; by_phone_name: string | null; by_phone_no: number | null;
 };
 export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
-export type K50Config = { enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number };
+export type K50Config = {
+  enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number;
+  /** Once a month the punches go off the device after the app has read them all. */
+  clear_monthly: boolean;
+};
 export type K50Comparison = {
   device_users: number; in_app: number; not_in_app: number; differs: number; admins: number; zero_padded: number; padded_width: number | null;
   /** Members the app had sent that the device lost; they are sent again. */
@@ -99,6 +103,7 @@ export type K50Status = {
   retry_at: number | null; fails: number;
   /** Punches the device holds, as counted at the last read, and from how many the page warns. */
   logs_on_device: number | null; logs_warn: number;
+  logs_cleared: { at: string; count: number; by: string } | null;
 };
 export type K50DateRow = { no: string; device_name: string; app_name: string; start: string | null; end: string | null; taken: boolean };
 export type K50Dates = {

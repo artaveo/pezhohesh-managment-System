@@ -93,6 +93,8 @@ fn status() -> Hotspot {
 }
 
 fn set(on: bool) -> Result<(), String> {
+    // The Wi-Fi changes under the fingerprint device's connection: no talk with it meanwhile.
+    crate::hold_device();
     #[cfg(windows)]
     {
         win::set(on)

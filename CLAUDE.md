@@ -63,6 +63,11 @@ it is kept busy. Keep these when changing device code:
   tells other network / no answer / IP taken by another device / device busy.
 - ZKAccess open on the same PC is detected (`zk_program_open`); punches are then read every
   30 min and the device page warns.
+- The office laptop needs its Wi-Fi and the Windows hotspot (phone uploads): never talk to the
+  device while the network changes. The desktop calls `POST /api/v1/k50/hold` before turning
+  the hotspot on or off, and rounds wait `SETTLE_SECS` after any change of this PC's addresses.
+- `clear_monthly` (off by default) takes the punches off the device once a Solar month, only
+  after a whole read; the app keeps them in `attendance`.
 
 ## Building on this laptop (Snapdragon ARM64, no MSVC)
 

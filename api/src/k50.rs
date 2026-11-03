@@ -50,11 +50,14 @@ pub struct Config {
     /// Digits of a user ID on the device, with zeros in front (0: the number as it is).
     /// ZKAccess may have stored 51003 as "051003".
     digits: u8,
+    /// Once a month the punches are taken off the device after the app has read them all,
+    /// so its memory never fills up (see `clear_device_logs`).
+    clear_monthly: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0, digits: 0 }
+        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0, digits: 0, clear_monthly: false }
     }
 }
 
@@ -83,6 +86,13 @@ static RETRY_AT: AtomicU64 = AtomicU64::new(0);
 static FAILS: AtomicU64 = AtomicU64::new(0);
 /// This API is stopping: no new talk with the device starts.
 static QUIET: AtomicBool = AtomicBool::new(false);
+/// The laptop's Wi-Fi is changing (the hotspot goes on or off): no talk starts before then
+/// (seconds since 1970). A talk cut off by the network going away mid-way leaves the device stuck.
+static HOLD_UNTIL: AtomicU64 = AtomicU64::new(0);
+/// This computer's network addresses as last seen, and when they last changed (seconds).
+static NETWORK: Mutex<(String, u64)> = Mutex::new((String::new(), 0));
+/// A network that changed this recently is let settle before the device is talked to.
+const SETTLE_SECS: u64 = 60;
 /// A helper gets this much more than its budget before it is stopped by force.
 const GRACE: Duration = Duration::from_secs(30);
 
@@ -105,6 +115,47 @@ pub async fn quiesce(max: Duration) {
     }
 }
 
+/// The network changed within the last minute: an address came or went (Wi-Fi reconnecting,
+/// the hotspot going on or off, a cable pulled). Talks wait until it has settled.
+fn network_settling() -> bool {
+    let mut now: Vec<String> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(v4) => Some(format!("{}={}", i.name, v4.ip)),
+            _ => None,
+        })
+        .collect();
+    now.sort();
+    let now = now.join(",");
+    let mut seen = NETWORK.lock().unwrap();
+    if seen.0 != now {
+        // The first look is not a change.
+        let first = seen.0.is_empty();
+        *seen = (now, if first { 0 } else { now_secs() });
+    }
+    now_secs().saturating_sub(seen.1) < SETTLE_SECS
+}
+
+/// POST /api/v1/k50/hold?seconds=45 (local only): the desktop app asks this before it turns the
+/// hotspot on or off. A talk under way is finished first; then none starts for that long.
+pub async fn hold_now(axum::extract::Query(q): axum::extract::Query<HoldFor>) -> StatusCode {
+    HOLD_UNTIL.store(now_secs() + q.seconds.min(120), Ordering::SeqCst);
+    let _ = tokio::time::timeout(Duration::from_secs(90), DEVICE.lock()).await;
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+pub struct HoldFor {
+    #[serde(default = "hold_default")]
+    seconds: u64,
+}
+
+fn hold_default() -> u64 {
+    45
+}
+
 /// POST /api/v1/k50/quiesce: the desktop app asks this before it closes the API (local only).
 pub async fn quiesce_now() -> StatusCode {
     quiesce(Duration::from_secs(90)).await;
@@ -123,22 +174,42 @@ pub async fn clear_logs(State(s): State<AppState>, user: CurrentUser) -> Result<
     }
     let cfg = config(&s.db).await?;
     check_config(&cfg)?;
-    // First every punch not yet in the app; a read cut short or failed stops here (the count
-    // is written again only by a whole read).
-    sqlx::query("DELETE FROM settings WHERE key = 'k50_logs_count'").execute(&s.db).await?;
-    if let Err(e) = pull_punches(&s.db, &cfg).await {
-        return Ok(DeviceAnswer::from(Err::<Value, String>(e)));
+    Ok(DeviceAnswer::from(clear_device_logs(&s.db, &cfg, &user.username).await))
+}
+
+/// Reads every punch the app does not have yet and then takes them all off the device. A read
+/// that fails or is cut short stops it: nothing is cleared that the app has not got.
+async fn clear_device_logs(db: &PgPool, cfg: &Config, by: &str) -> Result<Value, String> {
+    // The count is written again only by a whole read.
+    sqlx::query("DELETE FROM settings WHERE key = 'k50_logs_count'").execute(db).await.map_err(|e| e.to_string())?;
+    pull_punches(db, cfg).await?;
+    let held: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::bigint FROM settings WHERE key = 'k50_logs_count'")
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .flatten();
+    let Some(held) = held else { return Err("logs_not_read".into()) };
+    let r = talk(cfg, vec![json!({ "op": "clear_logs" })], Duration::from_secs(60)).await?.remove(0);
+    if r["ok"] == json!(true) {
+        save_setting(db, "k50_logs_count", json!(0)).await.map_err(|e| e.to_string())?;
+        save_setting(db, "k50_logs_cleared", json!({ "at": Utc::now(), "count": held, "by": by })).await.map_err(|e| e.to_string())?;
+        tracing::warn!("k50: {held} punches cleared from the device ({by})");
     }
-    let complete: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM settings WHERE key = 'k50_logs_count')").fetch_one(&s.db).await?;
-    if !complete {
-        return Ok(DeviceAnswer::from(Err::<Value, String>("logs_not_read".into())));
-    }
-    let r = talk(&cfg, vec![json!({ "op": "clear_logs" })], Duration::from_secs(60)).await.map(|mut a| a.remove(0));
-    if matches!(&r, Ok(a) if a["ok"] == json!(true)) {
-        save_setting(&s.db, "k50_logs_count", json!(0)).await?;
-        tracing::warn!("k50: punches cleared from the device by {}", user.username);
-    }
-    Ok(DeviceAnswer::from(r))
+    Ok(r)
+}
+
+/// With `clear_monthly`: the punches were not cleared yet in this Solar month.
+async fn clear_due(db: &PgPool) -> bool {
+    let last: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_logs_cleared'").fetch_optional(db).await.ok().flatten();
+    let held: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::bigint FROM settings WHERE key = 'k50_logs_count'")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    let month = |d: NaiveDate| (crate::solar::year_of(d), crate::solar::month_day(d).0);
+    let at = last.as_ref().and_then(|v| v["at"].as_str()).and_then(|t| t.parse::<DateTime<Utc>>().ok());
+    held.is_some_and(|n| n > 0) && at.is_none_or(|at| month(at.with_timezone(&chrono::Local).date_naive()) != month(today()))
 }
 
 fn now_secs() -> u64 {
@@ -174,6 +245,11 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
     }
     if QUIET.load(Ordering::SeqCst) {
         return Err("closing".into());
+    }
+    // The Wi-Fi is changing (hotspot): wait for it, at most two minutes.
+    let held = HOLD_UNTIL.load(Ordering::SeqCst).saturating_sub(now_secs()).min(120);
+    if held > 0 {
+        tokio::time::sleep(Duration::from_secs(held)).await;
     }
     let _one = DEVICE.lock().await;
     if QUIET.load(Ordering::SeqCst) {
@@ -845,8 +921,12 @@ pub async fn schedule(db: PgPool) {
         if !cfg.enabled || cfg.ip.trim().is_empty() || now_secs() < ENROLLING_UNTIL.load(Ordering::SeqCst) {
             continue;
         }
-        // The device did not answer lately: leave it alone until its next try.
-        if now_secs() < RETRY_AT.load(Ordering::SeqCst) || QUIET.load(Ordering::SeqCst) {
+        // The device did not answer lately: leave it alone until its next try. Nor while the
+        // laptop's network is changing: a talk the network cuts off leaves the device stuck.
+        if now_secs() < RETRY_AT.load(Ordering::SeqCst) || now_secs() < HOLD_UNTIL.load(Ordering::SeqCst) || QUIET.load(Ordering::SeqCst) {
+            continue;
+        }
+        if tokio::task::spawn_blocking(network_settling).await.unwrap_or(false) {
             continue;
         }
         // With ZKAccess open the device has two programs to serve: punches every half hour.
@@ -855,6 +935,12 @@ pub async fn schedule(db: PgPool) {
         let last = round(&db, &cfg, punches, 5).await;
         if punches && last.ok {
             since_punches = Duration::ZERO;
+        }
+        // Once a month, at a quiet moment, the device's punches go (the app has them all).
+        if cfg.clear_monthly && last.ok && punches && last.punches == 0 && clear_due(&db).await {
+            if let Err(e) = clear_device_logs(&db, &cfg, "every month").await {
+                tracing::warn!("k50: monthly clear: {e}");
+            }
         }
         // The daily copy of every finger is a long talk: done when no one has just come in.
         if last.ok && punches && last.punches == 0 && fingers_due(&db).await {
@@ -896,6 +982,8 @@ pub struct Status {
     /// Punches the device holds (as counted at the last read), and from how many the page warns.
     logs_on_device: Option<i64>,
     logs_warn: i64,
+    /// When the punches were last taken off the device, how many, and by whom.
+    logs_cleared: Option<Value>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -936,6 +1024,7 @@ pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json
         fails: FAILS.load(Ordering::SeqCst),
         logs_on_device,
         logs_warn: LOGS_WARN,
+        logs_cleared: sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_logs_cleared'").fetch_optional(&s.db).await?,
         config: config(&s.db).await?,
         last,
         pending,
