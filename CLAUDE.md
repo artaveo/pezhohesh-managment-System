@@ -66,6 +66,10 @@ it is kept busy. Keep these when changing device code:
 - The office laptop needs its Wi-Fi and the Windows hotspot (phone uploads): never talk to the
   device while the network changes. The desktop calls `POST /api/v1/k50/hold` before turning
   the hotspot on or off, and rounds wait `SETTLE_SECS` after any change of this PC's addresses.
+- The K50 gives dates back without leading zeros ("2026-11-3 0:0:0"): parse dates by their
+  parts (`device_day`, the helper's `Day`), never by "the first eight digits".
+- Device talks, failures with an ARP/ping check of the device and its neighbours, and changes
+  of this PC's network are all in `api.log`: read it before guessing at a device problem.
 - `clear_monthly` (off by default) takes the punches off the device once a Solar month, only
   after a whole read; the app keeps them in `attendance`.
 

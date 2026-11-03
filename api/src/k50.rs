@@ -133,6 +133,9 @@ fn network_settling() -> bool {
     if seen.0 != now {
         // The first look is not a change.
         let first = seen.0.is_empty();
+        if !first {
+            tracing::warn!("network changed: [{}] -> [{now}]", seen.0);
+        }
         *seen = (now, if first { 0 } else { now_secs() });
     }
     now_secs().saturating_sub(seen.1) < SETTLE_SECS
@@ -260,7 +263,18 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
         "ip": cfg.ip.trim(), "port": cfg.port, "machine": cfg.machine, "key": cfg.comm_key,
         "budget": wait.as_secs(), "ops": ops,
     });
-    let answer = ask_helper(&request, wait + GRACE).await?;
+    let names: Vec<&str> = ops.iter().filter_map(|o| o["op"].as_str()).collect();
+    let began = std::time::Instant::now();
+    let answer = ask_helper(&request, wait + GRACE).await;
+    // Every talk goes in the log (what, how long, how it ended), so a device that stops
+    // answering can be traced to what was asked of it just before.
+    let took = began.elapsed().as_millis();
+    match &answer {
+        Ok(a) if a["ok"] == json!(true) => tracing::info!("k50 talk: {} in {took} ms", names.join(",")),
+        Ok(a) => tracing::warn!("k50 talk: {} in {took} ms: {} {}", names.join(","), a["error"], a["code"]),
+        Err(e) => tracing::warn!("k50 talk: {} in {took} ms: {e}", names.join(",")),
+    }
+    let answer = answer?;
     if answer["ok"] != json!(true) {
         let error = answer["error"].as_str().unwrap_or("failed");
         return Err(match answer["code"].as_i64() {
@@ -273,6 +287,10 @@ async fn talk(cfg: &Config, ops: Vec<Value>, wait: Duration) -> Result<Vec<Value
         return Err("helper: short answer".into());
     }
     // The device answered: the rounds go back to their usual pace.
+    let failed = FAILS.load(Ordering::SeqCst);
+    if failed > 0 {
+        tracing::info!("k50: the device answers again, after {failed} tries that it did not");
+    }
     FAILS.store(0, Ordering::SeqCst);
     RETRY_AT.store(0, Ordering::SeqCst);
     Ok(results)
@@ -774,6 +792,12 @@ async fn round(db: &PgPool, cfg: &Config, punches: bool, batches: u32) -> Last {
             let fails = FAILS.fetch_add(1, Ordering::SeqCst) + 1;
             RETRY_AT.store(now_secs() + backoff(fails), Ordering::SeqCst);
             tracing::warn!("k50: {e} ({}; try {fails}, next in {} min)", last.diagnosis.unwrap_or("?"), backoff(fails) / 60);
+            // Is it the device or the network? A ping to it, and to others on its network
+            // (the modem first): others answering and the device not means the device itself.
+            if let Some(ip) = ip {
+                let seen = tokio::task::spawn_blocking(move || network_check(ip)).await.unwrap_or_default();
+                tracing::warn!("k50 network check: {seen}");
+            }
         }
         Some(e) => tracing::warn!("k50: {e}"),
         None => {
@@ -811,6 +835,83 @@ async fn diagnose(db: &PgPool, ip: Ipv4Addr) -> &'static str {
         Some(k) if !k.eq_ignore_ascii_case(&mac) => "other_device",
         _ => "answers",
     }
+}
+
+/// One line for the log when the device does not answer: whether it answers on the network
+/// (ARP: its hardware address; and a ping), and whether up to three other devices this
+/// computer knows on its network do. Some computers block pings; ARP still tells.
+fn network_check(ip: Ipv4Addr) -> String {
+    let probe = |a: Ipv4Addr| {
+        let mac = arp(a).unwrap_or_else(|| "none".into());
+        format!("{a} arp {mac}, ping {}", if ping(a) { "yes" } else { "no" })
+    };
+    let mut out = vec![format!("device {}", probe(ip))];
+    out.extend(neighbours(ip).into_iter().take(3).map(probe));
+    out.join("; ")
+}
+
+/// Other addresses in the device's /24 that this computer has seen lately (its ARP table),
+/// the .1 (usually the modem) first.
+#[cfg(windows)]
+fn neighbours(ip: Ipv4Addr) -> Vec<Ipv4Addr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{GetIpNetTable, MIB_IPNETTABLE};
+    let mut size = 0u32;
+    // SAFETY: the first call only reports the size; the second fills a buffer of that size,
+    // aligned for MIB_IPNETTABLE, and the rows are read within the count it gives.
+    unsafe {
+        GetIpNetTable(std::ptr::null_mut(), &mut size, 0);
+        if size == 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let table = buf.as_mut_ptr() as *mut MIB_IPNETTABLE;
+        if GetIpNetTable(table, &mut size, 1) != 0 {
+            return Vec::new();
+        }
+        let rows = std::slice::from_raw_parts((*table).table.as_ptr(), (*table).dwNumEntries as usize);
+        let net = &ip.octets()[..3];
+        // Only addresses that answered (dynamic) or were set by hand (static), as `arp -a` lists
+        // them; a lookup that got no answer leaves an "invalid" row behind.
+        let mut found: Vec<Ipv4Addr> = rows
+            .iter()
+            .filter(|r| matches!(r.Anonymous.dwType, 3 | 4))
+            .map(|r| Ipv4Addr::from(r.dwAddr.to_ne_bytes()))
+            .filter(|a| &a.octets()[..3] == net && *a != ip && !matches!(a.octets()[3], 0 | 255))
+            .collect();
+        found.sort_by_key(|a| (a.octets()[3] != 1, a.octets()[3]));
+        found.dedup();
+        found
+    }
+}
+
+#[cfg(not(windows))]
+fn neighbours(_ip: Ipv4Addr) -> Vec<Ipv4Addr> {
+    Vec::new()
+}
+
+/// One ICMP echo with a second to answer (what `ping` does), without needing a console.
+#[cfg(windows)]
+fn ping(ip: Ipv4Addr) -> bool {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho};
+    // SAFETY: the handle is checked and closed; the reply buffer is larger than one echo reply
+    // with its 8 bytes of data, and only the count of replies and their status are read.
+    unsafe {
+        let h = IcmpCreateFile();
+        if h.is_null() || h as isize == -1 {
+            return false;
+        }
+        let data = *b"pezhoesh";
+        let mut reply = [0u8; 128];
+        let n = IcmpSendEcho(h, u32::from_ne_bytes(ip.octets()), data.as_ptr().cast(), data.len() as u16, std::ptr::null(), reply.as_mut_ptr().cast(), reply.len() as u32, 1000);
+        IcmpCloseHandle(h);
+        // ICMP_ECHO_REPLY: the address, then the status (0: answered).
+        n > 0 && u32::from_ne_bytes([reply[4], reply[5], reply[6], reply[7]]) == 0
+    }
+}
+
+#[cfg(not(windows))]
+fn ping(_ip: Ipv4Addr) -> bool {
+    false
 }
 
 /// Some network of this computer holds `ip`.
@@ -1373,10 +1474,17 @@ pub struct Comparison {
 // ---------------------------------------------------------------------------
 // Dates from the device, once
 
-/// The day in a date the device gives back ("2026-10-26 16:45:50", or digits only).
+/// The day in a date the device gives back: "2026-10-26 16:45:50", digits only ("20261026"),
+/// or, as the K50 writes it, without leading zeros: "2026-11-3 0:0:0" is the 3rd (taking the
+/// first eight digits made it the 30th).
 fn device_day(s: &str) -> Option<NaiveDate> {
-    let digits: String = s.chars().filter(char::is_ascii_digit).take(8).collect();
-    NaiveDate::parse_from_str(&digits, "%Y%m%d").ok().filter(|d| d.year() >= 2000)
+    let parts: Vec<&str> = s.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).collect();
+    let day = match parts.as_slice() {
+        [whole, ..] if whole.len() >= 8 => NaiveDate::parse_from_str(&whole[..8], "%Y%m%d").ok(),
+        [y, m, d, ..] if y.len() == 4 => NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?),
+        _ => None,
+    };
+    day.filter(|d| d.year() >= 2000)
 }
 
 #[derive(Deserialize)]
@@ -2283,6 +2391,18 @@ mod tests {
         assert_eq!([1, 2, 3, 4, 5, 9].map(super::backoff), [120, 240, 480, 960, 1800, 1800]);
         assert!(super::unreachable("connect_failed (-307)") && super::unreachable("timeout") && super::unreachable("busy"));
         assert!(!super::unreachable("set_user_failed (-2)"));
+    }
+
+    #[test]
+    fn device_days_with_and_without_zeros() {
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day);
+        // As the K50 gave them back for member 511053.
+        assert_eq!(super::device_day("2026-11-3 0:0:0"), d(2026, 11, 3));
+        assert_eq!(super::device_day("2026-12-2 23:59:59"), d(2026, 12, 2));
+        assert_eq!(super::device_day("2026-10-26 16:45:50"), d(2026, 10, 26));
+        assert_eq!(super::device_day("20261103"), d(2026, 11, 3));
+        assert_eq!(super::device_day("1999-01-01"), None);
+        assert_eq!(super::device_day(""), None);
     }
 
     #[test]

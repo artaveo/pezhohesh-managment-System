@@ -334,6 +334,8 @@ static class K50Helper
             try { taken = zk.SetUserValidDate(m, no, 1, 0, forms[i][0], forms[i][1]); }
             catch { return false; }  // this SDK has no such call
             if (!taken) continue;
+            // `read` is always what the device gave back for this form, never an earlier one.
+            read = null;
             bool? same = null;
             try
             {
@@ -344,8 +346,10 @@ static class K50Helper
                     read = Obj("expires", exp, "start", s, "end", e);
                     same = exp != 0 && Day(s) == Day(start) && Day(e) == Day(end);
                 }
+                // The device took the days but cannot give them back: not the days it was given.
+                else same = false;
             }
-            catch { }
+            catch { }  // this SDK has no read-back call: the first form taken is kept
             if (same == false) continue;
             if (!dateForm.HasValue) dateForm = i;
             return true;
@@ -353,11 +357,16 @@ static class K50Helper
         return false;
     }
 
-    // The first eight digits of a date written any of these ways: 2026-10-28, 20261028, 2026/10/28 00:00:00.
+    // The day of a date written any of these ways, as yyyyMMdd: 2026-10-28, 20261028,
+    // 2026/10/28 00:00:00, and as the K50 gives it back, without leading zeros:
+    // "2026-11-3 0:0:0" is 20261103 (taking the first eight digits made it 20261130).
     static string Day(string text)
     {
-        var digits = new string((text ?? "").Where(char.IsDigit).ToArray());
-        return digits.Length >= 8 ? digits.Substring(0, 8) : digits;
+        var parts = System.Text.RegularExpressions.Regex.Matches(text ?? "", "[0-9]+").Cast<System.Text.RegularExpressions.Match>().Select(x => x.Value).ToList();
+        if (parts.Count == 0) return "";
+        if (parts[0].Length >= 8) return parts[0].Substring(0, 8);
+        if (parts.Count >= 3 && parts[0].Length == 4) return parts[0] + parts[1].PadLeft(2, '0') + parts[2].PadLeft(2, '0');
+        return string.Concat(parts);
     }
 
     // Every punch after `since` ("yyyy-MM-dd HH:mm:ss", the device's own clock). The device
