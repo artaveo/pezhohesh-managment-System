@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  addDays, daysBetween, fa, formatDay, iso, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
+  addDays, daysBetween, fa, formatDay, iso, lastAheadMonth, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
   sameMonthLastYear, toSolar, yearNumber, yearStart,
 } from "../lib/solar";
 import { balance, loadRanges, total, type Range, type Sum } from "../lib/reports";
@@ -33,7 +33,8 @@ export function Reports() {
   const [ys, setYs] = useState(() => yearStart(new Date()));
   const [printing, setPrinting] = useState(false);
   const now = new Date();
-  const atLatest = mode === "month" ? iso(ms) === iso(monthStart(now)) : iso(ys) === iso(yearStart(now));
+  // Months paid in advance count in their own month, so the steps go ahead as far as that.
+  const atLatest = mode === "month" ? iso(ms) >= iso(lastAheadMonth(now)) : iso(ys) >= iso(nextYear(yearStart(now)));
 
   return (
     <div className="page report-page">
@@ -67,7 +68,9 @@ function printedOn() {
 function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShares: boolean; printing: boolean; onPrinted: () => void }) {
   const tomorrow = addDays(new Date(), 1);
   const next = nextMonth(ms);
-  const end = next < tomorrow ? next : tomorrow;
+  // The month running now is shown up to today; a month still to come in full (what was paid ahead for it).
+  const ahead = ms >= tomorrow;
+  const end = next < tomorrow || ahead ? next : tomorrow;
   const current = end < next;
   const pm = prevMonth(ms);
   const ly = sameMonthLastYear(ms);
@@ -101,14 +104,15 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   return (
     <>
       <section className="kpis four">
-        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={vs(data.prev.income, `نسبت به ${monthName(pm)}${days}`)} />
-        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={vs(data.prev.expenses, `نسبت به ${monthName(pm)}${days}`)} />
-        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={vs(balance(data.prev), `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={ahead ? undefined : vs(data.prev.income, `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={ahead ? undefined : vs(data.prev.expenses, `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={ahead ? undefined : vs(balance(data.prev), `نسبت به ${monthName(pm)}${days}`)} />
         {data.owed
           ? <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={data.owed.sum} unit="؋" note={`${fa(data.owed.n)} دوره با پرداخت ناتمام`} />
           : <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={NaN} unit="" note={<button className="link" onClick={retry}>خوانده نشد؛ دوباره</button>} />}
       </section>
       {current && <p className="muted small">ماه {monthName(ms)} هنوز تمام نشده؛ این گزارش تا امروز است و ماه‌های دیگر هم فقط در همین {span} روز اول مقایسه شده‌اند.</p>}
+      {ahead && <p className="muted small">ماه {monthName(ms)} هنوز نیامده. اینجا فقط چیزهایی است که از پیش برایش ثبت شده، مثل پول عضویت‌هایی که چند ماه یک‌جا پرداخت شده‌اند.</p>}
       <div className="glass report-sheet">{sheet}</div>
       <PrintCopy on={printing} onDone={onPrinted}>{sheet}</PrintCopy>
     </>
@@ -200,17 +204,21 @@ function YearReport({ ys, canShares, printing, onPrinted }: { ys: Date; canShare
   const tomorrow = addDays(new Date(), 1);
   const months = monthsOfYear(ys);
   const { data, failed, retry } = useLoad(async (signal) => {
-    const ranges: Range[] = [];
-    for (let i = 0; i < 12 && months[i] < tomorrow; i++) {
-      ranges.push({ from: iso(months[i]), to: iso(months[i + 1] < tomorrow ? months[i + 1] : tomorrow) });
-    }
-    const a = await loadRanges(ranges.length ? ranges : [{ from: iso(ys), to: iso(addDays(ys, 1)) }], true, signal);
+    // The month running now up to today; months still to come in full, for what was paid ahead.
+    const ranges: Range[] = months.slice(0, 12).map((m, i) => ({
+      from: iso(m), to: iso(m < tomorrow && months[i + 1] > tomorrow ? tomorrow : months[i + 1]),
+    }));
+    const a = await loadRanges(ranges, true, signal);
+    const byMonth = ranges.map(a.sum);
+    // Months to come with nothing paid for them yet are left out (shown as «—»).
+    while (byMonth.length && months[byMonth.length - 1] >= tomorrow && blank(byMonth[byMonth.length - 1])) byMonth.pop();
     // While the year runs, last year is compared over the same days only.
     const py0 = prevYear(ys);
     const pyEnd = nextYear(ys) > tomorrow && addDays(py0, daysBetween(ys, tomorrow)) < ys ? addDays(py0, daysBetween(ys, tomorrow)) : ys;
     const prevRange = { from: iso(py0), to: iso(pyEnd) };
     const lastYear = await loadRanges([prevRange], false, signal);
-    return { byMonth: ranges.map(a.sum), year: total(a.res.periods), expenseOrder: a.res.expense_order, prev: lastYear.sum(prevRange) };
+    const year = total(a.res.periods.filter((p) => ranges.some((r) => p.from >= r.from && p.to <= r.to)));
+    return { byMonth, year, expenseOrder: a.res.expense_order, prev: lastYear.sum(prevRange) };
   }, [iso(ys), iso(tomorrow)]);
 
   if (failed) return <Failed retry={retry} />;

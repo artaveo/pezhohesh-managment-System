@@ -30,6 +30,12 @@ export const prevMonth = (ms: Date) => startOf(addDays(ms, -1), "month");
 export const sameMonthLastYear = (ms: Date) => startOf(addDays(ms, -360), "month");
 export const yearStart = (d = new Date()) => startOf(d, "year");
 export const nextYear = (ys: Date) => startOf(addDays(ys, 370), "year");
+/** The last month the month steps go to: up to 12 months can be paid at once, and each counts in its own month. */
+export const lastAheadMonth = (d = new Date()) => {
+  let m = monthStart(d);
+  for (let i = 0; i < 12; i++) m = nextMonth(m);
+  return m;
+};
 export const prevYear = (ys: Date) => startOf(addDays(ys, -1), "year");
 /** The 12 month starts of the year beginning at `ys`, plus the next year's start. */
 export function monthsOfYear(ys: Date): Date[] {

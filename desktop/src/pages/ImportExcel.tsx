@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, errorText, type ImportLine, type ImportReport } from "../lib/api";
+import { api, errorText, type ImportClash, type ImportLine, type ImportReport } from "../lib/api";
 import { fa, yearNumber } from "../lib/solar";
 import { PasswordInput } from "../components/PasswordInput";
 import { Icon } from "../components/Icon";
@@ -18,13 +18,22 @@ export function ImportExcel({ done }: { done: () => void }) {
   const [busy, setBusy] = useState<"check" | "import" | null>(null);
   const [error, setError] = useState("");
   const [report, setReport] = useState<ImportReport | null>(null);
+  // IDs where the partner said the book is right, and that the clashes were read.
+  const [takeExcel, setTakeExcel] = useState<number[]>([]);
+  const [seen, setSeen] = useState(false);
 
-  async function run(commit: boolean) {
+  function reset() {
+    setReport(null);
+    setTakeExcel([]);
+    setSeen(false);
+  }
+
+  async function run(commit: boolean, take = takeExcel) {
     if (!file) return;
     setBusy(commit ? "import" : "check");
     setError("");
     try {
-      setReport(await api.importExcel(file, { year: Number(year), password, commit }));
+      setReport(await api.importExcel(file, { year: Number(year), password, commit, takeExcel: take }));
     } catch (e) {
       setError(errorText(e));
       setReport(null);
@@ -35,8 +44,19 @@ export function ImportExcel({ done }: { done: () => void }) {
 
   function check(e: FormEvent) {
     e.preventDefault();
+    setSeen(false);
     void run(false);
   }
+
+  /** «اکسل درست است» for one ID: checked again at once, so the page says what will happen. */
+  function toggleTake(no: number) {
+    const next = takeExcel.includes(no) ? takeExcel.filter((n) => n !== no) : [...takeExcel, no];
+    setTakeExcel(next);
+    void run(false, next);
+  }
+
+  const clashes = report?.clashes ?? [];
+  const open = clashes.filter((c) => c.outcome !== "excel");
 
   if (report?.committed) {
     return (
@@ -44,6 +64,12 @@ export function ImportExcel({ done }: { done: () => void }) {
         <section className="panel">
           <p className="form-ok"><Icon name="check" size={16} /> اکسل سال {report.year} وارد شد.</p>
           <Counts r={report} />
+          {open.length > 0 && (
+            <p className="form-error">
+              {fa(open.length)} آیدی هنوز برای دو نفر است ({open.map((c) => c.no).join("، ")}). پول آن ردیف‌ها در درآمد آمده
+              ولی به هیچ عضوی وصل نشده؛ آیدی را در اکسل درست کنید و دوباره وارد کنید.
+            </p>
+          )}
           <p className="muted">داشبورد، گزارش ماهانه و صورت حساب سالانه حالا همین اعداد را نشان می‌دهند.</p>
           <div className="actions"><button className="btn" onClick={done}>رفتن به داشبورد</button></div>
         </section>
@@ -62,15 +88,15 @@ export function ImportExcel({ done }: { done: () => void }) {
           <label className="field wide">
             <span>فایل (.xlsx)</span>
             <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setReport(null); }} />
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); reset(); }} />
           </label>
           <label className="field wide">
             <span>سال</span>
-            <input dir="ltr" inputMode="numeric" value={year} onChange={(e) => { setYear(e.target.value.replace(/\D/g, "")); setReport(null); }} />
+            <input dir="ltr" inputMode="numeric" value={year} onChange={(e) => { setYear(e.target.value.replace(/\D/g, "")); reset(); }} />
           </label>
           <label className="field wide">
             <span>رمز فایل (اگر دارد)</span>
-            <PasswordInput value={password} onChange={(v) => { setPassword(v); setReport(null); }} autoComplete="off" />
+            <PasswordInput value={password} onChange={(v) => { setPassword(v); reset(); }} autoComplete="off" />
           </label>
         </div>
         <p className="muted small">
@@ -96,6 +122,8 @@ export function ImportExcel({ done }: { done: () => void }) {
             )}
           </section>
 
+          {clashes.length > 0 && <Clashes clashes={clashes} take={toggleTake} busy={busy !== null} />}
+
           <section className="glass table-wrap">
             <table className="table reconcile">
               <thead>
@@ -118,15 +146,104 @@ export function ImportExcel({ done }: { done: () => void }) {
             </details>
           )}
 
+          {clashes.length > 0 && (
+            <label className="check clash-seen">
+              <input type="checkbox" checked={seen} onChange={(e) => setSeen(e.target.checked)} />
+              {fa(clashes.length)} آیدیِ دو نفره را خواندم و می‌دانم با هر کدام چه می‌شود.
+            </label>
+          )}
           <div className="actions">
-            <button className="btn big" onClick={() => void run(true)} disabled={busy !== null}>
+            <button className="btn big" onClick={() => void run(true)} disabled={busy !== null || (clashes.length > 0 && !seen)}>
               {busy === "import" ? "در حال وارد کردن…" : `وارد کن (سال ${report.year})`}
             </button>
-            <button className="btn ghost" onClick={() => setReport(null)} disabled={busy !== null}>انصراف</button>
+            <button className="btn ghost" onClick={reset} disabled={busy !== null}>انصراف</button>
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * IDs given to two different people. Nothing of the book's person is joined to the app's
+ * member until the ID is fixed in the book, or the partner says the book is right.
+ */
+function Clashes({ clashes, take, busy }: { clashes: ImportClash[]; take: (no: number) => void; busy: boolean }) {
+  return (
+    <section className="panel wide clashes" role="alert" aria-labelledby="clashes-title">
+      <div className="clashes-head">
+        <Icon name="alert" size={20} />
+        <div>
+          <h2 id="clashes-title">{fa(clashes.length)} آیدی برای دو نفر آمده</h2>
+          <p className="muted">
+            اطلاعات و پرداخت‌های یک نفر به عضو دیگری وصل نمی‌شود. پول این ردیف‌ها در درآمد ماه حساب می‌شود،
+            ولی تا آیدی درست نشود به هیچ عضوی وصل نیست.
+          </p>
+        </div>
+      </div>
+      <ul className="clash-list">
+        {clashes.map((c) => <ClashItem key={c.no} c={c} take={take} busy={busy} />)}
+      </ul>
+    </section>
+  );
+}
+
+function ClashItem({ c, take, busy }: { c: ImportClash; take: (no: number) => void; busy: boolean }) {
+  const held = c.app && [
+    c.app.periods > 0 && `${fa(c.app.periods)} دوره`,
+    c.app.bills > 0 && `${fa(c.app.bills)} بل`,
+    c.app.documents > 0 && `${fa(c.app.documents)} عکس یا اسکن`,
+  ].filter(Boolean).join("، ");
+  const person = c.excel[0];
+  return (
+    <li className={`clash ${c.outcome}`}>
+      <div className="clash-no"><span className="muted small">آیدی</span><strong dir="ltr">{c.no}</strong></div>
+      <div className="clash-sides">
+        {c.app && (
+          <div className="clash-side">
+            <span className="clash-label">در برنامه{c.app.deleted ? " (حذف‌شده)" : ""}</span>
+            <strong>{c.app.name || "بی‌نام"}</strong>
+            <Details father={c.app.father} phone={c.app.phone} />
+            <span className="muted small">
+              {c.app.from_excel ? "از ورود اکسل قبلی" : "در خود برنامه ثبت شده"}
+              {held ? ` · ${held} دارد` : " · دوره، بل یا عکسی ندارد"}
+            </span>
+          </div>
+        )}
+        {c.excel.map((x, i) => (
+          <div className="clash-side" key={i}>
+            <span className="clash-label">در اکسل · {x.rows.join(" و ")}</span>
+            <strong>{x.name ?? "بی‌نام"}</strong>
+            <Details father={x.father} phone={x.phone} />
+            <span className="muted small">{x.months.length ? `${fa(x.paid)} افغانی: ${x.months.join("، ")}` : "پرداختی ندارد"}</span>
+          </div>
+        ))}
+      </div>
+      <p className="clash-outcome">
+        {c.outcome === "none"
+          ? "هیچ‌کدام عضو ساخته نمی‌شود. آیدی یکی را در اکسل درست کنید و دوباره «بررسی فایل» را بزنید."
+          : c.outcome === "excel"
+            ? `عضو ${c.no} برنامه «${person?.name ?? "بی‌نام"}» می‌شود: نام و هر چیزی که اکسل دارد از اکسل گرفته می‌شود و پرداخت‌هایش به او وصل می‌شود.${held ? ` ${held} همین عضو هم با او می‌ماند.` : ""}`
+            : `«${c.app?.name || "بی‌نام"}» در برنامه دست نمی‌خورد. اگر آیدی در اکسل اشتباه است، آن را در اکسل درست کنید و دوباره «بررسی فایل» را بزنید.`}
+      </p>
+      {c.can_take_excel && (
+        <label className="check take">
+          <input type="checkbox" checked={c.outcome === "excel"} disabled={busy} onChange={() => take(c.no)} />
+          اکسل درست است: عضو {c.no} برنامه همان «{person?.name ?? "بی‌نام"}» است
+        </label>
+      )}
+    </li>
+  );
+}
+
+function Details({ father, phone }: { father: string | null; phone: string | null }) {
+  if (!father && !phone) return <span className="muted small">نام پدر و شماره ندارد</span>;
+  return (
+    <span className="small">
+      {father && <>فرزند {father}</>}
+      {father && phone && " · "}
+      {phone && <span dir="ltr">{phone}</span>}
+    </span>
   );
 }
 

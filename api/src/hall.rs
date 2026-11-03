@@ -71,6 +71,9 @@ pub struct PeriodInput {
     /// The day the money was taken; the income and the bill go to that day. Default today.
     /// The desk sets it back when it records a payment taken earlier (an Excel member).
     paid_on: Option<NaiveDate>,
+    /// Months paid at once (1 to 12): one period after the other, each with its own bill
+    /// counted in its own month. `fee` is then each month's, `discount` and `paid` the whole.
+    months: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -578,15 +581,27 @@ async fn add_period(
             return Err(NOT_FOUND);
         }
     }
+    let months = p.months.unwrap_or(1);
+    if !(1..=12).contains(&months) || (months > 1 && plan.kind == "daily") {
+        return Err(ApiError::bad("bad_months"));
+    }
     let fee = if p.record_only { 0.0 } else { p.fee.unwrap_or(plan.price) };
     let discount = if p.record_only { 0.0 } else { p.discount };
-    if !fee.is_finite() || fee < 0.0 || !discount.is_finite() || discount < 0.0 || discount > fee {
+    let total = fee * months as f64;
+    if !fee.is_finite() || fee < 0.0 || !discount.is_finite() || discount < 0.0 || discount > total {
         return Err(ApiError::bad("bad_amount"));
     }
-    let due = fee - discount;
+    let due = total - discount;
     let paid = p.paid.unwrap_or(due);
     // Something is paid at the desk (the bill is for it); a free period's bill is 0.
     if !paid.is_finite() || paid > due || paid < 0.0 || (paid == 0.0 && due > 0.0) {
+        return Err(ApiError::bad("bad_paid"));
+    }
+    // Each month's share of the discount and of what is paid now.
+    let discounts = split(discount, &vec![fee; months as usize]);
+    let dues: Vec<f64> = discounts.iter().map(|d| fee - d).collect();
+    let paids = split(paid, &dues);
+    if dues.iter().zip(&paids).any(|(d, p)| *d > 0.0 && *p <= 0.0) {
         return Err(ApiError::bad("bad_paid"));
     }
     let start = match (p.start_date, member) {
@@ -612,36 +627,85 @@ async fn add_period(
             }
         }
     }
-    let membership = Uuid::new_v4();
-    // The end date comes from the plan's length (trigger membership_end_date).
-    sqlx::query(
-        "INSERT INTO memberships (id, member_id, guest_name, plan_id, start_date, fee, discount, note, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(membership)
-    .bind(member)
-    .bind(&guest)
-    .bind(p.plan_id)
-    .bind(start)
-    .bind(fee)
-    .bind(discount)
-    .bind(p.record_only.then_some("تاریخ عضویتی که پولش پیش از برنامه گرفته شده"))
-    .bind(user.id)
-    .execute(&mut *tx)
-    .await?;
-    if p.record_only {
-        return Ok((membership, None));
-    }
     let who = match member {
         Some(m) => sqlx::query_scalar("SELECT trim(first_name || ' ' || COALESCE(last_name, '')) FROM members WHERE id = $1")
             .bind(m)
             .fetch_one(&mut *tx)
             .await?,
-        None => guest.unwrap_or_default(),
+        None => guest.clone().unwrap_or_default(),
     };
-    let day = paid_day(user, p.paid_on)?;
-    let receipt = issue_on(tx, user, day, plan.kind.as_str(), paid, &format!("{} · {who}", plan.name), Some(membership), None).await?;
-    Ok((membership, Some(receipt)))
+    let day = if p.record_only { today() } else { paid_day(user, p.paid_on)? };
+    let length: i32 = sqlx::query_scalar("SELECT duration_days FROM plans WHERE id = $1").bind(p.plan_id).fetch_one(&mut *tx).await?;
+    let group = (months > 1 && !p.record_only).then(Uuid::new_v4);
+    let mut first: Option<(Uuid, Option<Uuid>)> = None;
+    for k in 0..months as usize {
+        let from = start + chrono::Days::new(k as u64 * length.max(1) as u64);
+        let membership = Uuid::new_v4();
+        // The end date comes from the plan's length (trigger membership_end_date).
+        sqlx::query(
+            "INSERT INTO memberships (id, member_id, guest_name, plan_id, start_date, fee, discount, note, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(membership)
+        .bind(member)
+        .bind(&guest)
+        .bind(p.plan_id)
+        .bind(from)
+        .bind(fee)
+        .bind(discounts[k])
+        .bind(if p.record_only {
+            Some("تاریخ عضویتی که پولش پیش از برنامه گرفته شده".to_string())
+        } else {
+            group.map(|_| format!("ماه {} از {months} یک پرداخت", k + 1))
+        })
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+        let receipt = if p.record_only {
+            None
+        } else {
+            // A later month's money counts in that month (on the day it starts), never
+            // before the day it was paid.
+            let on = if k == 0 { day } else { from.max(day) };
+            let what = match group {
+                Some(_) => format!("{} · {who} · ماه {} از {months}", plan.name, k + 1),
+                None => format!("{} · {who}", plan.name),
+            };
+            let r = issue_on(tx, user, on, plan.kind.as_str(), paids[k], &what, Some(membership), None).await?;
+            if group.is_some() {
+                sqlx::query("UPDATE receipts SET bill_group = $2 WHERE id = $1").bind(r).bind(group).execute(&mut *tx).await?;
+            }
+            Some(r)
+        };
+        first.get_or_insert((membership, receipt));
+    }
+    Ok(first.expect("at least one month"))
+}
+
+/// `amount` shared out over `limits` (in whole cents), as evenly as their sizes allow and
+/// never more than each limit; what does not divide goes to the first ones.
+fn split(amount: f64, limits: &[f64]) -> Vec<f64> {
+    let cents = |v: f64| (v * 100.0).round() as i64;
+    let total: i64 = limits.iter().map(|l| cents(*l)).sum();
+    let want = cents(amount).min(total);
+    if total == 0 {
+        return vec![0.0; limits.len()];
+    }
+    let mut out: Vec<i64> = limits.iter().map(|l| cents(*l) * want / total).collect();
+    let mut left = want - out.iter().sum::<i64>();
+    while left > 0 {
+        let before = left;
+        for (o, l) in out.iter_mut().zip(limits) {
+            if left > 0 && *o < cents(*l) {
+                *o += 1;
+                left -= 1;
+            }
+        }
+        if left == before {
+            break;
+        }
+    }
+    out.into_iter().map(|c| c as f64 / 100.0).collect()
 }
 
 /// The day a payment counts on: never in the future; the manager at most 31 days back
@@ -778,6 +842,24 @@ pub struct Bill {
     /// For a period: what was paid by this bill and the ones before it, and what is left after it.
     paid_so_far: Option<f64>,
     remaining: Option<f64>,
+    /// Several months paid at once: the bills of that payment, one per month (bill()).
+    bill_group: Option<Uuid>,
+    #[sqlx(skip)]
+    months: Vec<BillMonth>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct BillMonth {
+    receipt_no: String,
+    issued_on: NaiveDate,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    fee: f64,
+    discount: f64,
+    amount: f64,
+    /// What this month still owes (after any bills for its rest).
+    owed: f64,
+    voided: bool,
 }
 
 const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::float8 AS amount, r.currency::text AS currency, \
@@ -788,7 +870,7 @@ const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::flo
         p.name AS plan_name, r.book_loan_id, \
         COALESCE(ms.start_date, bl.loaned_on) AS start_date, COALESCE(ms.end_date, bl.returned_on) AS end_date, \
         ms.fee::float8 AS fee, ms.discount::float8 AS discount, r.pays_rest, \
-        so_far.paid AS paid_so_far, GREATEST(ms.fee - ms.discount - so_far.paid, 0)::float8 AS remaining \
+        so_far.paid AS paid_so_far, GREATEST(ms.fee - ms.discount - so_far.paid, 0)::float8 AS remaining, r.bill_group \
     FROM receipts r \
     LEFT JOIN app_users u ON u.id = r.issued_by LEFT JOIN staff s ON s.id = u.staff_id \
     LEFT JOIN memberships ms ON ms.id = r.membership_id \
@@ -843,11 +925,23 @@ pub async fn bills(State(s): State<AppState>, user: CurrentUser, Query(p): Query
 pub async fn bill(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<Bill>, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
-    let b: Bill = sqlx::query_as(&format!("{BILL_SELECT} WHERE r.id = $1 AND r.deleted_at IS NULL"))
+    let mut b: Bill = sqlx::query_as(&format!("{BILL_SELECT} WHERE r.id = $1 AND r.deleted_at IS NULL"))
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(NOT_FOUND)?;
+    if let Some(g) = b.bill_group {
+        b.months = sqlx::query_as(
+            "SELECT r.receipt_no, r.issued_on, ms.start_date, ms.end_date, ms.fee::float8 AS fee, ms.discount::float8 AS discount, \
+                    r.amount::float8 AS amount, COALESCE(pp.owed, 0)::float8 AS owed, r.voided \
+             FROM receipts r JOIN memberships ms ON ms.id = r.membership_id \
+             LEFT JOIN v_period_paid pp ON pp.membership_id = ms.id \
+             WHERE r.bill_group = $1 AND r.deleted_at IS NULL ORDER BY ms.start_date",
+        )
+        .bind(g)
+        .fetch_all(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(Json(b))
 }
@@ -856,7 +950,14 @@ pub async fn bill(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
 pub async fn bill_printed(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
-    sqlx::query("UPDATE receipts SET printed_count = printed_count + 1 WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    // The bills of one payment are one paper.
+    sqlx::query(
+        "UPDATE receipts SET printed_count = printed_count + 1 WHERE id = $1 \
+            OR bill_group = (SELECT bill_group FROM receipts WHERE id = $1 AND bill_group IS NOT NULL)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -890,29 +991,48 @@ pub async fn void_bill(
     if voided {
         return Err(ApiError::bad("already_voided"));
     }
+    // Several months paid at once are one payment: their bills are voided together. The
+    // payment's day is its first bill's (later months are dated in their own month).
+    let group: Vec<(Uuid, Option<Uuid>, NaiveDate)> = sqlx::query_as(
+        "SELECT g.id, g.membership_id, g.issued_on FROM receipts g \
+         WHERE g.bill_group = (SELECT bill_group FROM receipts WHERE id = $1) AND NOT g.voided AND g.deleted_at IS NULL \
+         ORDER BY g.issued_on FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let (bills, paid_on): (Vec<(Uuid, Option<Uuid>)>, NaiveDate) = if group.is_empty() {
+        (vec![(id, membership)], issued_on)
+    } else {
+        let first = group.iter().map(|g| g.2).min().unwrap_or(issued_on);
+        (group.into_iter().map(|(r, m, _)| (r, m)).collect(), first)
+    };
     // The first bill of a period paid in parts goes last: voiding it withdraws the period.
-    if let (Some(m), false) = (membership, pays_rest) {
+    if !pays_rest {
+        let periods: Vec<Uuid> = bills.iter().filter_map(|(_, m)| *m).collect();
         let later: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM receipts WHERE membership_id = $1 AND pays_rest AND NOT voided AND deleted_at IS NULL)",
+            "SELECT EXISTS (SELECT 1 FROM receipts WHERE membership_id = ANY($1) AND pays_rest AND NOT voided AND deleted_at IS NULL)",
         )
-        .bind(m)
+        .bind(&periods)
         .fetch_one(&mut *tx)
         .await?;
         if later {
             return Err(ApiError::bad("rest_bills_first"));
         }
     }
-    if !user.is_partner() && issued_on != today() {
+    if !user.is_partner() && paid_on != today() {
         return Err(ApiError(StatusCode::FORBIDDEN, "void_today_only"));
     }
-    sqlx::query("UPDATE receipts SET voided = true, void_reason = $2, voided_by = $3, voided_at = now() WHERE id = $1")
-        .bind(id)
+    let ids: Vec<Uuid> = bills.iter().map(|(r, _)| *r).collect();
+    sqlx::query("UPDATE receipts SET voided = true, void_reason = $2, voided_by = $3, voided_at = now() WHERE id = ANY($1)")
+        .bind(&ids)
         .bind(reason)
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
-    if let (Some(m), false) = (membership, pays_rest) {
-        sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = $1").bind(m).execute(&mut *tx).await?;
+    if !pays_rest {
+        let periods: Vec<Uuid> = bills.iter().filter_map(|(_, m)| *m).collect();
+        sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = ANY($1)").bind(&periods).execute(&mut *tx).await?;
     }
     // The cards of a wrong hotspot count go back into stock.
     sqlx::query("UPDATE hotspot_sales SET deleted_at = now() WHERE receipt_id = $1 AND deleted_at IS NULL")
@@ -1076,4 +1196,78 @@ pub async fn restore_member(State(s): State<AppState>, user: CurrentUser, Path(i
     tx.commit().await?;
     crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split;
+
+    #[test]
+    fn months_share_the_discount_and_the_payment() {
+        assert_eq!(split(0.0, &[300.0; 3]), vec![0.0; 3]);
+        assert_eq!(split(100.0, &[300.0; 3]), vec![33.34, 33.33, 33.33]);
+        assert_eq!(split(900.0, &[300.0; 3]), vec![300.0; 3]);
+        // Paid less than the whole: each month gets its share, none more than it costs.
+        assert_eq!(split(600.0, &[300.0, 300.0, 250.0]), vec![211.77, 211.76, 176.47]);
+        assert_eq!(split(5.0, &[0.0, 300.0]), vec![0.0, 5.0]);
+        let s = split(899.99, &[300.0; 3]);
+        assert!((s.iter().sum::<f64>() - 899.99).abs() < 1e-9 && s.iter().all(|v| *v <= 300.0));
+    }
+
+    /// Three months at once on a scratch copy (never the real database):
+    /// PZ_SCRATCH_URL=postgres://…/pz_scratch cargo test three_months_on_a_copy -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn three_months_on_a_copy() {
+        use super::*;
+        let url = std::env::var("PZ_SCRATCH_URL").expect("PZ_SCRATCH_URL");
+        assert!(url.ends_with("/pz_scratch"));
+        let db = sqlx::PgPool::connect(&url).await.unwrap();
+        crate::prepare_once(&url, &db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let user: CurrentUser = sqlx::query_as(
+            "SELECT u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.theme_color,                     u.theme_mode::text AS theme_mode, u.must_change_password              FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.role = 'partner' LIMIT 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        let plan: Uuid = sqlx::query_scalar("SELECT id FROM plans WHERE kind = 'monthly' AND active AND deleted_at IS NULL LIMIT 1")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let member = Uuid::new_v4();
+        sqlx::query("INSERT INTO members (id, member_no, first_name, joined_on) VALUES ($1, 987654, 'آزمایش', current_date)")
+            .bind(member)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let p = PeriodInput {
+            plan_id: plan,
+            start_date: Some(today()),
+            fee: Some(300.0),
+            discount: 30.0,
+            paid: None,
+            record_only: false,
+            ahead: false,
+            paid_on: None,
+            months: Some(3),
+        };
+        let (_, first) = add_period(&mut tx, &user, Some(member), None, &p).await.ok().expect("add_period");
+        let rows: Vec<(NaiveDate, NaiveDate, f64, f64, NaiveDate, bool)> = sqlx::query_as(
+            "SELECT ms.start_date, ms.end_date, ms.discount::float8, r.amount::float8, r.issued_on, r.bill_group IS NOT NULL              FROM memberships ms JOIN receipts r ON r.membership_id = ms.id WHERE ms.member_id = $1 ORDER BY ms.start_date",
+        )
+        .bind(member)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, today());
+        assert_eq!(rows[1].0, rows[0].1 + chrono::Days::new(1), "months follow one another");
+        assert_eq!(rows[2].0, rows[1].1 + chrono::Days::new(1));
+        assert_eq!(rows.iter().map(|r| r.3).sum::<f64>(), 870.0);
+        assert_eq!((rows[0].4, rows[1].4, rows[2].4), (today(), rows[1].0, rows[2].0), "each month's money counts in its month");
+        assert!(rows.iter().all(|r| r.5 && r.2 == 10.0));
+        assert!(first.is_some());
+        tx.rollback().await.unwrap();
+    }
 }

@@ -7,7 +7,7 @@
 //! can check them before importing for real. Importing the same year again replaces the
 //! rows of the earlier run and never touches anything typed into the app.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 
 use axum::body::Bytes;
@@ -93,13 +93,18 @@ const PARTNER_NAMES: [(&str, &str); 2] = [("rahimi", "جلیل رحیمی"), ("n
 // ---------------------------------------------------------------------------------------
 // What is read from the book.
 
+/// One person of the member sheets: a number and a name. The same number with another
+/// name is another person (two people were given one ID), never merged into the first.
 struct Member {
     no: i32,
-    name: String,
+    /// None: the row has a number but no name.
+    name: Option<String>,
     father: Option<String>,
     phone: Option<String>,
     field: Option<String>,
     tazkira: Option<String>,
+    /// Where the person is in the book: (sheet, row as Excel shows it).
+    rows: Vec<(&'static str, usize)>,
 }
 
 struct Entry {
@@ -110,6 +115,8 @@ struct Entry {
     day: Option<u32>,
     amount: f64,
     note: Option<String>,
+    /// The member row it was paid on (an index into `Book::members`).
+    person: Option<usize>,
 }
 
 /// A supplier bill in the hotspot sheet, or a month's one summary row (Hamal to Asad).
@@ -241,29 +248,32 @@ fn parse(bytes: &[u8]) -> Result<Book, ApiError> {
         }
     }
     let mut book = Book::default();
-    let mut seen = HashSet::new();
-    let mut duplicates = BTreeMap::new();
 
     // Monthly seats: one row per member, the fee paid under each month.
     let name = "عضویت ماهانه";
     let rg = sheet(&sheets, name).ok_or(ApiError::bad("sheet_missing_monthly"))?;
     let h = find_header(rg, "ID").ok_or(ApiError::bad("sheet_missing_monthly"))?;
-    read_member_sheet(&mut book, rg, name, h, "monthly", &mut seen, &mut duplicates);
+    read_member_sheet(&mut book, rg, name, h, "monthly");
 
     // Monthly internet: the same layout, often the same people.
     let name = "انترنت";
     if let Some(rg) = sheet(&sheets, name) {
         if let Some(h) = find_header(rg, "ID") {
-            read_member_sheet(&mut book, rg, name, h, "internet", &mut seen, &mut duplicates);
+            read_member_sheet(&mut book, rg, name, h, "internet");
         }
     }
-    if !duplicates.is_empty() {
-        let list: Vec<String> = duplicates.keys().map(|n: &i32| n.to_string()).collect();
-        book.warn(format!(
-            "{} شماره عضویت دو بار آمده است (اولین ردیف به عنوان عضو ثبت شد، پول هر دو ردیف وارد شد): {}",
-            list.len(),
-            list.join("، ")
-        ));
+    // The same person twice in one sheet: both rows' money counts, as in the book's sums.
+    let mut twice = Vec::new();
+    for m in &book.members {
+        for sheet_name in ["عضویت ماهانه", "انترنت"] {
+            let rows: Vec<String> = m.rows.iter().filter(|(s, _)| *s == sheet_name).map(|(_, r)| r.to_string()).collect();
+            if rows.len() > 1 {
+                twice.push(format!("{} {} («{sheet_name}»، ردیف {})", m.no, m.name.as_deref().unwrap_or("بی‌نام"), rows.join(" و ")));
+            }
+        }
+    }
+    if !twice.is_empty() {
+        book.warn(format!("{} نفر با همان آیدی و همان نام دو ردیف دارند؛ پول هر دو ردیف وارد شد: {}", twice.len(), twice.join("، ")));
     }
 
     let name = "عضویت روزانه";
@@ -288,15 +298,19 @@ fn parse(bytes: &[u8]) -> Result<Book, ApiError> {
     Ok(book)
 }
 
-fn read_member_sheet(
-    book: &mut Book,
-    rg: &Range<Data>,
-    sheet_name: &str,
-    h: usize,
-    category: &'static str,
-    seen: &mut HashSet<i32>,
-    duplicates: &mut BTreeMap<i32, ()>,
-) {
+/// Whether two names in the book (or the book and the app) are one person: spelled alike,
+/// or one a shortened form of the other («محمد رضا» and «محمد رضا احمدی»).
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
+    crate::k50::same_person(a, b) || crate::k50::same_person(b, a)
+}
+
+/// A name that says nothing: an earlier import made members of rows with no name.
+fn no_name(s: &str) -> bool {
+    let s = clean(s);
+    s.is_empty() || s == "بدون نام" || s == "بی‌نام"
+}
+
+fn read_member_sheet(book: &mut Book, rg: &Range<Data>, sheet_name: &'static str, h: usize, category: &'static str) {
     let months = month_cols(rg, h);
     let c_name = col_containing(rg, h, "نام و تخلص").unwrap_or(1);
     let c_father = col_containing(rg, h, "نام پدر");
@@ -324,19 +338,42 @@ fn read_member_sheet(
             }
             continue;
         }
+        let mut who_row = None;
         if let Some(no) = id {
-            if seen.insert(no) {
-                book.members.push(Member {
-                    no,
-                    name: person.clone().unwrap_or_else(|| "بدون نام".into()),
-                    father: opt(r, c_father),
-                    phone: c_phone.and_then(|c| phone(cell(rg, r, c))),
-                    field: opt(r, c_field),
-                    tazkira: opt(r, c_tazkira),
-                });
-            } else if category == "monthly" {
-                duplicates.insert(no, ());
-            }
+            let row = Member {
+                no,
+                name: person.clone().filter(|p| !no_name(p)),
+                father: opt(r, c_father),
+                phone: c_phone.and_then(|c| phone(cell(rg, r, c))),
+                field: opt(r, c_field),
+                tazkira: opt(r, c_tazkira),
+                rows: vec![(sheet_name, excel_row(rg, r))],
+            };
+            // The same number and the same name (or no name on either side) is the same
+            // person, in this sheet or the internet one; another name is someone else.
+            let same = book.members.iter().position(|m| {
+                m.no == no
+                    && match (&m.name, &row.name) {
+                        (Some(a), Some(b)) => same_name(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            });
+            who_row = Some(match same {
+                Some(i) => {
+                    let m = &mut book.members[i];
+                    m.father = m.father.take().or(row.father);
+                    m.phone = m.phone.take().or(row.phone);
+                    m.field = m.field.take().or(row.field);
+                    m.tazkira = m.tazkira.take().or(row.tazkira);
+                    m.rows.extend(row.rows);
+                    i
+                }
+                None => {
+                    book.members.push(row);
+                    book.members.len() - 1
+                }
+            });
         } else if filled > 0 {
             book.warn(format!("{sheet_name}، ردیف {}: {} شمارهٔ عضویت ندارد؛ پولش وارد شد.", excel_row(rg, r), person.as_deref().unwrap_or("")));
         }
@@ -348,7 +385,15 @@ fn read_member_sheet(
                     (None, Some(no)) => format!("شمارهٔ {no}"),
                     (None, None) => String::new(),
                 };
-                book.entries.push(Entry { kind: Kind::Income, key: category, month: m, day: None, amount: v, note: Some(format!("{label} · {who}")) });
+                book.entries.push(Entry {
+                    kind: Kind::Income,
+                    key: category,
+                    month: m,
+                    day: None,
+                    amount: v,
+                    note: Some(format!("{label} · {who}")),
+                    person: who_row,
+                });
             }
         }
     }
@@ -375,7 +420,7 @@ fn read_daily_seats(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
             if let Some(v) = fee(book, rg, sheet_name, r, m, cell(rg, r, c)) {
                 let day = if c > 0 { day_of(cell(rg, r, c - 1)) } else { None };
                 let who = person.clone().unwrap_or_else(|| "مهمان".into());
-                book.entries.push(Entry { kind: Kind::Income, key: "daily", month: m, day, amount: v, note: Some(format!("عضویت روزانه · {who}")) });
+                book.entries.push(Entry { kind: Kind::Income, key: "daily", month: m, day, amount: v, note: Some(format!("عضویت روزانه · {who}")), person: None });
             }
         }
     }
@@ -413,7 +458,7 @@ fn read_daily_expenses(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
                     (Some(p), None) => Some(p.clone()),
                     (None, d) => d,
                 };
-                book.entries.push(Entry { kind: Kind::Expense, key: category, month, day: Some(day), amount: v, note });
+                book.entries.push(Entry { kind: Kind::Expense, key: category, month, day: Some(day), amount: v, note, person: None });
             }
         }
     }
@@ -463,7 +508,7 @@ fn read_withdrawals(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
                 }
                 let Some(v) = num(cell(rg, row, c + 1)).filter(|v| *v != 0.0) else { continue };
                 let note = text(cell(rg, row, c + 2));
-                book.entries.push(Entry { kind, key, month, day: day_of(cell(rg, row, *c)), amount: v, note });
+                book.entries.push(Entry { kind, key, month, day: day_of(cell(rg, row, *c)), amount: v, note, person: None });
             }
         }
         r = end;
@@ -630,7 +675,7 @@ fn read_statement(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
                     for (i, v) in values.iter().enumerate() {
                         if let Some(v) = v.filter(|v| *v != 0.0) {
                             let note = format!("از صورت حساب ماه {}", MONTHS[i]);
-                            book.entries.push(Entry { kind: l.kind, key: l.key, month: i as u32 + 1, day: None, amount: v, note: Some(note) });
+                            book.entries.push(Entry { kind: l.kind, key: l.key, month: i as u32 + 1, day: None, amount: v, note: Some(note), person: None });
                         }
                     }
                 }
@@ -662,6 +707,10 @@ pub struct Params {
     /// statement's figure, or the sheet's profit where the statement has none) or "statement".
     #[serde(default)]
     hotspot_income: Option<String>,
+    /// IDs (comma-separated) where a partner said the book is right: the member who holds
+    /// the ID in the app becomes the person the book has under it (see `Clash`).
+    #[serde(default)]
+    take_excel: Option<String>,
 }
 
 /// One month of the hotspot sheet as imported.
@@ -704,7 +753,187 @@ pub struct Report {
     replaces: Option<chrono::DateTime<chrono::Utc>>,
     lines: Vec<LineReport>,
     hotspot: HotReport,
+    /// IDs given to two different people; shown before anything else.
+    clashes: Vec<Clash>,
     warnings: Vec<String>,
+}
+
+/// One ID that the app and the book, or two rows of the book, give to different people.
+/// Nothing of the book's person is joined to the app's member (no money, no father's name,
+/// no phone); their payments still count in the income, under nobody.
+#[derive(Serialize)]
+struct Clash {
+    no: i32,
+    /// The member holding the ID in the app; None when only the book has it (twice).
+    app: Option<AppSide>,
+    /// The people of the book under this ID who are not that member.
+    excel: Vec<ExcelSide>,
+    /// "kept": the app member stays as it is; "excel": the app member became the book's
+    /// person (`take_excel`); "none": two people in the book, so neither was added.
+    outcome: &'static str,
+    /// One person in the book and none of the book's rows is the app member: a partner
+    /// may say the book is right.
+    can_take_excel: bool,
+}
+
+#[derive(Serialize)]
+struct AppSide {
+    name: String,
+    father: Option<String>,
+    phone: Option<String>,
+    /// Made by an earlier import (not typed at the desk).
+    from_excel: bool,
+    deleted: bool,
+    /// What the app holds for this member: periods, bills and photos or scans.
+    periods: i64,
+    bills: i64,
+    documents: i64,
+}
+
+#[derive(Serialize)]
+struct ExcelSide {
+    name: Option<String>,
+    father: Option<String>,
+    phone: Option<String>,
+    /// «عضویت ماهانه، ردیف 918».
+    rows: Vec<String>,
+    /// What this person paid in the book, and in which months.
+    paid: f64,
+    months: Vec<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct Held {
+    id: Uuid,
+    member_no: i32,
+    name: String,
+    father_name: Option<String>,
+    phone: Option<String>,
+    deleted: bool,
+    from_excel: bool,
+    periods: i64,
+    bills: i64,
+    documents: i64,
+}
+
+/// How each person of the book meets the app's members.
+#[derive(Default)]
+struct Matched {
+    /// The app member each book person's money belongs to (by index into the book's members).
+    member: Vec<Option<Uuid>>,
+    /// New members to add (book people whose ID nobody holds).
+    insert: Vec<usize>,
+    /// Book people with no name, to join to the new member of the same ID.
+    insert_unnamed: Vec<(usize, usize)>,
+    /// Existing members whose empty fields (and a missing name) the book fills.
+    fill: Vec<(Uuid, usize)>,
+    /// Existing members that become the book's person.
+    take: Vec<(Uuid, usize)>,
+    clashes: Vec<Clash>,
+}
+
+/// Joins the book's people to the app's members by ID and name. An ID's member in the app
+/// is the book's person only when the names are alike; otherwise it is a clash and nothing
+/// is joined, unless the partner chose the book's person for that ID (`take`).
+fn match_members(members: &[Member], entries: &[Entry], held: &[Held], take: &[i32], warnings: &mut Vec<String>) -> Matched {
+    let mut out = Matched { member: vec![None; members.len()], ..Default::default() };
+    let mut by_no: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (i, m) in members.iter().enumerate() {
+        by_no.entry(m.no).or_default().push(i);
+    }
+    let side = |i: usize| {
+        let m = &members[i];
+        let mut paid = 0.0;
+        let mut months = Vec::new();
+        for e in entries.iter().filter(|e| e.person == Some(i)) {
+            paid += e.amount;
+            let month = MONTHS[e.month as usize - 1];
+            months.push(if e.key == "internet" { format!("{month} (انترنت)") } else { month.to_string() });
+        }
+        ExcelSide {
+            name: m.name.clone(),
+            father: m.father.clone(),
+            phone: m.phone.clone(),
+            rows: m.rows.iter().map(|(s, r)| format!("{s}، ردیف {r}")).collect(),
+            paid,
+            months,
+        }
+    };
+    for (no, people) in by_no {
+        let (named, unnamed): (Vec<usize>, Vec<usize>) = people.iter().partition(|&&i| members[i].name.is_some());
+        match held.iter().find(|h| h.member_no == no) {
+            Some(a) => {
+                let app_named = !no_name(&a.name);
+                let (mut fit, mut other): (Vec<usize>, Vec<usize>) =
+                    named.iter().partition(|&&i| !app_named || same_name(members[i].name.as_deref().unwrap_or(""), &a.name));
+                // A member with no name takes the book's name only when the book has one person.
+                if !app_named && fit.len() > 1 {
+                    other.append(&mut fit);
+                }
+                for &i in fit.iter().chain(&unnamed) {
+                    out.member[i] = Some(a.id);
+                    out.fill.push((a.id, i));
+                }
+                // An earlier import made a member of a row that has only a number (a note
+                // such as «بابت برابرشدن حسابات», or a total).
+                if !app_named && named.is_empty() && !a.deleted && a.periods + a.bills + a.documents == 0 && warnings.len() < MAX_WARNINGS {
+                    warnings.push(format!(
+                        "آیدی {no} نه در اکسل نام دارد نه در برنامه («بدون نام»). اگر این ردیف عضو نیست، آن عضو را از «اعضا» حذف کنید؛ پولش در درآمد می‌ماند."
+                    ));
+                }
+                if other.is_empty() {
+                    continue;
+                }
+                let can_take = other.len() == 1 && fit.is_empty();
+                let taking = can_take && take.contains(&no);
+                if taking {
+                    out.member[other[0]] = Some(a.id);
+                    out.take.push((a.id, other[0]));
+                }
+                out.clashes.push(Clash {
+                    no,
+                    app: Some(AppSide {
+                        name: a.name.clone(),
+                        father: a.father_name.clone(),
+                        phone: a.phone.clone(),
+                        from_excel: a.from_excel,
+                        deleted: a.deleted,
+                        periods: a.periods,
+                        bills: a.bills,
+                        documents: a.documents,
+                    }),
+                    excel: other.iter().map(|&i| side(i)).collect(),
+                    outcome: if taking { "excel" } else { "kept" },
+                    can_take_excel: can_take,
+                });
+            }
+            None if named.len() == 1 => {
+                out.insert.push(named[0]);
+                out.insert_unnamed.extend(unnamed.iter().map(|&u| (u, named[0])));
+            }
+            None if named.is_empty() => {
+                for &i in &unnamed {
+                    let m = &members[i];
+                    let said: Vec<&str> = [&m.father, &m.phone].into_iter().flatten().map(|s| s.as_str()).collect();
+                    let said = if said.is_empty() { String::new() } else { format!(" (در ردیف نوشته: {})", said.join("، ")) };
+                    if warnings.len() < MAX_WARNINGS {
+                        warnings.push(format!(
+                            "آیدی {no} در {} نام ندارد{said}؛ پولش در درآمد آمد ولی عضوی ساخته نشد.",
+                            m.rows.iter().map(|(s, r)| format!("«{s}» ردیف {r}")).collect::<Vec<_>>().join(" و ")
+                        ));
+                    }
+                }
+            }
+            None => out.clashes.push(Clash {
+                no,
+                app: None,
+                excel: named.iter().map(|&i| side(i)).collect(),
+                outcome: "none",
+                can_take_excel: false,
+            }),
+        }
+    }
+    out
 }
 
 #[derive(Serialize)]
@@ -849,33 +1078,101 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .execute(&mut *db)
         .await?;
 
-    // Members: new numbers are added; for numbers already in the app only empty fields are filled.
+    // Members: a new ID is added; an ID the app has is the same member only when the names
+    // are alike, and then only its empty fields are filled (see match_members).
+    let take: Vec<i32> =
+        p.take_excel.as_deref().unwrap_or("").split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let nos: Vec<i32> = members.iter().map(|m| m.no).collect();
+    let held: Vec<Held> = sqlx::query_as(
+        r#"
+        SELECT m.id, m.member_no, trim(concat_ws(' ', m.first_name, m.last_name)) AS name, m.father_name, m.phone,
+               m.deleted_at IS NOT NULL AS deleted, m.import_batch_id IS NOT NULL AS from_excel,
+               (SELECT count(*) FROM memberships x WHERE x.member_id = m.id AND x.deleted_at IS NULL) AS periods,
+               (SELECT count(*) FROM receipts r JOIN memberships x ON x.id = r.membership_id
+                 WHERE x.member_id = m.id AND NOT r.voided AND r.deleted_at IS NULL) AS bills,
+               (SELECT count(*) FROM member_documents d WHERE d.member_id = m.id AND d.deleted_at IS NULL) AS documents
+        FROM members m WHERE m.member_no = ANY($1) AND m.no_freed_at IS NULL
+        "#,
+    )
+    .bind(&nos)
+    .fetch_all(&mut *db)
+    .await?;
+    let mut matched = match_members(&members, &entries, &held, &take, &mut warnings);
+
     // Their join date is unknown, so they count as members from before this year.
     let before_year = solar::to_gregorian(year, 1, 1).expect("1 Hamal") - Days::new(1);
-    let inserted: Vec<bool> = sqlx::query_scalar(
+    let add: Vec<&Member> = matched.insert.iter().map(|&i| &members[i]).collect();
+    let added: Vec<(i32, Uuid)> = sqlx::query_as(
         r#"
         INSERT INTO members (id, member_no, first_name, father_name, phone, field_of_study, tazkira_no, joined_on, import_batch_id)
         SELECT gen_random_uuid(), m.no, m.name, m.father, m.phone, m.field, m.tazkira, $7, $8
         FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS m(no, name, father, phone, field, tazkira)
-        ON CONFLICT (member_no) WHERE no_freed_at IS NULL DO UPDATE SET
-            father_name    = COALESCE(members.father_name, EXCLUDED.father_name),
-            phone          = COALESCE(members.phone, EXCLUDED.phone),
-            field_of_study = COALESCE(members.field_of_study, EXCLUDED.field_of_study),
-            tazkira_no     = COALESCE(members.tazkira_no, EXCLUDED.tazkira_no)
-        RETURNING (xmax = 0)
+        ON CONFLICT (member_no) WHERE no_freed_at IS NULL DO NOTHING
+        RETURNING member_no, id
         "#,
     )
-    .bind(members.iter().map(|m| m.no).collect::<Vec<_>>())
-    .bind(members.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
-    .bind(members.iter().map(|m| m.father.clone()).collect::<Vec<_>>())
-    .bind(members.iter().map(|m| m.phone.clone()).collect::<Vec<_>>())
-    .bind(members.iter().map(|m| m.field.clone()).collect::<Vec<_>>())
-    .bind(members.iter().map(|m| m.tazkira.clone()).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.no).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.father.clone()).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.phone.clone()).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.field.clone()).collect::<Vec<_>>())
+    .bind(add.iter().map(|m| m.tazkira.clone()).collect::<Vec<_>>())
     .bind(before_year)
     .bind(batch)
     .fetch_all(&mut *db)
     .await?;
-    let members_new = inserted.iter().filter(|x| **x).count() as i64;
+    let members_new = added.len() as i64;
+    for &i in &matched.insert {
+        matched.member[i] = added.iter().find(|(no, _)| *no == members[i].no).map(|(_, id)| *id);
+    }
+    for &(u, i) in &matched.insert_unnamed {
+        matched.member[u] = matched.member[i];
+    }
+    // The book fills what the app left empty, and a name for a member that had none.
+    let fill: Vec<(Uuid, &Member)> = matched.fill.iter().map(|&(id, i)| (id, &members[i])).collect();
+    sqlx::query(
+        r#"
+        UPDATE members m SET
+            first_name     = CASE WHEN trim(concat_ws(' ', m.first_name, m.last_name)) IN ('', 'بدون نام', 'بی‌نام')
+                                  AND x.name IS NOT NULL THEN x.name ELSE m.first_name END,
+            father_name    = COALESCE(m.father_name, x.father),
+            phone          = COALESCE(m.phone, x.phone),
+            field_of_study = COALESCE(m.field_of_study, x.field),
+            tazkira_no     = COALESCE(m.tazkira_no, x.tazkira)
+        FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS x(id, name, father, phone, field, tazkira)
+        WHERE m.id = x.id AND (
+            (trim(concat_ws(' ', m.first_name, m.last_name)) IN ('', 'بدون نام', 'بی‌نام') AND x.name IS NOT NULL)
+            OR (m.father_name IS NULL AND x.father IS NOT NULL) OR (m.phone IS NULL AND x.phone IS NOT NULL)
+            OR (m.field_of_study IS NULL AND x.field IS NOT NULL) OR (m.tazkira_no IS NULL AND x.tazkira IS NOT NULL))
+        "#,
+    )
+    .bind(fill.iter().map(|(id, _)| *id).collect::<Vec<_>>())
+    .bind(fill.iter().map(|(_, m)| m.name.clone()).collect::<Vec<_>>())
+    .bind(fill.iter().map(|(_, m)| m.father.clone()).collect::<Vec<_>>())
+    .bind(fill.iter().map(|(_, m)| m.phone.clone()).collect::<Vec<_>>())
+    .bind(fill.iter().map(|(_, m)| m.field.clone()).collect::<Vec<_>>())
+    .bind(fill.iter().map(|(_, m)| m.tazkira.clone()).collect::<Vec<_>>())
+    .execute(&mut *db)
+    .await?;
+    // A partner said the book is right: the member becomes the book's person (what the book
+    // leaves empty is kept as it was).
+    for &(id, i) in &matched.take {
+        let m = &members[i];
+        sqlx::query(
+            "UPDATE members SET first_name = $2, last_name = NULL, father_name = COALESCE($3, father_name), \
+                 phone = COALESCE($4, phone), field_of_study = COALESCE($5, field_of_study), tazkira_no = COALESCE($6, tazkira_no) \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&m.name)
+        .bind(&m.father)
+        .bind(&m.phone)
+        .bind(&m.field)
+        .bind(&m.tazkira)
+        .execute(&mut *db)
+        .await?;
+    }
+    let Matched { member: member_of, clashes, .. } = matched;
 
     let dated: Vec<(&Entry, NaiveDate)> = entries.iter().map(|e| (e, date_of(year, e.month, e.day, &mut warnings))).collect();
     let tag = format!("اکسل {year}");
@@ -887,11 +1184,13 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     // Income: one receipt per Excel cell. Imported receipts were never printed.
     let income: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Income).collect();
     let short = &batch.simple().to_string()[..6];
+    // Each monthly or internet cell belongs to the member of its row (v_excel_months), when
+    // that row's person is a member; a clash leaves it with nobody.
     sqlx::query(
         r#"
-        INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, import_batch_id)
-        SELECT gen_random_uuid(), r.no, 'hall', r.day, r.amount, r.category, r.note, $6
-        FROM unnest($1::text[], $2::date[], $3::numeric[], $4::text[], $5::text[]) AS r(no, day, amount, category, note)
+        INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, member_id, import_batch_id)
+        SELECT gen_random_uuid(), r.no, 'hall', r.day, r.amount, r.category, r.note, r.member, $7
+        FROM unnest($1::text[], $2::date[], $3::numeric[], $4::text[], $5::text[], $6::uuid[]) AS r(no, day, amount, category, note, member)
         "#,
     )
     .bind(income.iter().enumerate().map(|(i, _)| format!("XL{year}-{short}-{:05}", i + 1)).collect::<Vec<_>>())
@@ -899,15 +1198,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(income.iter().map(|(e, _)| e.amount).collect::<Vec<f64>>())
     .bind(income.iter().map(|(e, _)| e.key.to_string()).collect::<Vec<_>>())
     .bind(income.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
-    .bind(batch)
-    .execute(&mut *db)
-    .await?;
-    // Each monthly or internet cell belongs to the member of its row (v_excel_months).
-    sqlx::query(
-        "UPDATE receipts r SET member_id = m.id FROM members m \
-         WHERE r.import_batch_id = $1 AND r.income_category IN ('monthly', 'internet') AND m.deleted_at IS NULL \
-           AND m.member_no = NULLIF(substring(r.description FROM 'شمارهٔ ([0-9]+)'), '')::int",
-    )
+    .bind(income.iter().map(|(e, _)| e.person.and_then(|i| member_of[i])).collect::<Vec<Option<Uuid>>>())
     .bind(batch)
     .execute(&mut *db)
     .await?;
@@ -1031,6 +1322,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         replaces,
         lines,
         hotspot,
+        clashes,
         warnings,
     };
     sqlx::query("UPDATE import_batches SET summary = $2 WHERE id = $1")
@@ -1038,6 +1330,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .bind(serde_json::json!({
             "members": report.members, "members_new": report.members_new, "receipts": report.receipts,
             "expenses": report.expenses, "withdrawals": report.withdrawals, "warnings": report.warnings.len(),
+            "clashes": report.clashes.len(),
         }))
         .execute(&mut *db)
         .await?;
@@ -1222,4 +1515,183 @@ async fn store_hotspot(
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn person(no: i32, name: Option<&str>, row: usize) -> Member {
+        Member {
+            no,
+            name: name.map(String::from),
+            father: Some(format!("پدر {row}")),
+            phone: None,
+            field: None,
+            tazkira: None,
+            rows: vec![("عضویت ماهانه", row)],
+        }
+    }
+
+    fn paid(person: usize, month: u32) -> Entry {
+        Entry { kind: Kind::Income, key: "monthly", month, day: None, amount: 250.0, note: None, person: Some(person) }
+    }
+
+    fn app(no: i32, name: &str) -> Held {
+        Held {
+            id: Uuid::new_v4(),
+            member_no: no,
+            name: name.into(),
+            father_name: None,
+            phone: None,
+            deleted: false,
+            from_excel: true,
+            periods: 0,
+            bills: 0,
+            documents: 0,
+        }
+    }
+
+    #[test]
+    fn an_id_with_another_name_is_not_joined() {
+        // The app's 30052 is Zeinab; the book has Abdulrashid under 30052 and Zeinab under 20002.
+        let members = vec![person(20002, Some("زینب جعفری"), 7), person(30052, Some("عبدالرشید رحیمی"), 918)];
+        let entries = vec![paid(0, 6), paid(1, 1), paid(1, 2)];
+        let held = vec![app(30052, "زینب جعفری")];
+        let mut w = Vec::new();
+        let m = match_members(&members, &entries, &held, &[], &mut w);
+        assert_eq!(m.insert, vec![0]);
+        assert!(m.fill.is_empty() && m.take.is_empty());
+        assert_eq!(m.member[1], None, "Abdulrashid's money must not go to Zeinab");
+        assert_eq!(m.clashes.len(), 1);
+        let c = &m.clashes[0];
+        assert_eq!((c.no, c.outcome, c.can_take_excel), (30052, "kept", true));
+        assert_eq!(c.excel[0].paid, 500.0);
+        assert_eq!(c.excel[0].months, vec!["حمل", "ثور"]);
+
+        // The partner says the book is right: the app's 30052 becomes Abdulrashid.
+        let m = match_members(&members, &entries, &held, &[30052], &mut w);
+        assert_eq!(m.take, vec![(held[0].id, 1)]);
+        assert_eq!(m.member[1], Some(held[0].id));
+        assert_eq!(m.clashes[0].outcome, "excel");
+    }
+
+    #[test]
+    fn two_people_under_one_id_in_the_book() {
+        let members = vec![person(30052, Some("زینب جعفری"), 7), person(30052, Some("عبدالرشید رحیمی"), 918)];
+        let mut w = Vec::new();
+        let m = match_members(&members, &[], &[], &[30052], &mut w);
+        assert!(m.insert.is_empty(), "neither is made a member until the book is fixed");
+        assert_eq!((m.clashes[0].outcome, m.clashes[0].can_take_excel, m.clashes[0].excel.len()), ("none", false, 2));
+
+        // One of them is the app's member: that one is joined, the other is the clash.
+        let held = vec![app(30052, "زینب جعفری")];
+        let m = match_members(&members, &[], &held, &[], &mut w);
+        assert_eq!(m.member, vec![Some(held[0].id), None]);
+        assert_eq!(m.clashes[0].excel[0].name.as_deref(), Some("عبدالرشید رحیمی"));
+        assert!(!m.clashes[0].can_take_excel);
+    }
+
+    #[test]
+    fn alike_names_and_missing_names() {
+        let members = vec![
+            person(1, Some("محمد رضا"), 10),
+            person(2, Some("مبارکه فراسو"), 11),
+            person(3, None, 12),
+            person(4, None, 13),
+            person(5, Some("Ramazan Nawid"), 14),
+        ];
+        let held = vec![app(1, "محمد رضا احمدی"), app(2, "بدون نام"), app(3, "حسین"), app(5, "رضا سخایی")];
+        let mut w = Vec::new();
+        let m = match_members(&members, &[], &held, &[], &mut w);
+        // A shortened name is the same person; a member with no name takes the book's.
+        assert_eq!(m.fill, vec![(held[0].id, 0), (held[1].id, 1), (held[2].id, 2)]);
+        // A row with only a number joins the member who has it, and makes nobody new.
+        assert_eq!(m.member[3], None);
+        assert!(m.insert.is_empty());
+        assert_eq!(w.len(), 1);
+        assert_eq!(m.clashes.iter().map(|c| c.no).collect::<Vec<_>>(), vec![5]);
+    }
+
+    #[test]
+    fn the_sheet_keeps_two_people_of_one_id_apart() {
+        let mut rg: Range<Data> = Range::new((0, 0), (4, 3));
+        for (c, h) in ["ID", "نام و تخلص", "نام پدر", "حمل"].iter().enumerate() {
+            rg.set_value((0, c as u32), Data::String(h.to_string()));
+        }
+        let rows = [(30052.0, "زینب جعفری", "", 250.0), (20003.0, "جمشید حسین", "", 0.0), (30052.0, "عبدالرشید رحیمی", "ظفرعلی", 250.0), (30052.0, "زینب جعفری", "علی", 300.0)];
+        for (r, (id, name, father, fee)) in rows.iter().enumerate() {
+            let r = r as u32 + 1;
+            rg.set_value((r, 0), Data::Float(*id));
+            rg.set_value((r, 1), Data::String(name.to_string()));
+            if !father.is_empty() {
+                rg.set_value((r, 2), Data::String(father.to_string()));
+            }
+            rg.set_value((r, 3), Data::Float(*fee));
+        }
+        let mut book = Book::default();
+        read_member_sheet(&mut book, &rg, "عضویت ماهانه", 0, "monthly");
+        let names: Vec<_> = book.members.iter().map(|m| (m.no, m.name.clone().unwrap(), m.father.clone())).collect();
+        assert_eq!(names, vec![
+            (30052, "زینب جعفری".into(), Some("علی".into())),
+            (20003, "جمشید حسین".into(), None),
+            (30052, "عبدالرشید رحیمی".into(), Some("ظفرعلی".into())),
+        ]);
+        let people: Vec<_> = book.entries.iter().map(|e| e.person).collect();
+        assert_eq!(people, vec![Some(0), Some(2), Some(0)]);
+    }
+    /// Runs the import's database side on a scratch copy (never the real one):
+    /// PZ_SCRATCH_URL=postgres://…/pz_scratch cargo test store_on_a_copy -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn store_on_a_copy() {
+        let url = std::env::var("PZ_SCRATCH_URL").expect("PZ_SCRATCH_URL");
+        assert!(url.ends_with("/pz_scratch"));
+        let db = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let user: CurrentUser = sqlx::query_as(
+            "SELECT u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.theme_color, \
+                    u.theme_mode::text AS theme_mode, u.must_change_password \
+             FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.role = 'partner' LIMIT 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        let book = Book {
+            members: vec![person(20002, Some("زینب جعفری"), 7), person(30052, Some("عبدالرشید رحیمی"), 918), person(999001, Some("عضو تازه"), 2000)],
+            entries: vec![paid(0, 6), paid(1, 1), paid(1, 2), paid(2, 3)],
+            ..Default::default()
+        };
+        let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
+        let r = store(&mut tx, &user, &p, "test", book).await.ok().expect("store");
+        assert_eq!(r.clashes.len(), 1);
+        assert_eq!(r.clashes[0].app.as_ref().unwrap().name, "زینب جعفری");
+        let linked: Vec<(i32, Option<i32>)> = sqlx::query_as(
+            "SELECT (r.amount)::int, m.member_no FROM receipts r LEFT JOIN members m ON m.id = r.member_id \
+             WHERE r.deleted_at IS NULL AND r.import_batch_id = (SELECT id FROM import_batches WHERE replaced_at IS NULL AND file_sha256 = 'test') \
+             ORDER BY r.receipt_no",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(linked, vec![(250, Some(20002)), (250, None), (250, None), (250, Some(999001))]);
+        let father: Option<String> = sqlx::query_scalar("SELECT father_name FROM members WHERE member_no = 999001").fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(father.as_deref(), Some("پدر 2000"));
+
+        // «اکسل درست است» for 30052.
+        let book = Book {
+            members: vec![person(20002, Some("زینب جعفری"), 7), person(30052, Some("عبدالرشید رحیمی"), 918)],
+            entries: vec![paid(0, 6), paid(1, 1)],
+            ..Default::default()
+        };
+        let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: Some("30052".into()) };
+        let r = store(&mut tx, &user, &p, "test2", book).await.ok().expect("store");
+        assert_eq!(r.clashes[0].outcome, "excel");
+        let who: (String, Option<String>) = sqlx::query_as("SELECT first_name, father_name FROM members WHERE member_no = 30052 AND no_freed_at IS NULL")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(who.0, "عبدالرشید رحیمی");
+        tx.rollback().await.unwrap();
+    }
 }

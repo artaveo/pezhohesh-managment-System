@@ -183,6 +183,19 @@ export type ImportReport = {
   members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
   replaces: string | null; lines: ImportLine[]; warnings: string[];
   hotspot: { buys: number; counts: number; months: ImportHotMonth[] };
+  /** IDs given to two different people (the app and the book, or two rows of the book). */
+  clashes: ImportClash[];
+};
+/**
+ * kept: the app member stays as it is and the book's person is joined to nobody;
+ * excel: the app member became the book's person (take_excel); none: two people in the book, neither added.
+ */
+export type ImportClash = {
+  no: number;
+  app: { name: string; father: string | null; phone: string | null; from_excel: boolean; deleted: boolean; periods: number; bills: number; documents: number } | null;
+  excel: { name: string | null; father: string | null; phone: string | null; rows: string[]; paid: number; months: string[] }[];
+  outcome: "kept" | "excel" | "none";
+  can_take_excel: boolean;
 };
 export type ImportHotMonth = {
   cards_bought: number; gb_bought: number; bought: number; cards_sold: number; gb_sold: number; sales: number;
@@ -253,6 +266,8 @@ export type PeriodInput = {
   record_only?: boolean; ahead?: boolean;
   /** The day the money was taken; the income goes to that day. Left out: today. */
   paid_on?: string | null;
+  /** Months paid at once: one period and bill per month. `fee` is then each month's; `discount` and `paid` the whole. */
+  months?: number;
 };
 export type Saved = { member_id: string | null; member_no: number | null; membership_id: string | null; receipt_id: string | null };
 export type Member = Required<{ [K in keyof MemberInput]: Exclude<MemberInput[K], undefined> }> & { id: string; member_no: number; joined_on: string };
@@ -290,6 +305,13 @@ export type Bill = {
   pays_rest: boolean;
   /** A period's bill: paid by this bill and the ones before it, and still owed after it. */
   paid_so_far: number | null; remaining: number | null;
+  /** Several months paid at once: every month's bill of that payment (printed as one). */
+  bill_group: string | null;
+  months: BillMonth[];
+};
+export type BillMonth = {
+  receipt_no: string; issued_on: string; start_date: string; end_date: string;
+  fee: number; discount: number; amount: number; owed: number; voided: boolean;
 };
 export type BillPage = { total: number; sum: number; rows: Bill[] };
 export type Category = { id: string; name: string };
@@ -498,9 +520,11 @@ export const api = {
     request<Dashboard>(`/dashboard?${new URLSearchParams(params)}`, { signal }),
   periods: (bounds: string[], categories: boolean, signal?: AbortSignal) =>
     request<Periods>(`/reports/periods?${new URLSearchParams({ bounds: bounds.join(","), categories: String(categories) })}`, { signal }),
-  importExcel: async (file: File, o: { year: number; password: string; commit: boolean }) => {
+  importExcel: async (file: File, o: { year: number; password: string; commit: boolean; takeExcel?: number[] }) => {
     // The book goes up as-is; the API opens it (with its password) and reads it.
-    const res = await fetch(`${API_BASE}/api/v1/import/excel?${new URLSearchParams({ year: String(o.year), commit: String(o.commit), file_name: file.name })}`, {
+    const q = new URLSearchParams({ year: String(o.year), commit: String(o.commit), file_name: file.name });
+    if (o.takeExcel?.length) q.set("take_excel", o.takeExcel.join(","));
+    const res = await fetch(`${API_BASE}/api/v1/import/excel?${q}`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",
@@ -714,6 +738,7 @@ export function errorText(e: unknown): string {
     case "member_number": return "این آیدی مال یک عضو برنامه است. نام و آیدی‌اش را در صفحهٔ همان عضو عوض کنید.";
     case "bad_dates": return "تاریخ شروع و پایان را با هم بدهید و پایان پیش از شروع نباشد.";
     case "bad_member_no": return "شمارهٔ عضویت باید یک عدد مثبت باشد.";
+    case "bad_months": return "از 1 تا 12 ماه را می‌شود یک‌جا ثبت کرد؛ عضویت روزانه فقط یک روز است.";
     case "bad_plan": return "این نوع عضویت پیدا نشد یا غیرفعال است.";
     case "bad_amount": return "مبلغ درست نیست (تخفیف نباید از مبلغ بیشتر باشد).";
     case "bad_paid": return "پول پرداخت‌شده درست نیست. باید بیشتر از صفر باشد و از مبلغی که باید پرداخت شود بیشتر نباشد.";

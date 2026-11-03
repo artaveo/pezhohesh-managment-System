@@ -88,6 +88,12 @@ export function VoidBill({ bill, note, onClose }: { bill: Bill; note?: string; o
         {fa(bill.amount)} افغانی، {bill.customer ?? bill.description}. بل پاک نمی‌شود؛ با نشان «باطل» می‌ماند و از درآمد کم می‌شود.
         {note ? ` ${note}` : bill.book_loan_id ? " اگر ضمانتش هنوز نزد ماست، کتاب دوباره «بیرون» حساب می‌شود تا برگشتش را با مبلغ درست ثبت کنید." : bill.start_date && " عضویتی که با این بل ثبت شده هم برداشته می‌شود."}
       </p>
+      {bill.bill_group && (
+        <p className="notice form-error">
+          این بل یکی از ماه‌های یک پرداخت چندماهه است. همهٔ ماه‌های همان پرداخت با هم باطل می‌شوند و دوره‌هایشان برداشته می‌شود.
+          اگر فقط یک ماه اشتباه است، به جای باطل کردن، تاریخ همان دوره را در صفحهٔ عضو درست کنید.
+        </p>
+      )}
       <label className="field wide"><span>دلیل *</span><input value={reason} onChange={(e) => setReason(e.target.value)} autoFocus placeholder="مثلاً: مبلغ اشتباه نوشته شد" /></label>
       {error && <p className="form-error">{error}</p>}
       <div className="actions">

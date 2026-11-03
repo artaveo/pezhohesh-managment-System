@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MONTHS, addDays, formatDay, iso, monthStart, monthsOfYear, nextMonth, nextYear, parseIso, prevMonth, prevYear, toSolar, yearStart } from "../lib/solar";
+import { MONTHS, addDays, formatDay, iso, lastAheadMonth, monthStart, monthsOfYear, nextMonth, nextYear, parseIso, prevMonth, prevYear, toSolar, yearStart } from "../lib/solar";
 import { SolarDate } from "./SolarDate";
 
 export type Span = "today" | "month" | "year" | "all" | "range";
@@ -53,8 +53,9 @@ export function PeriodPicker({ value, onChange, spans = ["today", "month", "year
   spans?: Span[];
 }) {
   const set = (patch: Partial<PeriodState>) => onChange({ ...value, ...patch });
-  const thisMonth = iso(monthStart());
-  const thisYear = iso(yearStart());
+  // Months paid in advance have their bills in their own month: the steps go that far ahead.
+  const lastMonth = iso(lastAheadMonth());
+  const lastYear = iso(nextYear(yearStart()));
   const ms = parseIso(value.month);
   const ys = parseIso(value.year);
   const months = monthsOfYear(yearStart(ms)).slice(0, 12);
@@ -73,14 +74,14 @@ export function PeriodPicker({ value, onChange, spans = ["today", "month", "year
           <select aria-label="ماه" value={value.month} onChange={(e) => set({ month: e.target.value })}>
             {months.map((m) => <option key={iso(m)} value={iso(m)}>{solarMonth(m)}</option>)}
           </select>
-          <button className="btn ghost small" disabled={value.month >= thisMonth} onClick={() => set({ month: iso(nextMonth(ms)) })}>ماه بعد ›</button>
+          <button className="btn ghost small" disabled={value.month >= lastMonth} onClick={() => set({ month: iso(nextMonth(ms)) })}>ماه بعد ›</button>
         </div>
       )}
       {value.span === "year" && (
         <div className="period-step">
           <button className="btn ghost small" onClick={() => set({ year: iso(prevYear(ys)) })}>‹ سال قبل</button>
           <strong className="num">{toSolar(ys).y}</strong>
-          <button className="btn ghost small" disabled={value.year >= thisYear} onClick={() => set({ year: iso(nextYear(ys)) })}>سال بعد ›</button>
+          <button className="btn ghost small" disabled={value.year >= lastYear} onClick={() => set({ year: iso(nextYear(ys)) })}>سال بعد ›</button>
         </div>
       )}
       {value.span === "range" && (

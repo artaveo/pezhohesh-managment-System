@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, errorText, type Bill } from "../lib/api";
+import { api, errorText, type Bill, type BillMonth } from "../lib/api";
 import { fa, formatDay, formatNumeric } from "../lib/solar";
 import { inWords } from "../lib/words";
 import { Modal } from "./Modal";
@@ -10,16 +10,12 @@ export const CATEGORY_LABEL: Record<string, string> = {
   books: "امانت کتاب", misc: "عواید متفرقه", services: "طلبات (عواید خدمات)",
 };
 
-/** The paper bill, sized for A5 (half an A4 sheet) on an ordinary printer. */
-export function BillSheet({ bill }: { bill: Bill }) {
-  const copy = bill.printed_count > 0;
-  const what = bill.plan_name ?? CATEGORY_LABEL[bill.income_category] ?? bill.income_category;
-  // A period paid in parts: this bill pays some, and what is left is printed under it.
-  const part = bill.pays_rest || (bill.remaining ?? 0) > 0;
+/** The top of every paper bill: the hall, the bill's number and date, and who paid. */
+function BillHead({ bill, no }: { bill: Bill; no: string }) {
   return (
-    <article className="bill-sheet" dir="rtl">
+    <>
       {bill.voided && <div className="bill-stamp void">باطل شده</div>}
-      {!bill.voided && copy && <div className="bill-stamp copy">کاپی</div>}
+      {!bill.voided && bill.printed_count > 0 && <div className="bill-stamp copy">کاپی</div>}
       <header>
         <img src="/logo-study-hall.png" alt="" />
         <div>
@@ -29,14 +25,62 @@ export function BillSheet({ bill }: { bill: Bill }) {
         <span className="bill-title">بل پرداخت</span>
       </header>
       <dl className="bill-meta">
-        <div><dt>شمارهٔ بل</dt><dd dir="ltr">{bill.receipt_no}</dd></div>
-        <div><dt>تاریخ</dt><dd>{formatDay(bill.issued_on)} <small dir="ltr">({formatNumeric(bill.issued_on)})</small></dd></div>
+        <div><dt>شمارهٔ بل</dt><dd dir="ltr">{no}</dd></div>
+        <div><dt>تاریخ</dt><dd>{formatDay(bill.months[0]?.issued_on ?? bill.issued_on)} <small dir="ltr">({formatNumeric(bill.months[0]?.issued_on ?? bill.issued_on)})</small></dd></div>
         {bill.customer && <div><dt>نام</dt><dd>{bill.customer}</dd></div>}
         {bill.father_name && <div><dt>نام پدر</dt><dd>{bill.father_name}</dd></div>}
         {bill.member_no !== null && <div><dt>آیدی</dt><dd dir="ltr">{bill.member_no}</dd></div>}
         {bill.card_no && <div><dt>کارت امانت</dt><dd dir="ltr">{bill.card_no}</dd></div>}
         {bill.phone && <div><dt>شماره تماس</dt><dd dir="ltr">{bill.phone}</dd></div>}
       </dl>
+    </>
+  );
+}
+
+/** Several months paid at once: each month's line (its own bill number) and the total. */
+function MonthsSheet({ bill, months, what }: { bill: Bill; months: BillMonth[]; what: string }) {
+  const paid = months.reduce((t, m) => t + m.amount, 0);
+  const discount = months.reduce((t, m) => t + m.discount, 0);
+  const owed = months.reduce((t, m) => t + m.owed, 0);
+  const no = months.length > 1 ? `${months[0].receipt_no} … ${months[months.length - 1].receipt_no.split("-").pop()}` : months[0].receipt_no;
+  return (
+    <article className="bill-sheet" dir="rtl">
+      <BillHead bill={bill} no={no} />
+      <table className="bill-lines">
+        <thead><tr><th>بابت</th><th>مدت</th><th>مبلغ</th></tr></thead>
+        <tbody>
+          {months.map((m, i) => (
+            <tr key={m.receipt_no}>
+              <td>{what} · ماه {fa(i + 1)}<div className="small" dir="ltr">{m.receipt_no}</div></td>
+              <td>از {formatDay(m.start_date)}<br />تا {formatDay(m.end_date)}</td>
+              <td className="num">{fa(m.fee)}</td>
+            </tr>
+          ))}
+          {discount > 0 && <tr><td colSpan={2}>تخفیف</td><td className="num">{fa(-discount)}</td></tr>}
+        </tbody>
+        <tfoot>
+          <tr><th colSpan={2}>مجموع پرداخت ({fa(months.length)} ماه)</th><th className="num">{fa(paid)} افغانی</th></tr>
+          {owed > 0 && <tr className="bill-rest"><th colSpan={2}>باقی</th><th className="num">{fa(owed)} افغانی</th></tr>}
+        </tfoot>
+      </table>
+      <p className="bill-words">به حروف: {inWords(paid)} افغانی</p>
+      {bill.voided && bill.void_reason && <p className="bill-words">دلیل باطل شدن: {bill.void_reason}</p>}
+      <BillFoot bill={bill} />
+    </article>
+  );
+}
+
+/** The paper bill, sized for A5 (half an A4 sheet) on an ordinary printer. */
+export function BillSheet({ bill }: { bill: Bill }) {
+  const what = bill.plan_name ?? CATEGORY_LABEL[bill.income_category] ?? bill.income_category;
+  // Several months paid at once: one line per month, one paper.
+  const months = bill.months.filter((m) => !m.voided);
+  if (months.length > 1) return <MonthsSheet bill={bill} months={months} what={what} />;
+  // A period paid in parts: this bill pays some, and what is left is printed under it.
+  const part = bill.pays_rest || (bill.remaining ?? 0) > 0;
+  return (
+    <article className="bill-sheet" dir="rtl">
+      <BillHead bill={bill} no={bill.receipt_no} />
       <table className="bill-lines">
         <thead><tr><th>بابت</th><th>مدت</th><th>مبلغ</th></tr></thead>
         <tbody>
@@ -57,12 +101,20 @@ export function BillSheet({ bill }: { bill: Bill }) {
       </table>
       <p className="bill-words">به حروف: {inWords(bill.amount)} افغانی</p>
       {bill.voided && bill.void_reason && <p className="bill-words">دلیل باطل شدن: {bill.void_reason}</p>}
+      <BillFoot bill={bill} />
+    </article>
+  );
+}
+
+function BillFoot({ bill }: { bill: Bill }) {
+  return (
+    <>
       <footer>
         <div><span>صادر کننده</span><strong>{bill.issued_by ?? "—"}</strong></div>
         <div><span>امضا و مهر</span><strong className="sign" /></div>
       </footer>
       <p className="bill-foot">این بل با سیستم مدیریت پژوهش چاپ شده و در سیستم ثبت است.</p>
-    </article>
+    </>
   );
 }
 
