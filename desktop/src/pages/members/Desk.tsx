@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, errorText, type MemberRow, type PeriodInput, type Plan } from "../../lib/api";
 import { fa, formatDay, iso } from "../../lib/solar";
 import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview, CATEGORY_LABEL } from "../../components/BillSheet";
 import { Icon } from "../../components/Icon";
+import { ScanCard } from "../../components/ScanCard";
 
 type Task = "find" | "daily" | "other";
 
@@ -33,6 +34,18 @@ export function Desk({ openMember, newMember }: { openMember: (id: string) => vo
 
 function FindMember({ openMember }: { openMember: (id: string) => void }) {
   const [q, setQ] = useState("");
+  const [scan, setScan] = useState(false);
+  // The card's QR holds the member's ID: open that member straight away when exactly one has it.
+  const read = useCallback((text: string) => {
+    setScan(false);
+    const no = text.replace(/\D/g, "");
+    setQ(no || text);
+    if (!no) return;
+    api.members({ scope: "all", q: no, limit: 5 }).then((p) => {
+      const hit = p.rows.filter((m) => String(m.member_no) === no && m.member_id);
+      if (hit.length === 1) openMember(hit[0].member_id!);
+    }, () => {});
+  }, [openMember]);
   const [rows, setRows] = useState<MemberRow[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -46,7 +59,11 @@ function FindMember({ openMember }: { openMember: (id: string) => void }) {
   }, [q]);
   return (
     <section className="panel wide">
+      <div className="find-row">
       <input className="search big" type="search" autoFocus placeholder="آیدی، نام یا شماره تماس عضو را بنویسید" aria-label="آیدی، نام یا شماره تماس عضو را بنویسید" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="btn ghost" onClick={() => setScan(true)}><Icon name="card" size={18} /> اسکن کارت</button>
+      </div>
+      {scan && <ScanCard onRead={read} onClose={() => setScan(false)} />}
       {error && <p className="form-error">{error}</p>}
       {rows && !rows.length && <p className="muted">کسی پیدا نشد. اگر عضو تازه است، «عضو جدید» را بزنید.</p>}
       {rows && rows.length > 0 && (

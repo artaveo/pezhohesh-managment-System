@@ -532,8 +532,24 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 }
 .member-card footer span { font-size: 6.5pt; color: #5d6b5d; }
 .member-card footer strong { font-size: 13pt; font-weight: 800; letter-spacing: .3mm; color: #3d6b12; }
+.member-card-stage { gap: 18px; }
+.member-card.back { flex-direction: row; align-items: center; gap: 4mm; padding: 4mm 4.6mm 4mm 4.2mm; }
+.member-card.back::before { content: ""; position: absolute; inset: 0 0 0 auto; width: 1mm; background: linear-gradient(180deg, #76b82a, #3f6e1b); }
+.member-card.back .wm { position: absolute; right: -6mm; top: 50%; transform: translateY(-50%); width: 48mm; opacity: .05; pointer-events: none; }
+.member-card .back-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1mm; position: relative; }
+.member-card .back-info .scan { font-size: 8pt; font-weight: 800; color: #3f6e1b; line-height: 1.35; }
+.member-card .back-info small { font-size: 6pt; color: #6b766b; }
+.member-card .back-info ul { list-style: none; margin: 1mm 0 0; padding: 1.4mm 0 0; border-top: .2mm solid #e3e8df; display: flex; flex-direction: column; gap: .6mm; font-size: 6pt; color: #5d6b5d; }
+.member-card .back-info .rule { margin: .6mm 0 0; font-size: 6pt; font-weight: 700; color: #b4372b; }
+.member-card .back-qr { flex: none; display: flex; flex-direction: column; align-items: center; gap: 1.2mm; position: relative; }
+.member-card .back-qr .qr { width: 29mm; height: 29mm; padding: 1.4mm; box-sizing: border-box; background: #fff; border: .5mm solid #76b82a; border-radius: 2mm; }
+.member-card .back-qr .qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+.member-card .back-qr span { font-size: 9pt; font-weight: 800; letter-spacing: .4mm; color: #3f6e1b; }
 @media print {
   .print-only.card-print .member-card { border-radius: 0; }
+  .print-only.card-print.card.both .member-card + .member-card { break-before: page; }
+  .print-only.card-print.a4.both { display: flex; gap: 0; }
+  .print-only.card-print.a4.both .member-card + .member-card { border-right-style: dotted; }
   .print-only.card-print.a4 { position: absolute; top: 6mm; right: 6mm; }
   .print-only.card-print.a4 .member-card { border: .2mm dashed #8a9886; border-radius: 3mm; }
 }
@@ -857,3 +873,9 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .list-filter select { min-width: 150px; font: inherit; padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line); background: var(--glass-strong); color: var(--fg); min-height: 44px; }
 .paid-on { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
 .paid-on small { flex-basis: 100%; }
+
+/* Find a member: search box with the card scanner beside it; the scanner's aiming square. */
+.find-row { display: flex; gap: 10px; align-items: stretch; }
+.find-row .search { flex: 1; }
+.scan-frame { position: relative; }
+.scan-frame .scan-target { position: absolute; inset: 50% auto auto 50%; width: 46%; aspect-ratio: 1; transform: translate(-50%, -50%); border: 3px solid #76b82a; border-radius: 14px; box-shadow: 0 0 0 9999px rgba(0,0,0,.28); pointer-events: none; }

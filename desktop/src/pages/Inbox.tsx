@@ -8,6 +8,7 @@ import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
 import { Failed } from "../components/Stat";
 import { Icon } from "../components/Icon";
+import { useQr } from "../lib/qr";
 
 const KINDS: { kind: DocKind; label: string }[] = [
   { kind: "photo", label: "عکس عضو" },
@@ -305,21 +306,6 @@ function loadWifi(): { ssid: string; password: string } {
 function wifiText(ssid: string, password: string) {
   const esc = (s: string) => s.replace(/([\\;,:"])/g, "\\$1");
   return password ? `WIFI:T:WPA;S:${esc(ssid)};P:${esc(password)};;` : `WIFI:T:nopass;S:${esc(ssid)};;`;
-}
-
-function useQr(text: string | null) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    setUrl(null);
-    if (!text) return;
-    let live = true;
-    let made: string | null = null;
-    const t = window.setTimeout(() => {
-      api.qr(text).then((b) => { if (live) { made = URL.createObjectURL(b); setUrl(made); } }, () => {});
-    }, 300);
-    return () => { live = false; window.clearTimeout(t); if (made) URL.revokeObjectURL(made); };
-  }, [text]);
-  return url;
 }
 
 function PhoneSticker({ onClose }: { onClose: () => void }) {
