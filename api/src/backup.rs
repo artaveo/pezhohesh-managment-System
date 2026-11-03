@@ -417,7 +417,8 @@ pub async fn dump(url: &str, dir: &Path, target: &Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dir).await.map_err(|e| format!("folder: {e}"))?;
     let partial = target.with_extension("partial");
     let mut cmd = pg_command("pg_dump", url)?;
-    cmd.arg("--format=custom").arg("--file").arg(&partial);
+    // pz_keep only lives for the moment of a restore (see restore.rs).
+    cmd.arg("--format=custom").arg("--exclude-schema=pz_keep").arg("--file").arg(&partial);
     if let Err(e) = run(cmd, "pg_dump").await {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(e);

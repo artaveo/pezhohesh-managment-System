@@ -92,7 +92,6 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     if crate::sync::online_device().is_some() {
         return Err(ApiError::bad("restore_online"));
     }
-    let node = sqlx::query_scalar::<_, String>("SELECT sync_mode()").fetch_one(&s.db).await? == "node";
     // Only a backup this app made, in one of its backup folders.
     let file = points(&s.db).await?.into_iter().find(|p| p.path == b.path).ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
     let url = crate::database_url();
@@ -104,36 +103,25 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
     let before_name = points(&s.db).await?.into_iter().next().map(|p| p.name);
 
     let _one = backup::RUNNING.lock().await;
-    // No sync round between the swap and the sync settings being put right below.
-    let _sync = crate::sync::RUNNING.lock().await;
+    // No sync round from here until the restored data is settled and the API has restarted.
+    let sync = crate::sync::RUNNING.lock().await;
     s.pause("restoring");
     tracing::warn!("restoring {} for {}", file.path, user.username);
-    if let Err(e) = replace_database(&url, Path::new(&file.path)).await {
+    let info = Kept { user: user.id, file: file.name.clone(), before: before_name.clone().unwrap_or_default() };
+    if let Err(e) = replace_database(&url, Path::new(&file.path), &info).await {
         tracing::error!("restore failed: {e}");
         s.resume();
         return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, "restore_failed"));
     }
-    // A computer that shares the server keeps doing so. It takes again from the server what
-    // came after the backup (from the start, for a backup older than the sync), and sends
-    // what the backup has that it had not sent yet.
-    if !node {
-        // A copy of another computer's backup (the hall laptop's, say) carries that computer's
-        // sync settings; kept, this computer would start sending as if it were that one.
-        let off = sqlx::query("DELETE FROM settings WHERE key IN ('sync_mode', 'sync_pulled')").execute(&s.db).await;
-        if let Err(e) = off {
-            tracing::error!("restore: sync settings not cleared: {e}");
-        }
+    // The restored database is brought up to this version, then what was kept goes back
+    // (the "who did what" log, accounts, this computer's settings) and, on a computer that
+    // shares the server, the restore is queued to be sent there as everyone's data.
+    if let Err(e) = crate::prepare_once(&url, &s.db).await {
+        tracing::error!("restore: migrations after restore: {e:#}");
     }
-    if node {
-        let kept = sqlx::query(
-            "INSERT INTO settings (key, value) VALUES ('sync_mode', '\"node\"'), ('sync_pulled', '0') \
-             ON CONFLICT (key) DO UPDATE SET value = CASE WHEN settings.key = 'sync_mode' THEN EXCLUDED.value ELSE settings.value END",
-        )
-        .execute(&s.db)
-        .await;
-        if let Err(e) = kept {
-            tracing::error!("restore: sync settings not kept: {e}");
-        }
+    match merge_kept(&s.db).await {
+        Ok(_) => {}
+        Err(e) => tracing::error!("restore: kept data not merged yet (tried again on start): {e}"),
     }
     // The photos and tazkira scans that were in the backup's files folder. Files of the
     // laptop that the backup does not know stay; nothing points at them any more.
@@ -144,16 +132,68 @@ pub async fn restore(State(s): State<AppState>, user: CurrentUser, Json(b): Json
         .and_then(Result::ok)
         .unwrap_or(0);
     tracing::warn!("restored {}; {files} files copied back; restarting", file.name);
-    tokio::spawn(async {
+    // The sync lock goes with the process: nothing is pulled into the restored data before
+    // the restore has been sent.
+    tokio::spawn(async move {
+        let _sync = sync;
         tokio::time::sleep(Duration::from_millis(1500)).await;
         std::process::exit(0);
     });
     Ok(Json(Restored { before: before_name, files }))
 }
 
-/// Empties the database and loads the backup into it, in one transaction: if any step fails,
-/// the database stays exactly as it was.
-async fn replace_database(url: &str, file: &Path) -> Result<(), String> {
+/// Who restored which file, for the "who did what" log.
+struct Kept {
+    user: uuid::Uuid,
+    file: String,
+    before: String,
+}
+
+/// Puts back what was kept from before a restore (see restore_merge_kept in
+/// 0025_restore_and_numbers.sql). Also run on start, in case the API stopped in between.
+pub async fn merge_kept(db: &PgPool) -> Result<Option<String>, sqlx::Error> {
+    let file: Option<String> = sqlx::query_scalar("SELECT restore_merge_kept()").fetch_one(db).await?;
+    if let Some(f) = &file {
+        tracing::warn!("restore of {f}: the log, accounts and this computer's settings are as before the restore");
+    }
+    Ok(file)
+}
+
+/// The tables whose rows stay as they are now through a restore, each kept as JSON.
+const KEPT: &[(&str, &str)] = &[
+    ("audit_log", "TABLE public.audit_log"),
+    ("app_users", "TABLE public.app_users"),
+    ("staff", "SELECT * FROM public.staff WHERE id IN (SELECT staff_id FROM public.app_users)"),
+    ("devices", "TABLE public.devices"),
+    ("receipt_counters", "TABLE public.receipt_counters"),
+    ("settings", "TABLE public.settings"),
+    ("k50_users", "TABLE public.k50_users"),
+    ("k50_device_ids", "TABLE public.k50_device_ids"),
+    ("k50_fingers", "TABLE public.k50_fingers"),
+    ("k50_name_ok", "TABLE public.k50_name_ok"),
+];
+
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+fn keep_sql(info: &Kept) -> String {
+    let mut sql = String::from("DROP SCHEMA IF EXISTS pz_keep CASCADE; CREATE SCHEMA pz_keep; ");
+    for (name, rows) in KEPT {
+        sql.push_str(&format!("CREATE TABLE pz_keep.{name} AS SELECT to_jsonb(t) AS j FROM ({rows}) t; "));
+    }
+    sql.push_str(&format!(
+        "CREATE TABLE pz_keep.info AS SELECT jsonb_build_object('user_id', {}, 'file', {}, 'before', {}, 'at', now()) AS j; ",
+        quoted(&info.user.to_string()),
+        quoted(&info.file),
+        quoted(&info.before)
+    ));
+    sql
+}
+
+/// Keeps what must survive (see `KEPT`), empties the database and loads the backup into it,
+/// in one transaction: if any step fails, the database stays exactly as it was.
+async fn replace_database(url: &str, file: &Path, info: &Kept) -> Result<(), String> {
     let script: PathBuf = std::env::temp_dir().join(format!("pezhohesh-restore-{}.sql", std::process::id()));
     // pg_restore writes the SQL instead of running it, so psql can run it after emptying the schema.
     let mut to_sql = tokio::process::Command::new(pg_tool("pg_restore"));
@@ -166,7 +206,7 @@ async fn replace_database(url: &str, file: &Path) -> Result<(), String> {
     run(to_sql, "pg_restore").await?;
     let mut psql = pg_command("psql", url)?;
     psql.args(["--no-psqlrc", "--quiet", "--single-transaction", "--set", "ON_ERROR_STOP=1"])
-        .args(["--command", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"])
+        .args(["--command", &format!("{} DROP SCHEMA public CASCADE; CREATE SCHEMA public;", keep_sql(info))])
         .arg("--file")
         .arg(&script);
     let result = run(psql, "psql").await;

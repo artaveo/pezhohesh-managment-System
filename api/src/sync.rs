@@ -70,9 +70,14 @@ pub struct Live {
     /// This computer's clock against the server's, when they differ by more than 5 minutes
     /// (dates of bills and periods come from this clock).
     clock_off_minutes: Option<i64>,
+    /// The server's database size, looked at about once an hour.
+    server_bytes: Option<i64>,
 }
 
-static LIVE: RwLock<Live> = RwLock::new(Live { ok_at: None, tried_at: None, error: None, sent: 0, taken: 0, clock_off_minutes: None });
+static LIVE: RwLock<Live> =
+    RwLock::new(Live { ok_at: None, tried_at: None, error: None, sent: 0, taken: 0, clock_off_minutes: None, server_bytes: None });
+/// When the server's size was last read and its old history last tidied.
+static CHORES: std::sync::Mutex<Option<(std::time::Instant, std::time::Instant)>> = std::sync::Mutex::new(None);
 pub(crate) static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -177,7 +182,13 @@ fn hub_error(e: sqlx::Error) -> String {
 async fn migrate_hub(hub: &PgPool) -> Result<(), String> {
     let mut migrator = sqlx::migrate!("../db/migrations");
     migrator.set_ignore_missing(true);
-    migrator.run(hub).await.map_err(|e| format!("hub_migration: {e}"))
+    // On a connection of its own, closed after: when a migration fails, sqlx keeps its lock
+    // on the connection, and a pooled one would then block every later try.
+    let url = hub.connect_options();
+    let mut c = sqlx::postgres::PgConnection::connect_with(&url).await.map_err(hub_error)?;
+    let result = migrator.run(&mut c).await.map_err(|e| format!("hub_migration: {e}"));
+    let _ = c.close().await;
+    result
 }
 
 /// One push and pull. Returns how many changes went each way.
@@ -197,9 +208,186 @@ async fn round(db: &PgPool, hub: &PgPool, migrated: &mut bool) -> Result<(u64, u
         migrate_hub(hub).await?;
         *migrated = true;
     }
+    // A restore here goes to the server before anything else is sent or taken.
+    let rewound = rewind(db, hub).await?;
+    verify(db, hub).await?;
     let sent = push(db, hub).await?;
     let taken = pull(db, hub).await?;
-    Ok((sent, taken))
+    chores(hub).await;
+    Ok((sent + rewound, taken))
+}
+
+/// Tables a restore does not take back: the computers and the user accounts stay as they
+/// are now (see restore_merge_kept).
+const NOT_REWOUND: &str = "tbl NOT IN ('devices', 'app_users')";
+
+/// Sends this computer's rows for `keys` to the server as the new truth, in one transaction
+/// that holds the server's sync lock. Returns the server's last number and how many rows went.
+async fn send_rows(db: &PgPool, hub: &PgPool, keys: Value, from: Option<i64>) -> Result<(i64, u64), String> {
+    let who: Option<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM audit_log WHERE action = 'restore' ORDER BY id DESC LIMIT 1").fetch_optional(db).await.map_err(|e| e.to_string())?.flatten();
+    let mut tx = hub.begin().await.map_err(hub_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('pezhohesh.sync_hub'))").execute(&mut *tx).await.map_err(hub_error)?;
+    let mut keys: Vec<Value> = keys.as_array().cloned().unwrap_or_default();
+    if let Some(from) = from {
+        // Everything the server took after the point the backup had reached.
+        let later: Value = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('tbl', tbl, 'pk', pk)), '[]') FROM sync_log WHERE hub_seq > $1 AND {NOT_REWOUND}"
+        ))
+        .bind(from)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(hub_error)?;
+        keys.extend(later.as_array().cloned().unwrap_or_default());
+    }
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|k| seen.insert(k.to_string()));
+    let rows: Value = sqlx::query_scalar("SELECT sync_local_rows($1, $2)")
+        .bind(Value::Array(keys))
+        .bind(who)
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    let mut last: Option<i64> = None;
+    let chunks: Vec<&[Value]> = if rows.is_empty() { vec![&[]] } else { rows.chunks(BATCH as usize).collect() };
+    let n = chunks.len();
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        last = sqlx::query_scalar("SELECT sync_rewind($1, $2)")
+            .bind(Value::Array(chunk.to_vec()))
+            .bind(i + 1 == n)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(hub_error)?;
+    }
+    tx.commit().await.map_err(hub_error)?;
+    Ok((last.unwrap_or(0), rows.len() as u64))
+}
+
+/// After a restore on this computer: the rows that changed on the server after the backup,
+/// and the rows waiting here, are sent as they are here now, so the restore holds on every
+/// computer instead of the server's newer data coming back.
+async fn rewind(db: &PgPool, hub: &PgPool) -> Result<u64, String> {
+    let from: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::BIGINT FROM settings WHERE key = 'sync_rewind'")
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(from) = from else { return Ok(0) };
+    let (top, waiting): (Option<i64>, Value) = sqlx::query_as(&format!(
+        "SELECT max(seq), COALESCE(jsonb_agg(DISTINCT jsonb_build_object('tbl', tbl, 'pk', pk)) FILTER (WHERE {NOT_REWOUND}), '[]') \
+         FROM sync_log WHERE hub_seq IS NULL"
+    ))
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (last, sent) = send_rows(db, hub, waiting, Some(from)).await?;
+    // The waiting rows went with it (as they are now); later ones are sent as usual.
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE sync_log SET hub_seq = -1 WHERE hub_seq IS NULL AND seq <= $1")
+        .bind(top.unwrap_or(0))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('sync_pulled', to_jsonb($1::BIGINT)) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+    )
+    .bind(last.max(from))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM settings WHERE key = 'sync_rewind'").execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    tracing::warn!("sync: the restore went to the server ({sent} rows)");
+    Ok(sent)
+}
+
+/// Once: changes this computer sent that the server never applied. Up to v0.22 a restore
+/// put this computer's change numbers back, and the server took the next changes for ones
+/// it already had. Those rows are sent again as they are here, and the numbering moves past
+/// everything the server knows from this computer.
+async fn verify(db: &PgPool, hub: &PgPool) -> Result<(), String> {
+    let done: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM settings WHERE key = 'sync_verified')")
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if done {
+        return Ok(());
+    }
+    let me: Option<Uuid> = sqlx::query_scalar("SELECT current_device()").fetch_one(db).await.map_err(|e| e.to_string())?;
+    let mine: Value = sqlx::query_scalar(
+        "SELECT COALESCE(jsonb_agg(jsonb_build_object('seq', seq, 'hub_seq', hub_seq)), '[]') FROM sync_log \
+         WHERE origin = current_device() AND hub_seq > 0 AND made_at > now() - interval '120 days'",
+    )
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (lost, top): (Value, Option<i64>) = sqlx::query_as(
+        "SELECT (SELECT COALESCE(jsonb_agg(x.seq), '[]') FROM jsonb_to_recordset($1) AS x(seq BIGINT, hub_seq BIGINT) \
+                 WHERE NOT EXISTS (SELECT 1 FROM sync_log l WHERE l.hub_seq = x.hub_seq AND l.origin = $2 AND l.origin_seq = x.seq)), \
+                (SELECT max(origin_seq) FROM sync_log WHERE origin = $2)",
+    )
+    .bind(&mine)
+    .bind(me)
+    .fetch_one(hub)
+    .await
+    .map_err(hub_error)?;
+    sqlx::query("SELECT setval(pg_get_serial_sequence('sync_log', 'seq'), GREATEST((SELECT COALESCE(max(seq), 1) FROM sync_log), $1 + 1))")
+        .bind(top.unwrap_or(0))
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let n = lost.as_array().map_or(0, |a| a.len());
+    if n > 0 {
+        let keys: Value = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(jsonb_agg(DISTINCT jsonb_build_object('tbl', tbl, 'pk', pk)) FILTER (WHERE {NOT_REWOUND}), '[]') \
+             FROM sync_log WHERE seq IN (SELECT jsonb_array_elements_text($1)::BIGINT) AND origin = current_device()"
+        ))
+        .bind(&lost)
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?;
+        let (_, sent) = send_rows(db, hub, keys, None).await?;
+        sqlx::query("UPDATE sync_log SET hub_seq = -1 WHERE seq IN (SELECT jsonb_array_elements_text($1)::BIGINT) AND origin = current_device()")
+            .bind(&lost)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        tracing::warn!("sync: {n} changes the server had missed; {sent} rows sent again");
+    }
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('sync_verified', 'true') ON CONFLICT (key) DO NOTHING")
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// About once an hour the server's size, about once a day its old history tidied (older
+/// states of a row after 180 days; the newest state of every row stays).
+async fn chores(hub: &PgPool) {
+    let now = std::time::Instant::now();
+    let (size_due, prune_due) = {
+        let c = CHORES.lock().unwrap();
+        match *c {
+            None => (true, true),
+            Some((size, prune)) => (now - size > Duration::from_secs(3600), now - prune > Duration::from_secs(86400)),
+        }
+    };
+    if size_due {
+        if let Ok(b) = sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())").fetch_one(hub).await {
+            LIVE.write().unwrap().server_bytes = Some(b);
+        }
+    }
+    if prune_due {
+        match sqlx::query_scalar::<_, i64>("SELECT sync_prune(180)").fetch_one(hub).await {
+            Ok(n) if n > 0 => tracing::info!("sync: {n} old states tidied on the server"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("sync: tidy: {e}"),
+        }
+    }
+    let mut c = CHORES.lock().unwrap();
+    let (s0, p0) = c.unwrap_or((now, now));
+    *c = Some((if size_due { now } else { s0 }, if prune_due { now } else { p0 }));
 }
 
 /// On a node: every 10 seconds a look at the outbox, and a round when something waits to
@@ -291,6 +479,8 @@ pub struct Status {
     local_db: bool,
     waiting: i64,
     problems: i64,
+    /// A restore on this computer that has not reached the server yet.
+    rewind_pending: bool,
     #[serde(flatten)]
     live: Live,
 }
@@ -316,14 +506,15 @@ pub async fn status(State(s): State<AppState>, _user: CurrentUser) -> Result<Jso
     let device = sqlx::query_as("SELECT id, name, receipt_prefix, member_no_from, member_no_to FROM devices WHERE id = current_device()")
         .fetch_optional(&s.db)
         .await?;
-    let (waiting, problems): (i64, i64) = sqlx::query_as(
+    let (waiting, problems, rewind_pending): (i64, i64, bool) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM sync_log WHERE hub_seq IS NULL AND sync_mode() = 'node'), \
-                (SELECT count(*) FROM sync_problems WHERE resolved_at IS NULL)",
+                (SELECT count(*) FROM sync_problems WHERE resolved_at IS NULL), \
+                EXISTS (SELECT 1 FROM settings WHERE key = 'sync_rewind')",
     )
     .fetch_one(&s.db)
     .await?;
     let live = LIVE.read().unwrap().clone();
-    Ok(Json(Status { mode, host, device, local_db: crate::backup::has_postgres(), waiting, problems, live }))
+    Ok(Json(Status { mode, host, device, local_db: crate::backup::has_postgres(), waiting, problems, rewind_pending, live }))
 }
 
 fn partner(user: &CurrentUser) -> Result<(), ApiError> {

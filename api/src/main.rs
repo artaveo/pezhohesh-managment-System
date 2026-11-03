@@ -161,6 +161,9 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
             Ok(()) => {
                 *core.write().unwrap() = Core { ready: true, ..Default::default() };
                 tracing::info!("database ready");
+                if let Err(e) = restore::merge_kept(&db).await {
+                    tracing::error!("restore: kept data not merged: {e}");
+                }
                 history::ensure_1404(&db).await;
                 tokio::spawn(backup::schedule(db.clone(), url.clone()));
                 tokio::spawn(salaries::schedule(db.clone()));
@@ -182,7 +185,7 @@ async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
     }
 }
 
-async fn prepare_once(url: &str, db: &PgPool) -> anyhow::Result<()> {
+pub(crate) async fn prepare_once(url: &str, db: &PgPool) -> anyhow::Result<()> {
     // First run on a fresh PostgreSQL: create the database itself, then the tables.
     if !sqlx::Postgres::database_exists(url).await? {
         sqlx::Postgres::create_database(url).await?;
