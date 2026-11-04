@@ -77,8 +77,11 @@ pub async fn serve(state: AppState) {
     }
 }
 
-async fn page(State(s): State<AppState>) -> Html<String> {
+async fn page(State(s): State<AppState>, ConnectInfo(from): ConnectInfo<SocketAddr>) -> Html<String> {
     let open = s.ready() && enabled(&s.db).await;
+    // Which phones reach the page at all (the QR from the hotspot failed to open on
+    // 2026-11-04 while the office had no internet; this tells whether the phone got here).
+    tracing::info!("phone page opened from {} ({})", from.ip(), if open { "open" } else { "closed" });
     Html(include_str!("phone.html").replace("__OPEN__", if open { "true" } else { "false" }))
 }
 

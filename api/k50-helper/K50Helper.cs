@@ -280,14 +280,53 @@ static class K50Helper
         if (!had) { name = Str(o, "name"); pw = ""; priv = 0; }
         // A partner changed this user's name on «کاربران دستگاه».
         else if (Bool(o, "rename") && Str(o, "name") != "") name = Str(o, "name");
-        if (!(bool)zk.SSR_SetUserInfo(m, no, name, pw, priv, Bool(o, "enabled")))
+        var enabled = Bool(o, "enabled");
+        var start = Str(o, "start");
+        var end = Str(o, "end");
+        // `keep_open`: while ZKAccess still renews members too, a user the device lets in today
+        // or later on days the app never wrote (`pushed_end` is the app's last end) was renewed
+        // there. They are not closed and their days are not cut: the app's days are joined to
+        // the device's (2026-11-04: a member renewed early in the app was closed although
+        // ZKAccess had her current month on the device).
+        object kept = null;
+        if (had && en && Bool(o, "keep_open"))
+        {
+            int exp = 0, cnt = 0;
+            string ds = "", de = "";
+            bool got = false;
+            try { got = (bool)zk.GetUserValidDate(m, no, ref exp, ref cnt, ref ds, ref de); } catch { }
+            var dStart = Day(ds);
+            var dEnd = Day(de);
+            var today = DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+            bool zkDays = got && exp != 0 && dStart.Length == 8 && dEnd.Length == 8 && string.CompareOrdinal(dEnd, today) >= 0 && dEnd != Day(Str(o, "pushed_end"));
+            // ZKAccess's last day is typed by hand and is often a day or two off the app's
+            // 30 days: within `margin` days of the app's last day it is the same month, and
+            // the app's day counts.
+            if (zkDays && Day(end).Length == 8)
+            {
+                var appEnd = DateTime.ParseExact(Day(end), "yyyyMMdd", CultureInfo.InvariantCulture);
+                var zkEnd = DateTime.ParseExact(dEnd, "yyyyMMdd", CultureInfo.InvariantCulture);
+                if (Math.Abs((zkEnd - appEnd).TotalDays) <= Int(o, "margin")) zkDays = false;
+            }
+            if (zkDays)
+            {
+                kept = Obj("start", ds, "end", de);
+                enabled = true;
+                var iso = new Func<string, string>(d => d.Substring(0, 4) + "-" + d.Substring(4, 2) + "-" + d.Substring(6, 2));
+                if (start == "" || end == "") { start = iso(dStart); end = iso(dEnd); }
+                else
+                {
+                    if (string.CompareOrdinal(dStart, Day(start)) < 0) start = iso(dStart);
+                    if (string.CompareOrdinal(dEnd, Day(end)) > 0) end = iso(dEnd);
+                }
+            }
+        }
+        if (!(bool)zk.SSR_SetUserInfo(m, no, name, pw, priv, enabled))
             return Obj("ok", false, "error", "set_user_failed", "code", LastError());
         object dates = null;
         object read = null;
-        var start = Str(o, "start");
-        var end = Str(o, "end");
         if (start != "" && end != "") dates = SetValid(no, start, end, out read);
-        return Obj("ok", true, "created", !had, "valid_dates", dates, "date_form", dateForm, "valid_read", read);
+        return Obj("ok", true, "created", !had, "valid_dates", dates, "date_form", dateForm, "valid_read", read, "kept_open", kept);
     }
 
     // Takes the user off the device with every finger, card and password (backup number 12),

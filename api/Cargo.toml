@@ -1,6 +1,6 @@
 [package]
 name = "pezhohesh-api"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2021"
 license = "MIT"
 description = "Core API for the Pezhohesh management system (study hall + educational services)"

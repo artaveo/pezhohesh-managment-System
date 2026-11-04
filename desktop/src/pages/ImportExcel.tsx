@@ -1,8 +1,10 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, errorText, type ImportClash, type ImportLine, type ImportReport } from "../lib/api";
 import { fa, yearNumber } from "../lib/solar";
 import { PasswordInput } from "../components/PasswordInput";
 import { Icon } from "../components/Icon";
+import { DeviceDates } from "../components/DeviceDates";
+import { useAuth } from "../auth/AuthProvider";
 
 const MONTHS = ["حمل", "ثور", "جوزا", "سرطان", "اسد", "سنبله", "میزان", "عقرب", "قوس", "جدی", "دلو", "حوت"];
 const KIND_LABEL = { income: "درآمد", expense: "مصارف", withdrawal: "برداشت‌ها" } as const;
@@ -55,6 +57,14 @@ export function ImportExcel({ done }: { done: () => void }) {
     void run(false, next);
   }
 
+  // After the import: the days the Excel book lacks come from the fingerprint device (partners).
+  const partner = useAuth().user?.role === "partner";
+  const [device, setDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!report?.committed || !partner) return;
+    api.k50().then((k) => setDevice(!!k.config.ip)).catch(() => setDevice(false));
+  }, [report?.committed, partner]);
+
   const clashes = report?.clashes ?? [];
   const open = clashes.filter((c) => c.outcome !== "excel");
 
@@ -73,6 +83,17 @@ export function ImportExcel({ done }: { done: () => void }) {
           <p className="muted">داشبورد، گزارش ماهانه و صورت حساب سالانه حالا همین اعداد را نشان می‌دهند.</p>
           <div className="actions"><button className="btn" onClick={done}>رفتن به داشبورد</button></div>
         </section>
+        {partner && device !== null && (
+          <section className="panel wide">
+            <h2><Icon name="fingerprint" /> تاریخ عضویت از دستگاه انگشت</h2>
+            <p className="muted">
+              اکسل نام و پول را دارد ولی روز شروع و ختم عضویت را ندارد؛ دستگاه دارد. اعضایی که در برنامه تاریخ ندارند تاریخ
+              دستگاه را می‌گیرند، و اعضایی که در اکسل تمدید شده‌اند ولی تاریخشان در برنامه زودتر تمام می‌شود، باقی‌اش را
+              می‌گیرند. فقط عضویت‌هایی که روز ختمشان در دستگاه هنوز نگذشته. اول فهرست را ببینید، بعد ثبت کنید.
+            </p>
+            <DeviceDates ready={device} />
+          </section>
+        )}
       </div>
     );
   }
@@ -100,8 +121,8 @@ export function ImportExcel({ done }: { done: () => void }) {
           </label>
         </div>
         <p className="muted small">
-          اعضا، همهٔ پرداخت‌ها، مصارف و برداشت‌های شرکا وارد می‌شود. تاریخ شروع عضویت‌ها در اکسل نیست، پس عضویت فعال ساخته نمی‌شود؛
-          وقتی مدیر تاریخ شروع را ثبت کند، تاریخ ختم خودکار 30 روز بعد حساب می‌شود.
+          اعضا، همهٔ پرداخت‌ها، مصارف و برداشت‌های شرکا وارد می‌شود. تاریخ شروع و ختم عضویت‌ها در اکسل نیست؛ بعد از ورود،
+          همین صفحه آن‌ها را از دستگاه انگشت می‌خواند و پیش از ثبت نشان می‌دهد.
         </p>
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="actions">

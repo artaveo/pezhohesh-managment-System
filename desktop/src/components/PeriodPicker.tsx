@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MONTHS, addDays, formatDay, iso, lastAheadMonth, monthStart, monthsOfYear, nextMonth, nextYear, parseIso, prevMonth, prevYear, toSolar, yearStart } from "../lib/solar";
+import { MONTHS, addDays, formatDay, fromSolar, iso, lastAheadMonth, monthStart, monthsOfYear, nextMonth, nextYear, parseIso, prevMonth, prevYear, toSolar, yearStart } from "../lib/solar";
 import { SolarDate } from "./SolarDate";
 
 export type Span = "today" | "month" | "year" | "all" | "range";
@@ -59,6 +59,20 @@ export function PeriodPicker({ value, onChange, spans = ["today", "month", "year
   const ms = parseIso(value.month);
   const ys = parseIso(value.year);
   const months = monthsOfYear(yearStart(ms)).slice(0, 12);
+  // Years to pick from: the last few, up to the latest one the steps reach.
+  const latestY = toSolar(parseIso(value.span === "year" ? lastYear : lastMonth)).y;
+  const years = Array.from({ length: 8 }, (_, i) => latestY - 7 + i);
+  const yearOf = (y: number) => iso(fromSolar({ y, m: 1, d: 1 }) ?? ys);
+  // Another year keeps the month (Aqrab of 1404 to Aqrab of 1405), but never past the last one.
+  const monthIn = (y: number) => {
+    const m = iso(fromSolar({ y, m: toSolar(ms).m, d: 1 }) ?? ms);
+    return m > lastMonth ? lastMonth : m;
+  };
+  const yearSelect = (current: number, pick: (y: number) => void) => (
+    <select aria-label="سال" className="year-select" value={current} onChange={(e) => pick(Number(e.target.value))}>
+      {(years.includes(current) ? years : [current, ...years]).map((y) => <option key={y} value={y}>{y}</option>)}
+    </select>
+  );
   return (
     <div className="period-picker">
       <div className="segmented" role="tablist" aria-label="دوره">
@@ -71,8 +85,9 @@ export function PeriodPicker({ value, onChange, spans = ["today", "month", "year
       {value.span === "month" && (
         <div className="period-step">
           <button className="btn ghost small" onClick={() => set({ month: iso(prevMonth(ms)) })}>‹ ماه قبل</button>
+          {yearSelect(toSolar(ms).y, (y) => set({ month: monthIn(y) }))}
           <select aria-label="ماه" value={value.month} onChange={(e) => set({ month: e.target.value })}>
-            {months.map((m) => <option key={iso(m)} value={iso(m)}>{solarMonth(m)}</option>)}
+            {months.map((m) => <option key={iso(m)} value={iso(m)} disabled={iso(m) > lastMonth}>{MONTHS[toSolar(m).m - 1]}</option>)}
           </select>
           <button className="btn ghost small" disabled={value.month >= lastMonth} onClick={() => set({ month: iso(nextMonth(ms)) })}>ماه بعد ›</button>
         </div>
@@ -80,7 +95,7 @@ export function PeriodPicker({ value, onChange, spans = ["today", "month", "year
       {value.span === "year" && (
         <div className="period-step">
           <button className="btn ghost small" onClick={() => set({ year: iso(prevYear(ys)) })}>‹ سال قبل</button>
-          <strong className="num">{toSolar(ys).y}</strong>
+          {yearSelect(toSolar(ys).y, (y) => set({ year: yearOf(y) }))}
           <button className="btn ghost small" disabled={value.year >= lastYear} onClick={() => set({ year: iso(nextYear(ys)) })}>سال بعد ›</button>
         </div>
       )}

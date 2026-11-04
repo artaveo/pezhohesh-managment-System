@@ -77,6 +77,7 @@ export function Fingerprint({ memberId, name, reload, onLoaded, onEnroll }: {
       <h2><Icon name="fingerprint" /> دستگاه انگشت</h2>
       <div className="k50-state">
         {!onDevice ? <span className="muted">هنوز به دستگاه فرستاده نشده{k.enabled && k.auto ? " (چند لحظه بعد خودش فرستاده می‌شود)" : ""}.</span>
+          : s.device_read?.kept ? <span className="chip kind-monthly new">باز با تاریخ ZKAccess</span>
           : s.pushed_enabled ? <span className="chip kind-monthly new">باز تا {s.pushed_end ? formatDay(s.pushed_end) : "—"}</span>
           : <span className="chip kind-remove">روی دستگاه بسته است</span>}
         {onDevice && !upToDate && <span className="muted small">تاریخ تازه هنوز به دستگاه نرفته.</span>}
@@ -84,7 +85,13 @@ export function Fingerprint({ memberId, name, reload, onLoaded, onEnroll }: {
         {fingers != null && <span className="muted">انگشت ثبت‌شده: {fa(fingers)}</span>}
         {s?.error && <span className="form-error inline">{k50ErrorText(s.error)}</span>}
       </div>
-      {s?.device_read && (
+      {s?.device_read?.kept && (
+        <p className="notice">
+          دستگاه این عضو را با تاریخ ZKAccess (<bdi dir="ltr">{s.device_read.kept.start}</bdi> تا <bdi dir="ltr">{s.device_read.kept.end}</bdi>) راه
+          می‌داد؛ برنامه او را نبست و تاریخ خودش را به آن اضافه کرد.
+        </p>
+      )}
+      {s?.device_read?.start && (
         <p className="muted small">دستگاه تاریخ را این‌طور پس داد: <bdi dir="ltr">{s.device_read.start}</bdi> تا <bdi dir="ltr">{s.device_read.end}</bdi></p>
       )}
       {taken != null && (

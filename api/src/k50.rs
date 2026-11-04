@@ -53,11 +53,14 @@ pub struct Config {
     /// Once a month the punches are taken off the device after the app has read them all,
     /// so its memory never fills up (see `clear_device_logs`).
     clear_monthly: bool,
+    /// While ZKAccess still renews members too: a member the device lets in on days the app
+    /// never wrote is not closed or cut by the app (see the helper's `keep_open`).
+    keep_zk: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0, digits: 0, clear_monthly: false }
+        Config { enabled: false, ip: String::new(), port: 4370, machine: 1, comm_key: 0, digits: 0, clear_monthly: false, keep_zk: true }
     }
 }
 
@@ -135,10 +138,55 @@ fn network_settling() -> bool {
         let first = seen.0.is_empty();
         if !first {
             tracing::warn!("network changed: [{}] -> [{now}]", seen.0);
+            // What Windows itself recorded about the Wi-Fi: its state now, and its last
+            // connect and disconnect events with their reason. Only for the log.
+            std::thread::spawn(|| tracing::warn!("wifi after the change: {}", wifi_story()));
         }
         *seen = (now, if first { 0 } else { now_secs() });
     }
     now_secs().saturating_sub(seen.1) < SETTLE_SECS
+}
+
+/// The Wi-Fi as Windows sees it, in one line: `netsh wlan show interfaces` (state, network,
+/// signal) and the last WLAN-AutoConfig events (8001 connected, 8002 failed with a reason,
+/// 8003 disconnected with a reason, 12013 disconnected). On 2026-11-04 14:20 the Wi-Fi
+/// «Pezhohesh_Library» went away for every computer ("no connectable Access Point was
+/// visible") and the office laptop did not join it again; this says why next time.
+fn wifi_story() -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let run = |exe: &str, args: &[&str]| -> String {
+            std::process::Command::new(exe)
+                .args(args)
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_else(|e| format!("({exe}: {e})"))
+        };
+        let keep = ["Name", "State", "SSID", "Signal", "Radio type", "Channel", "Receive rate", "Hosted network"];
+        let iface: Vec<String> = run("netsh", &["wlan", "show", "interfaces"])
+            .lines()
+            .map(str::trim)
+            .filter(|l| keep.iter().any(|k| l.starts_with(k)) && !l.starts_with("BSSID"))
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        let query = "*[System[(EventID=8001 or EventID=8002 or EventID=8003 or EventID=12013)]]";
+        let events: Vec<String> = run("wevtutil", &["qe", "Microsoft-Windows-WLAN-AutoConfig/Operational", &format!("/q:{query}"), "/c:4", "/rd:true", "/f:text"])
+            .split("Event[")
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| {
+                let line = |k: &str| e.lines().map(str::trim).find(|l| l.starts_with(k)).map(|l| l[k.len()..].trim().to_string()).unwrap_or_default();
+                let reason = e.lines().map(str::trim).find(|l| l.starts_with("Reason:") || l.starts_with("Failure Reason:")).unwrap_or("").to_string();
+                let ssid = line("SSID:");
+                format!("{} id {} {} {}", line("Date:"), line("Event ID:"), ssid, reason).split_whitespace().collect::<Vec<_>>().join(" ")
+            })
+            .collect();
+        format!("interfaces [{}]; events [{}]", iface.join(", "), events.join(" | "))
+    }
+    #[cfg(not(windows))]
+    String::new()
 }
 
 /// POST /api/v1/k50/hold?seconds=45 (local only): the desktop app asks this before it turns the
@@ -373,6 +421,8 @@ struct Wanted {
     /// The device's user under this number is this member (made by the app, or checked).
     claimed: Option<bool>,
     pushed_name: Option<String>,
+    /// The last day the app itself wrote for this member (none: never written).
+    pushed_end: Option<NaiveDate>,
     /// Removed, with the number freed or asked to be (such members are not sent again).
     #[allow(dead_code)]
     giving_up: bool,
@@ -397,7 +447,7 @@ WITH seat AS (
 )
 SELECT w.member_id, w.member_no, w.name, w.enabled, w.start_date, w.end_date,
        CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no,
-       w.imported, k.claimed, k.pushed_name, w.giving_up
+       w.imported, k.claimed, k.pushed_name, k.pushed_end, w.giving_up
 FROM want w LEFT JOIN k50_users k ON k.member_id = w.member_id
 ";
 
@@ -445,6 +495,10 @@ fn device_no(cfg: &Config, no: i32) -> String {
 }
 
 /// `same_person`: a partner has said the device's user under this number is this member.
+/// ZKAccess's last day, typed by hand, is often a day or two off the app's 30 days: a device
+/// end within this many days of the app's is the same month, and the app's day counts.
+const ZK_MARGIN_DAYS: i64 = 3;
+
 fn set_user_ops(cfg: &Config, w: &Wanted, same_person: bool) -> Vec<Value> {
     // A member made in the app owns a device ID only once that is known; until then the
     // helper writes it only if the device has no one there, or has them under this name.
@@ -458,6 +512,7 @@ fn set_user_ops(cfg: &Config, w: &Wanted, same_person: bool) -> Vec<Value> {
         "op": "set_user", "no": device_no(cfg, w.member_no), "name": short_name(&w.name), "enabled": w.enabled,
         "start": w.start_date.map(|d| d.to_string()), "end": w.end_date.map(|d| d.to_string()),
         "owner": if checked { String::new() } else { short_name(&w.name) },
+        "keep_open": cfg.keep_zk, "pushed_end": w.pushed_end.map(|d| d.to_string()).unwrap_or_default(), "margin": ZK_MARGIN_DAYS,
     }));
     ops
 }
@@ -474,6 +529,17 @@ fn answer_error(answer: &Value) -> String {
 /// Writes what the device answered for one member.
 async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::Error> {
     let ok = answer["ok"] == json!(true);
+    // The device kept this member open on ZKAccess's days: noted with what it now holds, so
+    // the member's page says so. What the app wanted is still recorded as sent, so the next
+    // rounds do not send it again and again.
+    let mut read = answer.get("valid_read").filter(|v| !v.is_null()).cloned();
+    if let Some(kept) = answer.get("kept_open").filter(|v| v.is_object()) {
+        tracing::info!("k50: member {} kept open on the device's own days {} to {} (ZKAccess); app wanted {} to {:?}",
+            w.member_no, kept["start"], kept["end"], if w.enabled { "open" } else { "closed" }, w.end_date);
+        let mut r = read.take().unwrap_or_else(|| json!({}));
+        r["kept"] = kept.clone();
+        read = Some(r);
+    }
     if ok {
         sqlx::query(
             "INSERT INTO k50_users (member_id, member_no, pushed_name, pushed_start, pushed_end, pushed_enabled, pushed_at, valid_dates, claimed, device_read) \
@@ -488,7 +554,7 @@ async fn record(db: &PgPool, w: &Wanted, answer: &Value) -> Result<bool, sqlx::E
         .bind(w.end_date)
         .bind(w.enabled)
         .bind(answer["valid_dates"].as_bool())
-        .bind(answer.get("valid_read").filter(|v| !v.is_null()).cloned())
+        .bind(read)
         .execute(db)
         .await?;
     } else {
@@ -803,8 +869,15 @@ async fn round(db: &PgPool, cfg: &Config, punches: bool, batches: u32) -> Last {
         None => {
             if let Ok(ip) = cfg.ip.trim().parse() {
                 remember_mac(db, ip).await;
+                remember_wifi(db, ip).await;
             }
         }
+    }
+    // Windows put this laptop on another Wi-Fi (it did on 2026-11-04 14:21, when the office
+    // Wi-Fi was gone for a minute and a saved network with internet was in reach): the
+    // device is on the office one, so the laptop is sent back to it.
+    if last.diagnosis == Some("other_network") && cfg.enabled {
+        rejoin_wifi(db).await;
     }
     *LAST.lock().unwrap() = Some(last.clone());
     last
@@ -953,6 +1026,94 @@ async fn remember_mac(db: &PgPool, ip: Ipv4Addr) {
         .execute(db)
         .await;
     }
+}
+
+/// The Wi-Fi (interface and network name) through which this computer reaches the device,
+/// kept after a good round; nothing when the device is reached by cable.
+async fn remember_wifi(db: &PgPool, ip: Ipv4Addr) {
+    let Ok(Some((interface, ssid))) = tokio::task::spawn_blocking(move || wifi_to(ip)).await else { return };
+    let _ = sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('k50_wifi', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now() WHERE settings.value IS DISTINCT FROM EXCLUDED.value",
+    )
+    .bind(json!({ "interface": interface, "ssid": ssid }))
+    .execute(db)
+    .await;
+}
+
+/// The device is not on any network of this computer: when the Wi-Fi it was reached through
+/// is now on another network (or on none), Windows is asked to join the device's again.
+/// Logged either way. A Wi-Fi that is not in reach just fails to join.
+async fn rejoin_wifi(db: &PgPool) {
+    let saved: Option<Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'k50_wifi'").fetch_optional(db).await.ok().flatten();
+    let Some(saved) = saved else { return };
+    let (Some(interface), Some(ssid)) = (saved["interface"].as_str().map(str::to_string), saved["ssid"].as_str().map(str::to_string)) else { return };
+    let r = tokio::task::spawn_blocking(move || {
+        let now = wifi_interfaces().into_iter().find(|w| w.0 == interface);
+        match now {
+            Some((_, state, current)) if state == "connected" && current == ssid => format!("{interface} is on {ssid} already"),
+            other => {
+                let was = other.map(|(_, state, current)| format!("{state} {current}")).unwrap_or_else(|| "not found".into());
+                let out = netsh(&["wlan", "connect", &format!("name={ssid}"), &format!("ssid={ssid}"), &format!("interface={interface}")]);
+                format!("{interface} was {was}; asked to join {ssid}: {}", out.split_whitespace().collect::<Vec<_>>().join(" "))
+            }
+        }
+    })
+    .await
+    .unwrap_or_default();
+    tracing::warn!("k50 wifi: {r}");
+}
+
+fn netsh(args: &[&str]) -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("netsh")
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_else(|e| format!("(netsh: {e})"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = args;
+        String::new()
+    }
+}
+
+/// Each Wi-Fi interface as `netsh wlan show interfaces` lists it: (name, state, network).
+fn wifi_interfaces() -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for line in netsh(&["wlan", "show", "interfaces"]).lines() {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let (k, v) = (k.trim(), v.trim().to_string());
+        match k {
+            "Name" => out.push((v, String::new(), String::new())),
+            "State" => if let Some(w) = out.last_mut() { w.1 = v },
+            "SSID" => if let Some(w) = out.last_mut() { w.2 = v },
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The connected Wi-Fi interface whose network holds `ip`, with its network name.
+fn wifi_to(ip: Ipv4Addr) -> Option<(String, String)> {
+    let on: Vec<String> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| match &i.addr {
+            if_addrs::IfAddr::V4(v4) => {
+                let mask = u32::from(v4.netmask);
+                mask != 0 && u32::from(v4.ip) & mask == u32::from(ip) & mask
+            }
+            _ => false,
+        })
+        .map(|i| i.name)
+        .collect();
+    wifi_interfaces().into_iter().find(|w| w.1 == "connected" && !w.2.is_empty() && on.contains(&w.0)).map(|w| (w.0, w.2))
 }
 
 /// ZKAccess (or another ZKTeco program) is open on this computer. It keeps its own connection
@@ -1522,7 +1683,12 @@ pub struct DatesReport {
     device_users: usize,
     /// Members who get the device's dates (or would, before commit).
     added: Vec<DateRow>,
-    /// Members the app already has dates for; the app's dates stand.
+    /// Members whose last period in the app ends before the day the device still lets them in
+    /// to (renewed in ZKAccess or the Excel book, not in the app), and that day is today or
+    /// later: they get a period from the day after the app's end (or the device's first day,
+    /// if later) to the device's last day. `start` is that new first day.
+    extended: Vec<DateRow>,
+    /// Members the app already has dates for, as far as the device's or further; they stand.
     has_dates: usize,
     /// Device users with no let-in dates, or the app has no member under that number.
     no_dates: usize,
@@ -1534,9 +1700,10 @@ pub struct DatesReport {
 
 /// POST /api/v1/k50/dates?commit=: for members the app has no seat dates for at all (the
 /// Excel book has none), takes the dates the device lets them in on, as a period without
-/// money or bill. Without commit it only shows what it would do. After this the app's
-/// dates are the ones that count; it never reads dates from the device for a member that
-/// has any.
+/// money or bill. Members whose app dates end before the device's, while the device still
+/// lets them in today, get the rest as such a period too (`extended`): the Excel book gives
+/// money and names but no days, the device has the days. A device end that is past, or not
+/// after the app's, changes nothing. Without commit it only shows what it would do.
 pub async fn dates_from_device(
     State(s): State<AppState>,
     user: CurrentUser,
@@ -1553,31 +1720,29 @@ pub async fn dates_from_device(
     }
     let users: Vec<DatedUser> = serde_json::from_value(answer["users"].clone()).unwrap_or_default();
     let nos: Vec<i32> = users.iter().filter_map(|u| u.no.trim().parse().ok()).collect();
-    // Members under those numbers, and whether they have any seat period already.
-    let members: Vec<(Uuid, i32, String, bool, bool)> = sqlx::query_as(
+    // Members under those numbers, and the last day of their seat periods (none: no dates yet).
+    let members: Vec<(Uuid, i32, String, bool, Option<NaiveDate>)> = sqlx::query_as(
         "SELECT m.id, m.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), m.import_batch_id IS NOT NULL, \
-                EXISTS (SELECT 1 FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
-                        WHERE ms.member_id = m.id AND ms.deleted_at IS NULL AND p.kind IN ('monthly', 'daily')) \
+                (SELECT max(ms.end_date) FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+                 WHERE ms.member_id = m.id AND ms.deleted_at IS NULL AND p.kind IN ('monthly', 'daily')) \
          FROM members m WHERE m.deleted_at IS NULL AND m.member_no = ANY($1)",
     )
     .bind(&nos)
     .fetch_all(&s.db)
     .await?;
-    let by_no: std::collections::HashMap<i32, (Uuid, String, bool, bool)> =
-        members.into_iter().map(|(id, no, name, imported, dated)| (no, (id, name, imported, dated))).collect();
+    let by_no: std::collections::HashMap<i32, (Uuid, String, bool, Option<NaiveDate>)> =
+        members.into_iter().map(|(id, no, name, imported, last)| (no, (id, name, imported, last))).collect();
 
     let confirmed = names_confirmed(&s.db).await?;
+    let today = crate::hall::today();
     let mut report = DatesReport { device_users: users.len(), ..Default::default() };
     let mut take: Vec<(Uuid, NaiveDate, NaiveDate)> = Vec::new();
+    let mut extend: Vec<(Uuid, NaiveDate, NaiveDate)> = Vec::new();
     for u in &users {
-        let Some((id, app_name, imported, dated)) = u.no.trim().parse::<i32>().ok().and_then(|n| by_no.get(&n)) else {
+        let Some((id, app_name, imported, last)) = u.no.trim().parse::<i32>().ok().and_then(|n| by_no.get(&n)) else {
             report.not_in_app += 1;
             continue;
         };
-        if *dated {
-            report.has_dates += 1;
-            continue;
-        }
         let valid = u.valid.as_ref().filter(|v| v["expires"].as_i64() == Some(1));
         let (start, end) = match valid {
             Some(v) => (v["start"].as_str().and_then(device_day), v["end"].as_str().and_then(device_day)),
@@ -1591,6 +1756,16 @@ pub async fn dates_from_device(
             report.no_dates += 1;
             continue;
         }
+        // A member with dates in the app: only the part the device lets them in beyond the
+        // app's last day, and only while it still runs.
+        let start = match *last {
+            None => start,
+            Some(last) if end > last + chrono::Duration::days(ZK_MARGIN_DAYS) && end >= today => start.max(last + chrono::Duration::days(1)),
+            Some(_) => {
+                report.has_dates += 1;
+                continue;
+            }
+        };
         let row = DateRow { no: u.no.trim().to_string(), device_name: u.name.trim().to_string(), app_name: app_name.clone(), start: Some(start), end: Some(end), taken: true };
         let alike = row.device_name.is_empty() || same_or_confirmed(&confirmed, &row.no, &row.device_name, app_name);
         if !alike {
@@ -1600,11 +1775,16 @@ pub async fn dates_from_device(
                 continue;
             }
         }
-        take.push((*id, start, end));
-        report.added.push(row);
+        if last.is_some() {
+            extend.push((*id, start, end));
+            report.extended.push(row);
+        } else {
+            take.push((*id, start, end));
+            report.added.push(row);
+        }
     }
 
-    if p.commit && !take.is_empty() {
+    if p.commit && (!take.is_empty() || !extend.is_empty()) {
         let plan: Option<Uuid> = sqlx::query_scalar(
             "SELECT p.id FROM plans p LEFT JOIN memberships ms ON ms.plan_id = p.id AND ms.deleted_at IS NULL \
              WHERE p.kind = 'monthly' GROUP BY p.id, p.active ORDER BY p.active DESC, count(ms.id) DESC LIMIT 1",
@@ -1612,9 +1792,10 @@ pub async fn dates_from_device(
         .fetch_optional(&s.db)
         .await?;
         let Some(plan) = plan else { return Err(ApiError::bad("no_monthly_plan")) };
-        let ids: Vec<Uuid> = take.iter().map(|t| t.0).collect();
-        let starts: Vec<NaiveDate> = take.iter().map(|t| t.1).collect();
-        let ends: Vec<NaiveDate> = take.iter().map(|t| t.2).collect();
+        let col = |v: &[(Uuid, NaiveDate, NaiveDate)]| -> (Vec<Uuid>, Vec<NaiveDate>, Vec<NaiveDate>) {
+            (v.iter().map(|t| t.0).collect(), v.iter().map(|t| t.1).collect(), v.iter().map(|t| t.2).collect())
+        };
+        let (ids, starts, ends) = col(&take);
         let mut tx = crate::auth::begin_as(&s.db, &user).await?;
         // A member who got dates in the meantime keeps them.
         sqlx::query(
@@ -1632,13 +1813,33 @@ pub async fn dates_from_device(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
+        // The rest of a renewal the app did not see; a member whose app dates reached that far
+        // in the meantime keeps them.
+        let (ids, starts, ends) = col(&extend);
+        sqlx::query(
+            "INSERT INTO memberships (id, member_id, plan_id, start_date, end_date, fee, discount, note, created_by) \
+             SELECT gen_random_uuid(), t.member_id, $4, t.start_date, t.end_date, 0, 0, \
+                    'تمدید از دستگاه انگشت؛ پولش در اکسل یا بیرون از برنامه گرفته شده', $5 \
+             FROM UNNEST($1::uuid[], $2::date[], $3::date[]) AS t(member_id, start_date, end_date) \
+             WHERE NOT EXISTS (SELECT 1 FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+                               WHERE ms.member_id = t.member_id AND ms.deleted_at IS NULL AND p.kind IN ('monthly', 'daily') \
+                                 AND ms.end_date >= t.end_date)",
+        )
+        .bind(&ids)
+        .bind(&starts)
+        .bind(&ends)
+        .bind(plan)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         report.committed = true;
-        save_setting(&s.db, "k50_dates_import", json!({ "at": Utc::now(), "added": take.len() })).await?;
-        tracing::info!("k50 dates from device: {} members", take.len());
+        save_setting(&s.db, "k50_dates_import", json!({ "at": Utc::now(), "added": take.len(), "extended": extend.len() })).await?;
+        tracing::info!("k50 dates from device: {} members, {} extended", take.len(), extend.len());
         poke();
     }
     report.added.sort_by_key(|r| r.no.parse::<i64>().unwrap_or(i64::MAX));
+    report.extended.sort_by_key(|r| r.no.parse::<i64>().unwrap_or(i64::MAX));
     Ok(Json(Ok(report)))
 }
 
@@ -2391,6 +2592,21 @@ mod tests {
         assert_eq!([1, 2, 3, 4, 5, 9].map(super::backoff), [120, 240, 480, 960, 1800, 1800]);
         assert!(super::unreachable("connect_failed (-307)") && super::unreachable("timeout") && super::unreachable("busy"));
         assert!(!super::unreachable("set_user_failed (-2)"));
+    }
+
+    #[test]
+    #[ignore = "reads this computer's Wi-Fi; run by hand"]
+    fn wifi_story_reads() {
+        let s = super::wifi_story();
+        println!("{s}");
+        assert!(s.starts_with("interfaces ["));
+    }
+
+    #[test]
+    #[ignore = "reads this computer's Wi-Fi; run by hand on the office network"]
+    fn wifi_to_the_device() {
+        println!("{:?}", super::wifi_interfaces());
+        println!("{:?}", super::wifi_to("192.168.48.201".parse().unwrap()));
     }
 
     #[test]

@@ -70,6 +70,18 @@ it is kept busy. Keep these when changing device code:
   parts (`device_day`, the helper's `Day`), never by "the first eight digits".
 - Device talks, failures with an ARP/ping check of the device and its neighbours, and changes
   of this PC's network are all in `api.log`: read it before guessing at a device problem.
+- The office Wi-Fi «Pezhohesh_Library» itself vanishes for about 1.5 minutes many times a day
+  (proven 2026-11-04: two laptops lost it in the same second, Windows saying "no connectable
+  Access Point was visible"); Windows then joined another saved Wi-Fi ("Amir Artin") and stayed
+  there, so the device was out of reach (`other_network`). Every network change logs Windows'
+  Wi-Fi state and last WLAN events (`wifi_story`); after a good round the Wi-Fi the device is
+  reached through is kept (`k50_wifi`) and `rejoin_wifi` sends the laptop back to it.
+- ZKAccess still renews some members. With `keep_zk` (on by default) the helper's `set_user`
+  reads the device's days first: a user it lets in today or later on days the app never wrote
+  (`pushed_end`), ending more than `ZK_MARGIN_DAYS` (3) from the app's end (ZKAccess's typed
+  end is often a day or two off; within that the app's day counts), is not closed or cut; the app's days are joined to them (`kept_open`, shown on
+  the member page). «تاریخ از دستگاه» (also offered after an Excel import) extends app periods
+  to the device's later end while it still runs.
 - `clear_monthly` (off by default) takes the punches off the device once a Solar month, only
   after a whole read; the app keeps them in `attendance`.
 

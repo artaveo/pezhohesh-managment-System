@@ -206,28 +206,45 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
   }
 
   const s = sales?.summary;
+  // Bought and sold within the chosen period; «همه» is the whole history. In hand is always today.
+  const all = period.value.span === "all";
+  const inRange = new Map((sales?.by_card ?? []).map((c) => [c.volume_gb, c]));
+  const counted = (c: HotspotCard) => (all ? c : inRange.get(c.volume_gb) ?? { bought: 0, sold: 0 });
+  const label = period.range.label;
   return (
     <>
-      <div className="glass table-wrap">
-        <table className="table">
-          <thead><tr><th>کارت</th><th>قیمت فروش</th><th>خریده‌شده</th><th>فروخته‌شده</th><th>موجود</th></tr></thead>
-          <tbody>
-            {cards.cards.filter((c) => c.active || c.bought > 0).map((c) => (
-              <tr key={c.volume_gb} className={c.active ? "" : "inactive"}>
-                <td><strong dir="ltr">{gb(c.volume_gb)}</strong></td>
-                <td className="num">{fa(c.price)}</td>
-                <td className="num">{fa(c.bought)}</td>
-                <td className="num">{fa(c.sold)}</td>
-                <td className="num"><span className={c.in_hand > 0 ? "days ok" : "days none"}>{fa(c.in_hand)}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
       <div className="list-tools">
         <PeriodPicker value={period.value} onChange={period.setValue} />
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="glass table-wrap">
+        <table className="table card-stock">
+          <thead>
+            <tr>
+              <th>کارت</th>
+              <th>قیمت فروش</th>
+              <th>خریده‌شده{all ? "" : <span className="th-sub">{label}</span>}</th>
+              <th>فروخته‌شده{all ? "" : <span className="th-sub">{label}</span>}</th>
+              <th>موجود<span className="th-sub">امروز</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {cards.cards.filter((c) => c.active || c.bought > 0).map((c) => {
+              const n = counted(c);
+              return (
+                <tr key={c.volume_gb} className={c.active ? "" : "inactive"}>
+                  <td><strong dir="ltr">{gb(c.volume_gb)}</strong></td>
+                  <td>{fa(c.price)}</td>
+                  <td>{fa(n.bought)}</td>
+                  <td>{fa(n.sold)}</td>
+                  <td><span className={c.in_hand > 0 ? "days ok" : "days none"}>{fa(c.in_hand)}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {!all && !sales && <p className="muted empty">در حال خواندن {label}…</p>}
+      </div>
       {s && (
         <div className="kpis hotspot-kpis">
           <div className="glass kpi hero"><span className="kpi-label">سود (درآمد هاتسپات)</span><span className="kpi-value">{fa(s.profit)} <small>افغانی</small></span></div>
@@ -239,7 +256,7 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
       <h2>شمارش‌های فروش</h2>
       <div className="glass table-wrap">
         <table className="table">
-          <thead><tr><th>تاریخ</th><th>شمارهٔ بل</th><th>کارت‌ها</th><th>فروش</th><th>سود</th><th>ثبت کننده</th><th /></tr></thead>
+          <thead><tr><th>تاریخ</th><th>شمارهٔ بل</th><th>کارت‌ها</th><th className="num">فروش</th><th className="num">سود</th><th>ثبت کننده</th><th /></tr></thead>
           <tbody>
             {sales?.rows.map((r) => (
               <tr key={r.receipt_id ?? `xl-${r.sold_on}`} className={r.voided ? "inactive" : ""}>
@@ -266,7 +283,7 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
       <h2>بل‌های خرید</h2>
       <div className="glass table-wrap">
         <table className="table">
-          <thead><tr><th>تاریخ</th><th>شمارهٔ بل</th><th>کارت‌ها</th><th>GB</th><th>مبلغ خرید</th><th>ثبت کننده</th><th /></tr></thead>
+          <thead><tr><th>تاریخ</th><th>شمارهٔ بل</th><th>کارت‌ها</th><th className="num">GB</th><th className="num">مبلغ خرید</th><th>ثبت کننده</th><th /></tr></thead>
           <tbody>
             {buys?.map((b) => (
               <tr key={b.id}>

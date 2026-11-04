@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, K50_DIAGNOSIS, type K50Comparison, type K50Config, type K50Dates, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, K50_DIAGNOSIS, type K50Comparison, type K50Config, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
+import { DeviceDates } from "../components/DeviceDates";
 
 const when = (at: string) => {
   const d = new Date(at);
@@ -22,8 +23,6 @@ export function Device() {
   const [busy, setBusy] = useState<"" | "test" | "scan" | "sync" | "time" | "save" | "compare" | "sdk" | "fingers" | "dates" | "names" | "clear">("");
   // Clearing the device's punches asks twice.
   const [clearing, setClearing] = useState(false);
-  const [dates, setDates] = useState<K50Dates | null>(null);
-  const [withDiffers, setWithDiffers] = useState(false);
   const [sdk, setSdk] = useState<K50Sdk | null>(null);
   const [sdkFrom, setSdkFrom] = useState("");
   const [sdkError, setSdkError] = useState("");
@@ -68,6 +67,11 @@ export function Device() {
     setAsking(false);
     toast(enabled ? "به‌روزرسانی خودکار روشن شد." : "به‌روزرسانی خودکار خاموش شد.");
   });
+  const setKeepZk = (keep_zk: boolean) => run("save", async () => {
+    await api.setK50({ ...s!.config, keep_zk });
+    setForm((f) => f && { ...f, keep_zk });
+    toast(keep_zk ? "اعضایی که ZKAccess باز گذاشته، بسته نمی‌شوند." : "حالا فقط تاریخ برنامه حساب است.");
+  });
   const setClearMonthly = (clear_monthly: boolean) => run("save", async () => {
     await api.setK50({ ...s!.config, clear_monthly });
     setForm((f) => f && { ...f, clear_monthly });
@@ -109,12 +113,6 @@ export function Device() {
     const r = await api.backupK50Fingers();
     if (r.Ok) toast(`انگشت‌ها ذخیره شد: ${fa(r.Ok.fingers)} انگشت از ${fa(r.Ok.users)} کاربر.`);
     else setError(k50ErrorText(r.Err));
-  });
-  const readDates = (commit: boolean, include = withDiffers) => run("dates", async () => {
-    const r = await api.k50Dates(commit, include);
-    if (!r.Ok) { setError(k50ErrorText(r.Err)); return; }
-    setDates(r.Ok);
-    if (r.Ok.committed) toast(`تاریخ عضویت ${fa(r.Ok.added.length)} عضو از دستگاه ثبت شد.`);
   });
   const clearLogs = () => run("clear", async () => {
     setClearing(false);
@@ -208,6 +206,15 @@ export function Device() {
         </label>
         {saved.enabled && (
           <>
+            <label className="check big">
+              <input type="checkbox" checked={saved.keep_zk !== false} disabled={!!busy} onChange={(e) => void setKeepZk(e.target.checked)} />
+              عضوی را که ZKAccess روی دستگاه باز گذاشته، بسته نکن
+            </label>
+            <p className="muted small">
+              تا وقتی تمدید بعضی اعضا هنوز در ZKAccess انجام می‌شود روشن بماند: اگر دستگاه کسی را با تاریخی که برنامه ننوشته امروز یا بعد از آن راه
+              می‌دهد، برنامه او را نمی‌بندد و تاریخش را کوتاه نمی‌کند، فقط تاریخ خودش را به آن اضافه می‌کند. اگر روز ختم ZKAccess تا 3 روز با روز ختم
+              برنامه فرق دارد، همان ماه حساب می‌شود و روز برنامه درست است. وقتی ZKAccess کنار گذاشته شد، خاموشش کنید.
+            </p>
             <label className="check big">
               <input type="checkbox" checked={!!saved.clear_monthly} disabled={!!busy} onChange={(e) => void setClearMonthly(e.target.checked)} />
               ماهی یک بار، حاضری‌ها را بعد از خواندن از خود دستگاه پاک کن (در برنامه می‌مانند)
@@ -305,66 +312,17 @@ export function Device() {
       </section>
 
       <section className="panel wide">
-        <h2>تاریخ عضویت از دستگاه (یک بار)</h2>
+        <h2>تاریخ عضویت از دستگاه</h2>
         <p className="muted">
-          اکسل تاریخ شروع و ختم عضویت ندارد ولی دستگاه دارد. این کار برای اعضایی که در برنامه هیچ تاریخی ندارند، همان
-          تاریخی را که دستگاه برایشان دارد ثبت می‌کند؛ بدون پول و بدون بل. اعضایی که در برنامه تاریخ دارند دست نمی‌خورند.
-          از آن به بعد تاریخ برنامه حرف اول را می‌زند و با تمدید به دستگاه می‌رود. روز شروع کار، بعد از ورود آخرین اکسل،
-          یک بار این را بزنید.
+          اکسل تاریخ شروع و ختم عضویت ندارد ولی دستگاه دارد. اعضایی که در برنامه هیچ تاریخی ندارند، همان تاریخ دستگاه را
+          می‌گیرند. اعضایی که تاریخشان در برنامه زودتر از دستگاه تمام می‌شود (در ZKAccess یا اکسل تمدید شده‌اند)، باقی‌اش را
+          می‌گیرند، به شرطی که روز ختم دستگاه هنوز نگذشته باشد. همه بدون پول و بدون بل؛ پولشان از اکسل می‌آید. اول فهرست
+          را می‌بینید و بعد ثبت می‌کنید. بعد از هر ورود اکسل یک بار بزنید.
         </p>
         {s.dates_import && (
-          <p className="form-ok">آخرین بار {when(s.dates_import.at)}: تاریخ {fa(s.dates_import.added)} عضو از دستگاه ثبت شد.</p>
+          <p className="form-ok">آخرین بار {when(s.dates_import.at)}: تاریخ {fa(s.dates_import.added)} عضو از دستگاه ثبت{s.dates_import.extended ? ` و ${fa(s.dates_import.extended)} عضو تمدید` : ""} شد.</p>
         )}
-        <div className="actions">
-          <button className="btn ghost" disabled={!!busy || !saved.ip} onClick={() => void readDates(false)}>
-            {busy === "dates" && !dates ? "در حال خواندن دستگاه…" : "اول ببینم چه ثبت می‌شود"}
-          </button>
-        </div>
-        {dates && (
-          <>
-            <div className="stats-row">
-              <div><span className="muted small">{dates.committed ? "ثبت شد" : "ثبت می‌شود"}</span><strong>{fa(dates.added.length)}</strong></div>
-              <div><span className="muted small">از قبل تاریخ دارند</span><strong>{fa(dates.has_dates)}</strong></div>
-              <div><span className="muted small">در دستگاه تاریخ ندارند</span><strong>{fa(dates.no_dates)}</strong></div>
-              <div><span className="muted small">در برنامه نیستند</span><strong>{fa(dates.not_in_app)}</strong></div>
-            </div>
-            {dates.name_differs.length > 0 && (
-              <>
-                <p className="notice warn">
-                  نام {fa(dates.name_differs.length)} عضو روی دستگاه با نامش در برنامه یکی به نظر نمی‌رسد. این‌ها جدا
-                  نشان داده شده‌اند و تا شما نخواهید تاریخ نمی‌گیرند.
-                </p>
-                <label className="check">
-                  <input type="checkbox" checked={withDiffers} disabled={!!busy || dates.committed} onChange={(e) => { setWithDiffers(e.target.checked); void readDates(false, e.target.checked); }} />
-                  اعضای اکسل در این فهرست هم تاریخ بگیرند (همان آیدی در اکسل و ZKAccess یعنی همان شخص)
-                </label>
-              </>
-            )}
-            <div className="table-wrap flush">
-              <table className="table">
-                <thead><tr><th>آیدی</th><th>نام روی دستگاه</th><th>نام در برنامه</th><th>شروع</th><th>ختم</th></tr></thead>
-                <tbody>
-                  {[...dates.name_differs.filter((r) => !r.taken), ...dates.added].slice(0, 300).map((r) => (
-                    <tr key={r.no} className={r.taken ? "" : "muted"}>
-                      <td><bdi dir="ltr">{r.no}</bdi>{!r.taken && <span className="chip">نام فرق دارد</span>}</td>
-                      <td>{r.device_name || "—"}</td>
-                      <td>{r.app_name}</td>
-                      <td>{r.start ? formatDay(r.start) : "—"}</td>
-                      <td>{r.end ? formatDay(r.end) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {!dates.committed && dates.added.length > 0 && (
-              <div className="actions">
-                <button className="btn" disabled={!!busy} onClick={() => void readDates(true)}>
-                  {busy === "dates" ? "در حال ثبت…" : "همین تاریخ‌ها را ثبت کن"}
-                </button>
-              </div>
-            )}
-          </>
-        )}
+        <DeviceDates ready={!!saved.ip} onDone={() => setTick((t) => t + 1)} />
       </section>
 
       <section className="panel wide">

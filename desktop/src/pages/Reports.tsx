@@ -4,7 +4,7 @@ import {
   sameMonthLastYear, toSolar, yearNumber, yearStart,
 } from "../lib/solar";
 import { balance, loadRanges, total, type Range, type Sum } from "../lib/reports";
-import { MANAGER_SALARY, PARTNERS, shares } from "../lib/shares";
+import { MANAGER_SALARY, PARTNERS, inTill, shares } from "../lib/shares";
 import { useLoad } from "../lib/useLoad";
 import { api, type HotspotPeriod, type SalaryPage } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
@@ -103,10 +103,11 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   );
   return (
     <>
-      <section className="kpis four">
+      <section className={`kpis ${canShares ? "five" : "four"}`}>
         <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={ahead ? undefined : vs(data.prev.income, `نسبت به ${monthName(pm)}${days}`)} />
         <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={ahead ? undefined : vs(data.prev.expenses, `نسبت به ${monthName(pm)}${days}`)} />
         <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={ahead ? undefined : vs(balance(data.prev), `نسبت به ${monthName(pm)}${days}`)} />
+        {canShares && <Kpi icon="banknote" label="موجودی" value={inTill(data.cur)} unit="؋" note="سود خالص منهای برداشت ناصری و رحیمی" />}
         {data.owed
           ? <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={data.owed.sum} unit="؋" note={`${fa(data.owed.n)} دوره با پرداخت ناتمام`} />
           : <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={NaN} unit="" note={<button className="link" onClick={retry}>خوانده نشد؛ دوباره</button>} />}
@@ -164,6 +165,7 @@ function MonthSheet({ title, current, cur, prev, last, prevLabel, lastLabel, exp
             {canShares && section("سهم شرکا")}
             {canShares && PARTNERS.map((p) => row(`سهمیه ${p.short}`, (s) => shares(s).find((x) => x.name === p.name)!.share))}
             {canShares && PARTNERS.map((p) => row(`برداشت ${p.short}`, (s) => s.withdrawals_by_person[p.name] ?? 0))}
+            {canShares && row("موجودی (سود خالص منهای برداشت‌ها)", inTill, "net")}
           </tbody>
         </table>
       </div>

@@ -64,6 +64,8 @@ export type K50Config = {
   enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number;
   /** Once a month the punches go off the device after the app has read them all. */
   clear_monthly: boolean;
+  /** Members ZKAccess renewed on the device are not closed by the app. */
+  keep_zk: boolean;
 };
 export type K50Comparison = {
   device_users: number; in_app: number; not_in_app: number; differs: number; admins: number; zero_padded: number; padded_width: number | null;
@@ -96,7 +98,7 @@ export type K50Status = {
   errors: { member_no: number; name: string; error: string; error_at: string }[];
   /** Fingers in the app's own copy, and the last copy from the device. */
   fingers_saved: number; fingers_backup: { at: string; users: number; fingers: number; changed: number } | null;
-  dates_import: { at: string; added: number } | null;
+  dates_import: { at: string; added: number; extended?: number } | null;
   /** ZKAccess (or another ZKTeco program) is open on this laptop. */
   zk_program_open: boolean;
   /** The device did not answer: the next try (seconds since 1970) and failures in a row. */
@@ -107,7 +109,7 @@ export type K50Status = {
 };
 export type K50DateRow = { no: string; device_name: string; app_name: string; start: string | null; end: string | null; taken: boolean };
 export type K50Dates = {
-  committed: boolean; device_users: number; added: K50DateRow[]; has_dates: number; no_dates: number; not_in_app: number;
+  committed: boolean; device_users: number; added: K50DateRow[]; extended: K50DateRow[]; has_dates: number; no_dates: number; not_in_app: number;
   name_differs: K50DateRow[];
 };
 /** What the device answered (the rest of the fields depend on the question). */
@@ -127,7 +129,7 @@ export type K50User = K50Answer & {
 export type MemberK50 = {
   configured: boolean; auto: boolean; enabled: boolean; start_date: string | null; end_date: string | null;
   sent: { member_no: number; pushed_start: string | null; pushed_end: string | null; pushed_enabled: boolean | null; pushed_at: string | null;
-    valid_dates: boolean | null; device_read: { expires: number; start: string; end: string } | null;
+    valid_dates: boolean | null; device_read: { expires?: number; start?: string; end?: string; kept?: { start: string; end: string } } | null;
     fingers: number | null; error: string | null; error_at: string | null } | null;
   visits: string[];
 };
@@ -421,6 +423,8 @@ export type HotspotReport = { periods: HotspotPeriod[]; stock: { volume_gb: numb
 export type HotspotSales = {
   summary: { bought: number; sales: number; cost: number; profit: number; cards_sold: number; gb_sold: number };
   rows: HotspotSale[];
+  /** Per card volume, within the range asked for. */
+  by_card: { volume_gb: number; bought: number; sold: number }[];
 };
 export type BookRules = { loan_days: number; weekly_fee: number; fine_per_day: number };
 export type DepositKind = "cash" | "book" | "person";

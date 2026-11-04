@@ -1,5 +1,7 @@
 import { addDays, daysBetween, fa, iso, monthName, monthStart, nextMonth, prevMonth, sameMonthLastYear, yearNumber } from "../../lib/solar";
 import { asBars, balance, loadRanges, total } from "../../lib/reports";
+import { inTill } from "../../lib/shares";
+import { useAuth } from "../../auth/AuthProvider";
 import { useLoad } from "../../lib/useLoad";
 import { Failed, Figure, Kpi, Loading } from "../../components/Stat";
 import { TrendChart } from "../../components/charts/TrendChart";
@@ -10,6 +12,9 @@ import { CategoryBars } from "../../components/charts/CategoryBars";
  * same month last year (e.g. 1 to 3 Aqrab 1405 vs 1 to 3 Mizan 1405 and 1 to 3 Aqrab 1404).
  */
 export function MonthView() {
+  const user = useAuth().user!;
+  // The partners' withdrawals are theirs to see, as on the finance report.
+  const canShares = user.role === "partner" || (user.sections ?? []).includes("shares");
   const now = new Date();
   const ms = monthStart(now);
   const me = nextMonth(ms);
@@ -50,6 +55,7 @@ export function MonthView() {
     { label: "درآمد", get: (s) => s.income, unit: "؋" },
     { label: "مصارف", get: (s) => s.expenses, unit: "؋", upIsGood: false },
     { label: "سود خالص", get: net, unit: "؋" },
+    ...(canShares ? [{ label: "موجودی", get: inTill, unit: "؋" }] : []),
     { label: "ثبت‌نام جدید", get: (s) => s.new_members, unit: "نفر" },
   ];
 
@@ -58,10 +64,11 @@ export function MonthView() {
       <p className="muted period-note">
         {fa(n)} روز اول {name} {yearNumber(now)} ({n === daysBetween(ms, me) ? "ماه کامل" : "تا امروز"}). مقایسه‌ها با همین تعداد روز انجام می‌شود.
       </p>
-      <section className="kpis four">
+      <section className={`kpis ${canShares ? "five" : "four"}`}>
         <Kpi hero icon="wallet" label={`درآمد ماه ${name}`} value={cur.income} unit="؋" compare={[{ prev: prev.income, vs: vsPrev }, { prev: last.income, vs: vsLast }]} />
         <Kpi icon="receipt" label={`مصارف ماه ${name}`} value={cur.expenses} unit="؋" upIsGood={false} compare={[{ prev: prev.expenses, vs: vsPrev }, { prev: last.expenses, vs: vsLast }]} />
         <Kpi icon="chart" label={`سود خالص ماه ${name}`} value={net(cur)} unit="؋" compare={[{ prev: net(prev), vs: vsPrev }, { prev: net(last), vs: vsLast }]} />
+        {canShares && <Kpi icon="banknote" label={`موجودی ماه ${name}`} value={inTill(cur)} unit="؋" note="سود خالص منهای برداشت ناصری و رحیمی" />}
         <Kpi icon="plus" label={`ثبت‌نام جدید ${name}`} value={cur.new_members} unit="نفر" compare={[{ prev: prev.new_members, vs: vsPrev }, { prev: last.new_members, vs: vsLast }]} />
       </section>
 

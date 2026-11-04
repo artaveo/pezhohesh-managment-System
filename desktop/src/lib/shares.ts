@@ -14,7 +14,13 @@ export const PARTNERS = [
   { name: "جلیل رحیمی", short: "رحیمی", part: 2 / 3, paysManager: true },
 ] as const;
 
-export type Share = { name: string; short: string; share: number; taken: number; left: number };
+/** What the two partners took out of the till in this period. */
+export const partnersTaken = (s: Sum) => PARTNERS.reduce((t, p) => t + (s.withdrawals_by_person[p.name] ?? 0), 0);
+
+/** موجودی: the balance less the partners' withdrawals, i.e. what of this period's money should still be in the till. */
+export const inTill = (s: Sum) => balance(s) - partnersTaken(s);
+
+export type Share ={ name: string; short: string; share: number; taken: number; left: number };
 
 export function shares(s: Sum): Share[] {
   const b = balance(s);

@@ -395,10 +395,19 @@ pub struct Summary {
     gb_sold: f64,
 }
 
+/// One card volume within the range: how many came in on supplier bills and how many were sold.
+#[derive(Serialize, FromRow)]
+pub struct CardInRange {
+    volume_gb: f64,
+    bought: i64,
+    sold: i64,
+}
+
 #[derive(Serialize)]
 pub struct Sales {
     summary: Summary,
     rows: Vec<Sale>,
+    by_card: Vec<CardInRange>,
 }
 
 pub async fn sales(State(s): State<AppState>, user: CurrentUser, Query(r): Query<Range>) -> Result<Json<Sales>, ApiError> {
@@ -434,6 +443,14 @@ pub async fn sales(State(s): State<AppState>, user: CurrentUser, Query(r): Query
     .bind(r.to)
     .fetch_one(&mut *tx)
     .await?;
+    // Counted as v_hotspot_stock counts them (a voided count is deleted), only within the range.
+    let by_card: Vec<CardInRange> = sqlx::query_as(
+        "SELECT c.volume_gb::float8 AS volume_gb,                 COALESCE((SELECT sum(p.quantity) FROM hotspot_purchases p JOIN hotspot_buys h ON h.id = p.buy_id                           WHERE p.deleted_at IS NULL AND h.deleted_at IS NULL AND p.volume_gb = c.volume_gb                             AND ($1::date IS NULL OR h.purchased_on >= $1) AND ($2::date IS NULL OR h.purchased_on <= $2)), 0)::int8 AS bought,                 COALESCE((SELECT sum(x.quantity) FROM hotspot_sales x                           WHERE x.deleted_at IS NULL AND x.volume_gb = c.volume_gb                             AND ($1::date IS NULL OR x.sold_on >= $1) AND ($2::date IS NULL OR x.sold_on <= $2)), 0)::int8 AS sold          FROM hotspot_cards c ORDER BY c.volume_gb",
+    )
+    .bind(r.from)
+    .bind(r.to)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let mut summary = Summary { bought, ..Summary::default() };
     for s in rows.iter().filter(|s| !s.voided) {
@@ -443,7 +460,7 @@ pub async fn sales(State(s): State<AppState>, user: CurrentUser, Query(r): Query
         summary.cards_sold += s.card_count;
         summary.gb_sold += s.gb;
     }
-    Ok(Json(Sales { summary, rows }))
+    Ok(Json(Sales { summary, rows, by_card }))
 }
 
 #[derive(Deserialize)]
