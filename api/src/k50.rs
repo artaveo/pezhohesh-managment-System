@@ -1847,6 +1847,8 @@ pub async fn dates_from_device(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
+        // The book's fees get their days from these periods.
+        crate::import_excel::date_excel_fees(&mut tx).await?;
         tx.commit().await?;
         report.committed = true;
         save_setting(&s.db, "k50_dates_import", json!({ "at": Utc::now(), "added": take.len(), "extended": extend.len() })).await?;

@@ -121,7 +121,7 @@ export function ImportExcel({ done }: { done: () => void }) {
           </label>
         </div>
         <p className="muted small">
-          اعضا، همهٔ پرداخت‌ها، مصارف و برداشت‌های شرکا وارد می‌شود. تاریخ شروع و ختم عضویت‌ها در اکسل نیست؛ بعد از ورود،
+          اعضا، همهٔ پرداخت‌ها، مصارف، برداشت‌های شرکا، کارت‌های ضمانت و کتاب‌های امانت وارد می‌شود. تاریخ شروع و ختم عضویت‌ها در اکسل نیست؛ بعد از ورود،
           همین صفحه آن‌ها را از دستگاه انگشت می‌خواند و پیش از ثبت نشان می‌دهد.
         </p>
         {error && <p className="form-error" role="alert">{error}</p>}
@@ -274,6 +274,10 @@ function Counts({ r }: { r: ImportReport }) {
       <li><strong>{fa(r.members)}</strong> عضو <span className="muted small">({fa(r.members_new)} جدید)</span></li>
       <li><strong>{fa(r.receipts)}</strong> پرداخت</li>
       {r.in_app > 0 && <li><strong>{fa(r.in_app)}</strong> پرداخت ({fa(r.in_app_amount)} ؋) بل برنامه هم داشت؛ دوباره شمرده نشد</li>}
+      {r.fees_exact + r.fees_counted > 0 && <li><strong>{fa(r.fees_exact)}</strong> فیس با روز دقیق از تاریخ عضویت و <strong>{fa(r.fees_counted)}</strong> فیس با روز حساب‌شده (30 روز به عقب)</li>}
+      {r.loans.deposits_new + r.loans.deposits_returned > 0 && <li><strong>{fa(r.loans.deposits_new)}</strong> کارت ضمانت تازه{r.loans.deposits_returned > 0 && <>، <strong>{fa(r.loans.deposits_returned)}</strong> ضمانت پس‌داده</>}</li>}
+      {r.loans.loans_new + r.loans.loans_returned > 0 && <li><strong>{fa(r.loans.loans_new)}</strong> کتاب امانت تازه ({fa(r.loans.loans_out)} هنوز بیرون){r.loans.loans_returned > 0 && <>، <strong>{fa(r.loans.loans_returned)}</strong> برگشته</>}</li>}
+      {r.loans.no_card.length > 0 && <li className="form-error">کارت ضمانت این امانت‌گیرنده‌ها در اکسل نبود و کارت «نامعلوم» برایشان ساخته شد: {r.loans.no_card.join("، ")}</li>}
       <li><strong>{fa(r.expenses)}</strong> مصرف</li>
       <li><strong>{fa(r.withdrawals)}</strong> برداشت</li>
       {r.hotspot.buys + r.hotspot.counts > 0 && (

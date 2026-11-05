@@ -40,9 +40,12 @@ claude.ai Projects to this local checkout on 2026-11-03.
 
 ## Money facts that explain odd-looking numbers
 
-- Excel member fees have no payment day: `import_excel` dates each cell on the 1st of its Solar
-  month. So "the first N days" of an Excel month hold nearly all its fees, while withdrawals and
-  daily expenses keep their real days. Reports read receipts only; months typed in the app are exact.
+- Excel member fees have no payment day. `date_excel_fees` dates each cell inside its own Solar
+  month from the member's period starts (the device's dates): exact when a period starts in that
+  month, else 30-day steps from the nearest one (the device keeps only the last dates), else the
+  1st. It runs on every import and after «تاریخ از دستگاه». Monthly totals never change.
+- The book's two loan sheets are added by `store_loans`, not replaced: rows the app has stay, and
+  their fees are not income (the statement's «امانت دهی کتاب» line counts them).
 - The dashboard's month view compares the same first N days; the finance report's other months are whole.
 - A bill counts on the day it was paid (`paid_on`, default today), not the period's start; only
   the later months of a multi-month payment count on their own start day.

@@ -151,6 +151,38 @@ struct Book {
     /// Statement figures per line key, by month.
     statement: HashMap<&'static str, [Option<f64>; 12]>,
     warnings: Vec<String>,
+    /// «لیست عضویت امانت دهی کتابها»: the guarantee cards.
+    deposits: Vec<DepositRow>,
+    /// «لیست امانت دهی کتاب»: the books lent, month by month.
+    loans: Vec<LoanRow>,
+}
+
+/// A guarantee card: cash (p-101), books (k-101) or a person who vouches (z-101).
+struct DepositRow {
+    code: String,
+    kind: &'static str,
+    name: String,
+    father: Option<String>,
+    phone: Option<String>,
+    on: NaiveDate,
+    amount: Option<f64>,
+    guarantee: Option<String>,
+    note: Option<String>,
+    /// «واپس گردید»: the guarantee went back.
+    returned: bool,
+}
+
+/// A book lent. Its borrower's ID is a card, a member's number, or often left empty.
+struct LoanRow {
+    id: Option<String>,
+    name: String,
+    father: Option<String>,
+    title: String,
+    on: NaiveDate,
+    fee: Option<f64>,
+    /// The sheet's «days until today» formula is still in the row, so the book is out.
+    counting: bool,
+    note: Option<String>,
 }
 
 impl Book {
@@ -291,6 +323,14 @@ fn parse(bytes: &[u8]) -> Result<Book, ApiError> {
     let name = "انترنت هاتسپات";
     if let Some(rg) = sheet(&sheets, name) {
         read_hotspot(&mut book, rg, name);
+    }
+    let name = "لیست عضویت امانت دهی کتابها";
+    if let Some(rg) = sheet(&sheets, name) {
+        read_deposits(&mut book, rg, name);
+    }
+    let name = "لیست امانت دهی کتاب";
+    if let Some(rg) = sheet(&sheets, name) {
+        read_loans(&mut book, rg, name);
     }
     let name = "محاسبات";
     let rg = sheet(&sheets, name).ok_or(ApiError::bad("sheet_missing_statement"))?;
@@ -527,6 +567,92 @@ fn excel_date(d: &Data) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(1899, 12, 30)?.checked_add_days(Days::new(serial.floor() as u64))
 }
 
+/// A day as the loan sheets write it: a real Excel date, or typed: "27/11/1401" (Solar) or
+/// "6/5/2024". The year is whichever part looks like one; the day comes first.
+fn any_date(d: &Data) -> Option<NaiveDate> {
+    if let Some(day) = excel_date(d) {
+        return Some(day);
+    }
+    let t = text(d)?;
+    let parts: Vec<i32> = t.split(['/', '-', '.']).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    let [a, b, c] = parts.as_slice() else { return None };
+    let (y, m, day) = if *c >= 1000 { (*c, *b, *a) } else if *a >= 1000 { (*a, *b, *c) } else { return None };
+    if !(1..=12).contains(&m) || day < 1 {
+        return None;
+    }
+    if y < 1700 {
+        solar::to_gregorian(y, m as u32, day as u32)
+    } else {
+        NaiveDate::from_ymd_opt(y, m as u32, day as u32)
+    }
+}
+
+/// Two tables side by side, each: ID, name, father, phone, day, guarantee, remarks. Cards
+/// numbered ahead with nobody on them are left out.
+fn read_deposits(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
+    let Some(h) = find_header(rg, "ID") else { return };
+    for start in (0..rg.width()).filter(|&c| text(cell(rg, h, c)).as_deref() == Some("ID")) {
+        for r in h + 1..rg.height() {
+            let at = |k: usize| cell(rg, r, start + k);
+            let (Some(code), Some(name)) = (text(at(0)), text(at(1))) else { continue };
+            let code = code.to_lowercase();
+            let kind = match code.get(..2) {
+                Some("p-") => "cash",
+                Some("k-") => "book",
+                Some("z-") => "person",
+                _ => {
+                    book.warn(format!("{sheet_name}، ردیف {}: شمارهٔ کارت «{code}» شناخته نشد؛ وارد نشد.", excel_row(rg, r)));
+                    continue;
+                }
+            };
+            let Some(on) = any_date(at(4)) else {
+                book.warn(format!("{sheet_name}، ردیف {}: تاریخ کارت {code} خوانده نشد؛ وارد نشد.", excel_row(rg, r)));
+                continue;
+            };
+            let note = text(at(6));
+            let returned = note.as_deref().is_some_and(|n| n.contains("واپس"));
+            book.deposits.push(DepositRow {
+                code,
+                kind,
+                name,
+                father: text(at(2)),
+                phone: phone(at(3)),
+                on,
+                amount: num(at(5)).filter(|v| *v > 0.0),
+                guarantee: text(at(5)),
+                note: note.filter(|_| !returned),
+                returned,
+            });
+        }
+    }
+}
+
+/// One block per month: ID, name, father, book, day taken, days until today (a formula while
+/// the book is out), weekly fee, fine, remarks.
+fn read_loans(book: &mut Book, rg: &Range<Data>, sheet_name: &str) {
+    for r in 0..rg.height() {
+        let at = |k: usize| cell(rg, r, k);
+        let (Some(name), Some(title)) = (text(at(1)), text(at(3))) else { continue };
+        if text(at(0)).as_deref() == Some("ID") {
+            continue;
+        }
+        let Some(on) = any_date(at(4)) else {
+            book.warn(format!("{sheet_name}، ردیف {}: تاریخ اخذ «{title}» خوانده نشد؛ وارد نشد.", excel_row(rg, r)));
+            continue;
+        };
+        book.loans.push(LoanRow {
+            id: text(at(0)),
+            name,
+            father: text(at(2)),
+            title,
+            on,
+            fee: num(at(6)).filter(|v| *v > 0.0),
+            counting: num(at(5)).is_some(),
+            note: text(at(8)),
+        });
+    }
+}
+
 /// "5GB" -> 5.
 fn volume_of(t: &str) -> Option<f64> {
     t.trim().strip_suffix("GB")?.trim().parse().ok().filter(|v: &f64| *v > 0.0)
@@ -750,6 +876,10 @@ pub struct Report {
     /// Cells of a member's month the app already has a bill for: not counted a second time.
     in_app: usize,
     in_app_amount: f64,
+    /// Fee cells that got a day from the member's period, or one counted back from it.
+    fees_exact: usize,
+    fees_counted: usize,
+    loans: LoanReport,
     expenses: usize,
     withdrawals: usize,
     /// When this year was imported before; importing again replaces that run.
@@ -759,6 +889,19 @@ pub struct Report {
     /// IDs given to two different people; shown before anything else.
     clashes: Vec<Clash>,
     warnings: Vec<String>,
+}
+
+/// What the two loan sheets changed. They are added to what the app has, not replaced: a
+/// card or a loan already in the app stays as the app has it.
+#[derive(Serialize, Default)]
+pub struct LoanReport {
+    deposits_new: usize,
+    deposits_returned: usize,
+    loans_new: usize,
+    loans_out: usize,
+    loans_returned: usize,
+    /// Borrowers with no card or member in the book: they got a card, to be checked by hand.
+    no_card: Vec<String>,
 }
 
 /// One ID that the app and the book, or two rows of the book, give to different people.
@@ -1026,7 +1169,7 @@ fn date_of(book_year: i32, month: u32, day: Option<u32>, warnings: &mut Vec<Stri
 }
 
 async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str, book: Book) -> Result<Report, ApiError> {
-    let Book { members, mut entries, statement, mut warnings, hot_buys, hot_sales, hot_stock } = book;
+    let Book { members, mut entries, statement, mut warnings, hot_buys, hot_sales, hot_stock, deposits, loans } = book;
     let year = p.year;
 
     // Each month's hotspot income comes from one place only: the statement's figure, or
@@ -1342,6 +1485,9 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         }
     }
 
+    let loans = store_loans(db, &deposits, &loans, &mut warnings).await?;
+    let (fees_exact, fees_counted) = date_excel_fees(db).await?;
+
     let report = Report {
         year,
         committed: p.commit,
@@ -1351,6 +1497,9 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         receipts: income.len(),
         in_app: in_app_count,
         in_app_amount,
+        fees_exact,
+        fees_counted,
+        loans,
         expenses: spent.len(),
         withdrawals: taken.len(),
         replaces,
@@ -1369,6 +1518,265 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .execute(&mut *db)
         .await?;
     Ok(report)
+}
+
+/// The guarantees and the books out, from the book's two loan sheets. Run again with a newer
+/// book it adds what is new and marks what came back; what the app already has stays. The
+/// fees are not income here: the statement's «امانت دهی کتاب» line already counts them.
+async fn store_loans(db: &mut PgConnection, deposits: &[DepositRow], loans: &[LoanRow], warnings: &mut Vec<String>) -> Result<LoanReport, ApiError> {
+    let mut out = LoanReport::default();
+    for d in deposits {
+        let held: Option<(Uuid, String, Option<NaiveDate>, NaiveDate)> = sqlx::query_as(
+            "SELECT id, name, returned_on, received_on FROM loan_deposits WHERE lower(code) = $1 ORDER BY deleted_at NULLS FIRST LIMIT 1",
+        )
+        .bind(&d.code)
+        .fetch_optional(&mut *db)
+        .await?;
+        match held {
+            None => {
+                sqlx::query(
+                    "INSERT INTO loan_deposits (id, code, kind, name, father_name, phone, amount, deposit_book, guarantor, note, received_on, returned_on) \
+                     VALUES ($1, $2, $3::deposit_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                )
+                .bind(Uuid::new_v4())
+                .bind(&d.code)
+                .bind(d.kind)
+                .bind(&d.name)
+                .bind(&d.father)
+                .bind(&d.phone)
+                .bind(if d.kind == "cash" { d.amount } else { None })
+                .bind(if d.kind == "book" { d.guarantee.clone() } else { None })
+                .bind(if d.kind == "person" { d.guarantee.clone() } else { None })
+                .bind(&d.note)
+                .bind(d.on)
+                // The day it went back is not in the book.
+                .bind(d.returned.then_some(d.on))
+                .execute(&mut *db)
+                .await?;
+                out.deposits_new += 1;
+            }
+            Some((_, name, _, _)) if !same_name(&name, &d.name) => {
+                warnings.push(format!("کارت {} در برنامه به نام «{name}» است و در اکسل «{}»؛ کارت برنامه ماند.", d.code, d.name));
+            }
+            Some((id, _, None, received)) if d.returned => {
+                let open: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM book_loans WHERE deposit_id = $1 AND returned_on IS NULL AND deleted_at IS NULL)")
+                    .bind(id)
+                    .fetch_one(&mut *db)
+                    .await?;
+                if !open {
+                    sqlx::query("UPDATE loan_deposits SET returned_on = $2 WHERE id = $1").bind(id).bind(received).execute(&mut *db).await?;
+                    out.deposits_returned += 1;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    let rules = crate::books::rules_of(db).await?;
+    let today = crate::hall::today();
+    let cards: Vec<(Uuid, String, Option<String>, NaiveDate, Option<NaiveDate>)> =
+        sqlx::query_as("SELECT id, name, father_name, received_on, returned_on FROM loan_deposits WHERE deleted_at IS NULL")
+            .fetch_all(&mut *db)
+            .await?;
+    let people: Vec<(Uuid, String, Option<String>)> =
+        sqlx::query_as("SELECT id, trim(concat_ws(' ', first_name, last_name)), father_name FROM members WHERE deleted_at IS NULL")
+            .fetch_all(&mut *db)
+            .await?;
+    let same_father = |a: &Option<String>, b: &Option<String>| match (a, b) {
+        (Some(a), Some(b)) => same_name(a, b),
+        _ => false,
+    };
+    for l in loans {
+        let held: Option<(Uuid, Option<NaiveDate>)> = sqlx::query_as(
+            "SELECT id, returned_on FROM book_loans WHERE lower(book_title) = lower($1) AND loaned_on = $2 ORDER BY deleted_at NULLS FIRST LIMIT 1",
+        )
+        .bind(&l.title)
+        .bind(l.on)
+        .fetch_optional(&mut *db)
+        .await?;
+        // Whose card: the ID when it is a card or a member of that name, else the same name
+        // and father on a card, else on a member.
+        let mut deposit: Option<Uuid> = None;
+        let mut member: Option<Uuid> = None;
+        let mut card_back: Option<NaiveDate> = None;
+        if let Some(id) = &l.id {
+            if id.contains('-') {
+                let found: Option<(Uuid, Option<NaiveDate>)> = sqlx::query_as("SELECT id, returned_on FROM loan_deposits WHERE lower(code) = lower($1) AND deleted_at IS NULL")
+                    .bind(id)
+                    .fetch_optional(&mut *db)
+                    .await?;
+                if let Some((d, back)) = found {
+                    deposit = Some(d);
+                    card_back = back;
+                }
+            } else if let Ok(no) = id.parse::<i32>() {
+                let found: Option<(Uuid, String)> = sqlx::query_as("SELECT id, trim(concat_ws(' ', first_name, last_name)) FROM members WHERE member_no = $1 AND deleted_at IS NULL")
+                    .bind(no)
+                    .fetch_optional(&mut *db)
+                    .await?;
+                member = found.filter(|(_, name)| same_name(name, &l.name)).map(|(m, _)| m);
+            }
+        }
+        if deposit.is_none() && member.is_none() {
+            let card = cards
+                .iter()
+                .filter(|c| same_name(&c.1, &l.name) && (l.father.is_none() || c.2.is_none() || same_father(&c.2, &l.father)))
+                .max_by_key(|c| (c.3 <= l.on, c.3));
+            if let Some(c) = card {
+                deposit = Some(c.0);
+                card_back = c.4;
+            } else {
+                let found: Vec<&(Uuid, String, Option<String>)> =
+                    people.iter().filter(|p| same_name(&p.1, &l.name) && same_father(&p.2, &l.father)).collect();
+                if let [one] = found.as_slice() {
+                    member = Some(one.0);
+                }
+            }
+        }
+        // The formula still counting means out; a fee with no formula means it came back and
+        // was paid; nothing at all says nothing, so it is taken as out. A card that went back
+        // has no book out.
+        let out_now = (l.counting || l.fee.is_none()) && card_back.is_none();
+        let back = (!out_now).then(|| {
+            let weeks = match (l.fee, rules.weekly_fee > 0.0) {
+                (Some(fee), true) => (fee / rules.weekly_fee).ceil() as u64,
+                _ => 0,
+            };
+            (l.on + Days::new(weeks * 7)).min(today).max(l.on)
+        });
+        match held {
+            Some((id, None)) => {
+                if let Some(on) = back {
+                    sqlx::query("UPDATE book_loans SET returned_on = $2, fee_paid = GREATEST(fee_paid, $3) WHERE id = $1")
+                        .bind(id)
+                        .bind(on)
+                        .bind(l.fee.unwrap_or(0.0))
+                        .execute(&mut *db)
+                        .await?;
+                    out.loans_returned += 1;
+                }
+                continue;
+            }
+            Some(_) => continue,
+            None => {}
+        }
+        if deposit.is_none() && member.is_none() {
+            // The app needs a card for a loan; the book names nobody's. A card that says so.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext('loan_deposits.code'))").execute(&mut *db).await?;
+            let last: Option<i32> = sqlx::query_scalar("SELECT max(substring(code FROM 3)::int) FROM loan_deposits WHERE lower(left(code, 2)) = 'z-' AND substring(code FROM 3) ~ '^[0-9]{1,6}$'")
+                .fetch_one(&mut *db)
+                .await?;
+            let code = format!("z-{}", last.map_or(101, |n| n + 1));
+            let id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO loan_deposits (id, code, kind, name, father_name, guarantor, note, received_on) \
+                 VALUES ($1, $2, 'person', $3, $4, 'نامعلوم', 'از لیست امانت اکسل؛ کارت ضمانتش در اکسل نبود', $5)",
+            )
+            .bind(id)
+            .bind(&code)
+            .bind(&l.name)
+            .bind(&l.father)
+            .bind(l.on)
+            .execute(&mut *db)
+            .await?;
+            deposit = Some(id);
+            out.no_card.push(format!("{} ({code})", l.name));
+        }
+        let book_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM books WHERE deleted_at IS NULL AND lower(trim(title)) = lower($1) LIMIT 1")
+            .bind(&l.title)
+            .fetch_optional(&mut *db)
+            .await?;
+        let note = match (&l.note, l.fee.filter(|_| out_now)) {
+            (Some(n), Some(f)) => Some(format!("{n}؛ {f} افغانی فیس در اکسل گرفته شده")),
+            (None, Some(f)) => Some(format!("{f} افغانی فیس در اکسل گرفته شده")),
+            (n, None) => n.clone(),
+        };
+        sqlx::query(
+            "INSERT INTO book_loans (id, member_id, deposit_id, book_id, book_title, loaned_on, due_on, returned_on, weekly_fee, fee_paid, note) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(member)
+        .bind(if member.is_some() { None } else { deposit })
+        .bind(book_id)
+        .bind(&l.title)
+        .bind(l.on)
+        .bind(l.on + Days::new(rules.loan_days as u64))
+        .bind(back)
+        .bind(rules.weekly_fee)
+        .bind(l.fee.unwrap_or(0.0))
+        .bind(note)
+        .execute(&mut *db)
+        .await?;
+        out.loans_new += 1;
+        if out_now {
+            out.loans_out += 1;
+        }
+        // A returned card's day is at least the day its book came back.
+        if let (Some(on), Some(d)) = (back, deposit.filter(|_| card_back.is_some())) {
+            sqlx::query("UPDATE loan_deposits SET returned_on = GREATEST(returned_on, $2) WHERE id = $1").bind(d).bind(on).execute(&mut *db).await?;
+        }
+    }
+    Ok(out)
+}
+
+/// The day an Excel fee of the month `from`..=`to` was paid, from the first days of the
+/// member's periods (which come from the device). (day, exact): a period starting in that
+/// month gives its day. The device keeps only a member's last dates, so for another month the
+/// day is counted back or on from the nearest period in steps of a 30-day month, not exact.
+/// None: no period, or the count falls outside the month (a month skipped).
+pub(crate) fn fee_day(starts: &[NaiveDate], from: NaiveDate, to: NaiveDate) -> Option<(NaiveDate, bool)> {
+    if let Some(d) = starts.iter().filter(|d| **d >= from && **d <= to).min() {
+        return Some((*d, true));
+    }
+    let gap = |d: &NaiveDate| if *d > to { (*d - to).num_days() } else { (from - *d).num_days() };
+    let near = starts.iter().min_by_key(|d| gap(d))?;
+    let steps = (gap(near) + 29) / 30;
+    let d = if *near > to { *near - chrono::Duration::days(30 * steps) } else { *near + chrono::Duration::days(30 * steps) };
+    (d >= from && d <= to).then_some((d, false))
+}
+
+/// Dates every member's Excel fee by `fee_day`, inside its own month, so the monthly totals
+/// never change; with nothing to go on it stays on the first of the month. Never after today.
+pub(crate) async fn date_excel_fees(db: &mut PgConnection) -> Result<(usize, usize), ApiError> {
+    let cells: Vec<(Uuid, Uuid, String, NaiveDate, NaiveDate, NaiveDate)> = sqlx::query_as(
+        "SELECT x.receipt_id, x.member_id, x.kind::text, x.month_start, x.month_end, r.issued_on \
+         FROM v_excel_months x JOIN receipts r ON r.id = x.receipt_id WHERE x.member_id IS NOT NULL",
+    )
+    .fetch_all(&mut *db)
+    .await?;
+    let periods: Vec<(Uuid, String, NaiveDate)> = sqlx::query_as(
+        "SELECT ms.member_id, p.kind::text, ms.start_date FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+         WHERE ms.deleted_at IS NULL AND ms.member_id IS NOT NULL AND p.kind::text IN ('monthly', 'internet')",
+    )
+    .fetch_all(&mut *db)
+    .await?;
+    let mut starts: HashMap<(Uuid, String), Vec<NaiveDate>> = HashMap::new();
+    for (m, k, d) in periods {
+        starts.entry((m, k)).or_default().push(d);
+    }
+    let today = crate::hall::today();
+    let (mut exact, mut counted) = (0, 0);
+    let (mut ids, mut days): (Vec<Uuid>, Vec<NaiveDate>) = (Vec::new(), Vec::new());
+    for (id, member, kind, from, to, now) in cells {
+        let found = starts.get(&(member, kind)).and_then(|s| fee_day(s, from, to));
+        match found {
+            Some((_, true)) => exact += 1,
+            Some((_, false)) => counted += 1,
+            None => {}
+        }
+        let day = found.map_or(from, |(d, _)| d).min(today).max(from);
+        if day != now {
+            ids.push(id);
+            days.push(day);
+        }
+    }
+    sqlx::query("UPDATE receipts r SET issued_on = x.day FROM unnest($1::uuid[], $2::date[]) AS x(id, day) WHERE r.id = x.id")
+        .bind(&ids)
+        .bind(&days)
+        .execute(&mut *db)
+        .await?;
+    Ok((exact, counted))
 }
 
 #[derive(Deserialize)]
@@ -1802,6 +2210,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(who.0, "عبدالرشید رحیمی");
+        tx.rollback().await.unwrap();
+    }
+
+    #[test]
+    fn days_in_the_loan_sheets() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day);
+        assert_eq!(any_date(&Data::String("27/11/1401".into())), solar::to_gregorian(1401, 11, 27));
+        assert_eq!(any_date(&Data::String("17/5/1402".into())), solar::to_gregorian(1402, 5, 17));
+        assert_eq!(any_date(&Data::String("6/5/2024".into())), d(2024, 5, 6));
+        assert_eq!(any_date(&Data::String("چند روز".into())), None);
+    }
+
+    #[test]
+    fn fee_days_from_the_periods() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        // Mizan 1405 is 2026-09-23 to 2026-10-22, Aqrab from 2026-10-23.
+        let (mizan, mizan_end) = (d(2026, 9, 23), d(2026, 10, 22));
+        // A period starting in the month: that day, exact.
+        assert_eq!(fee_day(&[d(2026, 10, 1)], mizan, mizan_end), Some((d(2026, 10, 1), true)));
+        // Only the next month's: counted back 30 days.
+        assert_eq!(fee_day(&[d(2026, 11, 3)], mizan, mizan_end), Some((d(2026, 10, 4), false)));
+        // Only an earlier month's: counted on.
+        assert_eq!(fee_day(&[d(2026, 9, 10)], mizan, mizan_end), Some((d(2026, 10, 10), false)));
+        // Nothing to go on.
+        assert_eq!(fee_day(&[], mizan, mizan_end), None);
+    }
+
+    /// The real book on a scratch copy: PZ_SCRATCH_URL=…/pz_scratch PZ_XL=<book> PZ_XL_PASS=<its
+    /// password> cargo test real_book_on_a_copy -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn real_book_on_a_copy() {
+        let url = std::env::var("PZ_SCRATCH_URL").expect("PZ_SCRATCH_URL");
+        assert!(url.ends_with("/pz_scratch"));
+        let raw = std::fs::read(std::env::var("PZ_XL").unwrap()).unwrap();
+        let plain = office_crypto::decrypt_from_bytes(raw, &std::env::var("PZ_XL_PASS").unwrap()).unwrap();
+        let book = parse(&plain).ok().expect("parse");
+        let db = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let user: CurrentUser = sqlx::query_as(
+            "SELECT u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.theme_color, \
+                    u.theme_mode::text AS theme_mode, u.must_change_password \
+             FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.role = 'partner' LIMIT 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
+        let total = |t: &'static str| format!("SELECT COALESCE(sum(amount), 0)::float8 FROM receipts WHERE NOT voided AND deleted_at IS NULL AND {t}");
+        let r = store(&mut tx, &user, &p, "real", book).await.ok().expect("store");
+        println!("loans: new cards {} back {}; new loans {} out {} back {}; no card {:?}", r.loans.deposits_new, r.loans.deposits_returned, r.loans.loans_new, r.loans.loans_out, r.loans.loans_returned, r.loans.no_card);
+        println!("fees: exact {} counted {}; receipts {}", r.fees_exact, r.fees_counted, r.receipts);
+        let rows: Vec<(String, Option<String>, Option<f64>, Option<String>, Option<String>, chrono::NaiveDate, Option<chrono::NaiveDate>)> = sqlx::query_as(
+            "SELECT code, kind::text, amount::float8, deposit_book, guarantor, received_on, returned_on FROM loan_deposits WHERE deleted_at IS NULL ORDER BY returned_on IS NULL DESC, code",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        for x in rows.iter().take(12) {
+            println!("card {x:?}");
+        }
+        let held: f64 = sqlx::query_scalar("SELECT COALESCE(sum(amount), 0)::float8 FROM loan_deposits WHERE returned_on IS NULL AND deleted_at IS NULL AND kind = 'cash'").fetch_one(&mut *tx).await.unwrap();
+        println!("cash held {held}");
+        let out: Vec<(String, chrono::NaiveDate, chrono::NaiveDate, Option<chrono::NaiveDate>, f64, Option<String>)> = sqlx::query_as(
+            "SELECT l.book_title, l.loaned_on, l.due_on, l.returned_on, l.fee_paid::float8, COALESCE(d.code, m.member_no::text) \
+             FROM book_loans l LEFT JOIN loan_deposits d ON d.id = l.deposit_id LEFT JOIN members m ON m.id = l.member_id ORDER BY loaned_on",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        for x in &out {
+            println!("loan {x:?}");
+        }
+        // Dating moves a fee inside its month only: every month's Excel total stays the same.
+        let by_month: f64 = sqlx::query_scalar(&total("issued_on >= '2026-09-23' AND issued_on < '2026-10-23' AND department = 'hall' AND currency = 'AFN'")).fetch_one(&mut *tx).await.unwrap();
+        println!("Mizan income {by_month}");
+        // Periods as the device gives them, on every member with a fee in both Mizan and Aqrab.
+        let plan: Uuid = sqlx::query_scalar("SELECT id FROM plans WHERE kind = 'monthly' ORDER BY active DESC LIMIT 1").fetch_one(&mut *tx).await.unwrap();
+        let both = sqlx::query(
+            "INSERT INTO memberships (id, member_id, plan_id, start_date, fee, discount) \
+             SELECT gen_random_uuid(), a.member_id, $1, DATE '2026-10-23' + (abs(hashtext(a.member_id::text)) % 13), 0, 0 \
+             FROM v_excel_months a JOIN v_excel_months b ON a.member_id = b.member_id AND b.kind = 'monthly' AND b.year = 1405 AND b.month = 7 \
+             WHERE a.kind = 'monthly' AND a.year = 1405 AND a.month = 8 \
+               AND NOT EXISTS (SELECT 1 FROM memberships x WHERE x.member_id = a.member_id AND x.deleted_at IS NULL)",
+        )
+        .bind(plan)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let (exact, counted) = date_excel_fees(&mut tx).await.ok().expect("dating");
+        println!("{} members dated; fees exact {exact} counted {counted}", both.rows_affected());
+        assert!(exact > 0 && counted > 0);
+        let after: f64 = sqlx::query_scalar(&total("issued_on >= '2026-09-23' AND issued_on < '2026-10-23' AND department = 'hall' AND currency = 'AFN'")).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(by_month, after, "a month's total stays the same");
+        let first_14: f64 = sqlx::query_scalar(&total("issued_on >= '2026-09-23' AND issued_on < '2026-10-07' AND department = 'hall' AND currency = 'AFN'")).fetch_one(&mut *tx).await.unwrap();
+        println!("Mizan first 14 days now {first_14} of {after}");
+        let cells: i64 = sqlx::query_scalar("SELECT count(*) FROM v_excel_months WHERE year = 1405 AND month = 7 AND kind = 'monthly'").fetch_one(&mut *tx).await.unwrap();
+        println!("Mizan cells still seen {cells}");
+        let outside: i64 = sqlx::query_scalar("SELECT count(*) FROM v_excel_months x JOIN receipts r ON r.id = x.receipt_id WHERE r.issued_on NOT BETWEEN x.month_start AND x.month_end").fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(outside, 0);
+        // A second run with the same book adds nothing and changes nothing.
+        let book = parse(&plain).ok().expect("parse");
+        let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
+        let again = store(&mut tx, &user, &p, "real2", book).await.ok().expect("store again");
+        assert_eq!((again.loans.deposits_new, again.loans.loans_new, again.loans.no_card.len()), (0, 0, 0));
+        println!("second run: fees exact {} counted {}", again.fees_exact, again.fees_counted);
         tx.rollback().await.unwrap();
     }
 

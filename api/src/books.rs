@@ -38,12 +38,12 @@ fn removable(user: &CurrentUser, created: DateTime<Utc>) -> bool {
 
 #[derive(Serialize, Deserialize, FromRow, Clone, Copy)]
 pub struct Rules {
-    loan_days: i32,
-    weekly_fee: f64,
+    pub(crate) loan_days: i32,
+    pub(crate) weekly_fee: f64,
     fine_per_day: f64,
 }
 
-async fn rules_of(tx: &mut PgConnection) -> Result<Rules, ApiError> {
+pub(crate) async fn rules_of(tx: &mut PgConnection) -> Result<Rules, ApiError> {
     Ok(sqlx::query_as(
         "SELECT COALESCE((SELECT (value #>> '{}')::int FROM settings WHERE key = 'book_loan_days'), 14) AS loan_days, \
                 COALESCE((SELECT (value #>> '{}')::float8 FROM settings WHERE key = 'book_weekly_fee'), 0) AS weekly_fee, \

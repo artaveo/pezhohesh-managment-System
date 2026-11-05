@@ -214,6 +214,10 @@ export type ImportReport = {
   members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
   /** Cells of a member's month the app already has a bill for: not counted a second time. */
   in_app: number; in_app_amount: number;
+  /** Fee cells that got a day from a period (the device's dates), or one counted back from it. */
+  fees_exact: number; fees_counted: number;
+  /** What the book's two loan sheets added. */
+  loans: { deposits_new: number; deposits_returned: number; loans_new: number; loans_out: number; loans_returned: number; no_card: string[] };
   replaces: string | null; lines: ImportLine[]; warnings: string[];
   hotspot: { buys: number; counts: number; months: ImportHotMonth[] };
   /** IDs given to two different people (the app and the book, or two rows of the book). */
