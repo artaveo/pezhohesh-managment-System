@@ -59,7 +59,13 @@ export type Arrived = {
   member_id: string | null; member_name: string | null; member_phone: string | null; phone_matches: boolean;
   by_phone_id: string | null; by_phone_name: string | null; by_phone_no: number | null;
 };
-export type PhoneUpload = { enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string };
+export type PhoneUpload = {
+  enabled: boolean; port: number; addresses: { url: string; hotspot: boolean }[]; hotspot_url: string;
+  /** The last phone that opened the page since the app started. */
+  last_open: { ip: string; at: string } | null;
+  /** The channel of this computer's Wi-Fi; above 14 its hotspot is on 5 GHz. */
+  wifi_channel: number | null;
+};
 export type K50Config = {
   enabled: boolean; ip: string; port: number; machine: number; comm_key: number; digits: number;
   /** Once a month the punches go off the device after the app has read them all. */
@@ -206,6 +212,8 @@ export type ImportLine = {
 export type ImportReport = {
   year: number; committed: boolean; batch_id: string | null;
   members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
+  /** Cells of a member's month the app already has a bill for: not counted a second time. */
+  in_app: number; in_app_amount: number;
   replaces: string | null; lines: ImportLine[]; warnings: string[];
   hotspot: { buys: number; counts: number; months: ImportHotMonth[] };
   /** IDs given to two different people (the app and the book, or two rows of the book). */
@@ -596,7 +604,8 @@ export const api = {
   payRest: (periodId: string, amount: number) => request<Saved>(`/periods/${periodId}/rest`, { method: "POST", body: { amount } }),
   owed: (p: ListQuery, signal?: AbortSignal) => request<Page<OwedRow> & { sum: number }>(`/owed?${listParams(p)}`, { signal }),
   deletePeriod: (id: string, reason?: string) => request<void>(`/periods/${id}${why(reason)}`, { method: "DELETE" }),
-  updatePeriod: (id: string, p: { start_date: string; end_date: string; note?: string | null }) => request<void>(`/periods/${id}`, { method: "PUT", body: p }),
+  updatePeriod: (id: string, p: { start_date: string; end_date: string; note?: string | null; fee?: number; discount?: number; paid?: number }) => request<void>(`/periods/${id}`, { method: "PUT", body: p }),
+  setExcelMonth: (id: string, c: { kind: string; year: number; month: number; amount: number }) => request<void>(`/members/${id}/excel-month`, { method: "PUT", body: c }),
   deleteMember: (id: string, reason?: string, freeNo = false) =>
     request<void>(`/members/${id}?${query({ reason: reason || undefined, free_no: freeNo ? "true" : undefined })}`, { method: "DELETE" }),
   restoreMember: (id: string) => request<void>(`/members/${id}/restore`, { method: "POST" }),
@@ -679,6 +688,7 @@ export const api = {
   acceptArrived: (id: string, member_id: string, kind?: DocKind) => request<void>(`/inbox/${id}/accept`, { method: "POST", body: { member_id, kind } }),
   rejectArrived: (id: string) => request<void>(`/inbox/${id}/reject`, { method: "POST" }),
   phoneUpload: () => request<PhoneUpload>("/phone-upload"),
+  noteHotspot: (on: boolean, clients: number) => request<void>("/phone/hotspot", { method: "POST", body: { on, clients } }),
   setPhoneUpload: (enabled: boolean) => request<void>("/phone-upload", { method: "PUT", body: { enabled } }),
   /** A QR code (SVG) for the sticker. */
   qr: (text: string) => request<Blob>(`/qr?${new URLSearchParams({ text })}`, { blob: true }),
@@ -781,6 +791,8 @@ export function errorText(e: unknown): string {
     case "remove_today_only": return "مدیر فقط چیزی را که امروز ثبت شده می‌تواند پاک کند.";
     case "void_the_bill": return "این دوره بل دارد؛ اول بل آن را باطل کنید.";
     case "member_has_open_loans": return "این عضو هنوز کتاب یا ضمانتی نزد کتابخانه دارد؛ اول آن را برگشت بزنید، بعد عضو را حذف کنید.";
+    case "money_in_excel": return "پول این ماه از اکسل آمده. آن را در «پرداخت‌های اکسل» پایین همین صفحه اصلاح کنید.";
+    case "no_excel_year": return "اکسل این سال هنوز وارد نشده.";
     case "partners_only": return "برداشت فقط برای شرکا است. پول کارمند را از صفحهٔ «معاش کارمندان» با «پرداخت» ثبت کنید.";
     case "not_found": return "پیدا نشد؛ شاید کسی دیگر آن را تغییر داده باشد.";
     case "no_device": return "شمارهٔ بل این کمپیوتر تنظیم نشده.";

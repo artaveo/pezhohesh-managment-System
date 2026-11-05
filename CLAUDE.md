@@ -38,6 +38,17 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - Brand green `#76b82a`. Each user can pick a personal accent; printed bills, receipts and
   cards always use the official colors. Font: Vazirmatn.
 
+## Money facts that explain odd-looking numbers
+
+- Excel member fees have no payment day: `import_excel` dates each cell on the 1st of its Solar
+  month. So "the first N days" of an Excel month hold nearly all its fees, while withdrawals and
+  daily expenses keep their real days. Reports read receipts only; months typed in the app are exact.
+- The dashboard's month view compares the same first N days; the finance report's other months are whole.
+- A bill counts on the day it was paid (`paid_on`, default today), not the period's start; only
+  the later months of a multi-month payment count on their own start day.
+- The import skips a member's month cell when the app has a bill for that member, line and month.
+  Expenses, withdrawals and other income typed in both are still counted twice.
+
 ## Sync (see `api/src/sync.rs`, `0018_sync.sql`)
 
 Neon is the hub. An office PC ("node") keeps a local Postgres; triggers write every change

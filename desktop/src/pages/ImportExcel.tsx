@@ -273,6 +273,7 @@ function Counts({ r }: { r: ImportReport }) {
     <ul className="import-counts">
       <li><strong>{fa(r.members)}</strong> عضو <span className="muted small">({fa(r.members_new)} جدید)</span></li>
       <li><strong>{fa(r.receipts)}</strong> پرداخت</li>
+      {r.in_app > 0 && <li><strong>{fa(r.in_app)}</strong> پرداخت ({fa(r.in_app_amount)} ؋) بل برنامه هم داشت؛ دوباره شمرده نشد</li>}
       <li><strong>{fa(r.expenses)}</strong> مصرف</li>
       <li><strong>{fa(r.withdrawals)}</strong> برداشت</li>
       {r.hotspot.buys + r.hotspot.counts > 0 && (

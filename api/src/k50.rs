@@ -1099,6 +1099,21 @@ fn wifi_interfaces() -> Vec<(String, String, String)> {
     out
 }
 
+/// The channel of the Wi-Fi this computer is connected to, if it is.
+pub fn wifi_channel() -> Option<u32> {
+    let text = netsh(&["wlan", "show", "interfaces"]);
+    let mut connected = false;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        match k.trim() {
+            "State" => connected = v.trim() == "connected",
+            "Channel" if connected => return v.trim().parse().ok(),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The connected Wi-Fi interface whose network holds `ip`, with its network name.
 fn wifi_to(ip: Ipv4Addr) -> Option<(String, String)> {
     let on: Vec<String> = if_addrs::get_if_addrs()

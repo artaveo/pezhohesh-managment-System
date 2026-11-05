@@ -74,15 +74,14 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   const current = end < next;
   const pm = prevMonth(ms);
   const ly = sameMonthLastYear(ms);
-  // While the month runs, the other months are compared over the same first days only.
   const span = daysBetween(ms, end);
-  const upTo = (from: Date, cap: Date) => (current ? (addDays(from, span) < cap ? addDays(from, span) : cap) : cap);
-  const days = current ? ` (1 تا ${span})` : "";
   const { data, failed, retry } = useLoad(async (signal) => {
     const ranges: Range[] = [
       { from: iso(ms), to: iso(end) },
-      { from: iso(pm), to: iso(upTo(pm, ms)) },
-      { from: iso(ly), to: iso(upTo(ly, nextMonth(ly))) },
+      // The other months in full: this report is the months' final figures (the dashboard is
+      // where a running month meets the same days of the others).
+      { from: iso(pm), to: iso(ms) },
+      { from: iso(ly), to: iso(nextMonth(ly)) },
     ];
     const a = await loadRanges(ranges, true, signal);
     const salaries = await api.salaries({ from: iso(ms), to: iso(addDays(next, -1)) }, signal).catch(() => null);
@@ -98,21 +97,21 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
   const title = `${monthName(ms)} ${yearNumber(ms)}`;
   const sheet = (
     <MonthSheet title={title} current={current} cur={data.cur} prev={data.prev} last={data.last}
-      prevLabel={`${monthName(pm)}${days}`} lastLabel={`${monthName(ly)} ${yearNumber(ly)}${days}`}
+      prevLabel={monthName(pm)} lastLabel={`${monthName(ly)} ${yearNumber(ly)}`}
       expenseOrder={data.expenseOrder} salaries={data.salaries} ms={ms} canShares={canShares} />
   );
   return (
     <>
       <section className={`kpis ${canShares ? "five" : "four"}`}>
-        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={ahead ? undefined : vs(data.prev.income, `نسبت به ${monthName(pm)}${days}`)} />
-        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={ahead ? undefined : vs(data.prev.expenses, `نسبت به ${monthName(pm)}${days}`)} />
-        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={ahead ? undefined : vs(balance(data.prev), `نسبت به ${monthName(pm)}${days}`)} />
+        <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={ahead ? undefined : vs(data.prev.income, `نسبت به ${monthName(pm)}`)} />
+        <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={ahead ? undefined : vs(data.prev.expenses, `نسبت به ${monthName(pm)}`)} />
+        <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={ahead ? undefined : vs(balance(data.prev), `نسبت به ${monthName(pm)}`)} />
         {canShares && <Kpi icon="banknote" label="موجودی" value={inTill(data.cur)} unit="؋" note="سود خالص منهای برداشت ناصری و رحیمی" />}
         {data.owed
           ? <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={data.owed.sum} unit="؋" note={`${fa(data.owed.n)} دوره با پرداخت ناتمام`} />
           : <Kpi icon="card" label="باقی نزد اعضا (امروز)" value={NaN} unit="" note={<button className="link" onClick={retry}>خوانده نشد؛ دوباره</button>} />}
       </section>
-      {current && <p className="muted small">ماه {monthName(ms)} هنوز تمام نشده؛ این گزارش تا امروز است و ماه‌های دیگر هم فقط در همین {span} روز اول مقایسه شده‌اند.</p>}
+      {current && <p className="muted small">ماه {monthName(ms)} هنوز تمام نشده؛ این ستون {span} روز اول است و ماه‌های دیگر کامل‌اند.</p>}
       {ahead && <p className="muted small">ماه {monthName(ms)} هنوز نیامده. اینجا فقط چیزهایی است که از پیش برایش ثبت شده، مثل پول عضویت‌هایی که چند ماه یک‌جا پرداخت شده‌اند.</p>}
       <div className="glass report-sheet">{sheet}</div>
       <PrintCopy on={printing} onDone={onPrinted}>{sheet}</PrintCopy>

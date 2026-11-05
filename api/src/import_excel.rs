@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use calamine::{open_workbook_from_rs, Data, Range, Reader, Xlsx};
 use chrono::{Days, NaiveDate};
@@ -747,6 +747,9 @@ pub struct Report {
     members: usize,
     members_new: i64,
     receipts: usize,
+    /// Cells of a member's month the app already has a bill for: not counted a second time.
+    in_app: usize,
+    in_app_amount: f64,
     expenses: usize,
     withdrawals: usize,
     /// When this year was imported before; importing again replaces that run.
@@ -1181,8 +1184,37 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         None => format!("({tag})"),
     });
 
+    // A member registered at the desk and in the book has that month's money in both: the
+    // app's bill stands, and the book's cell for the same member, line and month is left out.
+    // A bill belongs to the month it was paid in and to the month its period starts in.
+    let of_a_member = |e: &Entry| -> Option<Uuid> {
+        if e.kind == Kind::Income && matches!(e.key, "monthly" | "internet") {
+            e.person.and_then(|i| member_of[i])
+        } else {
+            None
+        }
+    };
+    let ids: Vec<Uuid> = entries.iter().filter_map(&of_a_member).collect();
+    let billed: Vec<(Uuid, String, NaiveDate, NaiveDate)> = sqlx::query_as(
+        "SELECT ms.member_id, r.income_category::text, r.issued_on, ms.start_date \
+         FROM receipts r JOIN memberships ms ON ms.id = r.membership_id \
+         WHERE r.import_batch_id IS NULL AND NOT r.voided AND r.deleted_at IS NULL AND ms.deleted_at IS NULL \
+           AND ms.member_id = ANY($1) AND r.income_category::text IN ('monthly', 'internet')",
+    )
+    .bind(&ids)
+    .fetch_all(&mut *db)
+    .await?;
+    let mut has_bill: std::collections::HashSet<(Uuid, String, i32, u32)> = std::collections::HashSet::new();
+    for (member, category, paid, start) in billed {
+        for d in [paid, start] {
+            has_bill.insert((member, category.clone(), solar::year_of(d), solar::month_day(d).0));
+        }
+    }
+    let in_app = |e: &Entry| of_a_member(e).is_some_and(|m| has_bill.contains(&(m, e.key.to_string(), year, e.month)));
+    let (in_app_count, in_app_amount) = entries.iter().filter(|e| in_app(e)).fold((0usize, 0.0f64), |(n, s), e| (n + 1, s + e.amount));
+
     // Income: one receipt per Excel cell. Imported receipts were never printed.
-    let income: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Income).collect();
+    let income: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Income && !in_app(e)).collect();
     let short = &batch.simple().to_string()[..6];
     // Each monthly or internet cell belongs to the member of its row (v_excel_months), when
     // that row's person is a member; a clash leaves it with nobody.
@@ -1317,6 +1349,8 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         members: members.len(),
         members_new,
         receipts: income.len(),
+        in_app: in_app_count,
+        in_app_amount,
         expenses: spent.len(),
         withdrawals: taken.len(),
         replaces,
@@ -1335,6 +1369,82 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .execute(&mut *db)
         .await?;
     Ok(report)
+}
+
+#[derive(Deserialize)]
+pub struct ExcelCell {
+    kind: String,
+    year: i32,
+    month: u32,
+    amount: f64,
+}
+
+/// PUT /api/v1/members/:id/excel-month (partners): corrects one month's money of a member's
+/// row of the book. 0 takes it out. It is income like the rest, so every report follows; the
+/// audit log keeps the old figure. Importing the book again brings the book's figure back.
+pub async fn set_excel_month(
+    State(s): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(b): Json<ExcelCell>,
+) -> Result<StatusCode, ApiError> {
+    if !user.is_partner() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    if !matches!(b.kind.as_str(), "monthly" | "internet") || !b.amount.is_finite() || b.amount < 0.0 {
+        return Err(ApiError::bad("bad_amount"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    set_cell(&mut tx, id, &b).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_cell(tx: &mut PgConnection, id: Uuid, b: &ExcelCell) -> Result<(), ApiError> {
+    let day = (1..=12).contains(&b.month).then(|| solar::to_gregorian(b.year, b.month, 1)).flatten().ok_or(ApiError::bad("bad_month"))?;
+    let (who, no): (String, i32) = sqlx::query_as("SELECT trim(concat_ws(' ', first_name, last_name)), member_no FROM members WHERE id = $1 AND deleted_at IS NULL")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    let cells: Vec<Uuid> = sqlx::query_scalar("SELECT receipt_id FROM v_excel_months WHERE member_id = $1 AND kind = $2 AND year = $3 AND month = $4 ORDER BY receipt_id")
+        .bind(id)
+        .bind(&b.kind)
+        .bind(b.year)
+        .bind(b.month as i32)
+        .fetch_all(&mut *tx)
+        .await?;
+    let keep = if b.amount > 0.0 { cells.first().copied() } else { None };
+    if let Some(cell) = keep {
+        sqlx::query("UPDATE receipts SET amount = $2 WHERE id = $1").bind(cell).bind(b.amount).execute(&mut *tx).await?;
+    } else if b.amount > 0.0 {
+        let batch: Uuid = sqlx::query_scalar("SELECT id FROM import_batches WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL ORDER BY imported_at DESC LIMIT 1")
+            .bind(SOURCE)
+            .bind(b.year)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ApiError::bad("no_excel_year"))?;
+        let label = if b.kind == "internet" { "انترنت ماهانه" } else { "عضویت ماهانه" };
+        let id_new = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, member_id, import_batch_id) \
+             VALUES ($1, $2, 'hall', $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(id_new)
+        .bind(format!("XL{}-E{}", b.year, &id_new.simple().to_string()[..8]))
+        .bind(day)
+        .bind(b.amount)
+        .bind(&b.kind)
+        .bind(format!("{label} · {who} · شمارهٔ {no} (اکسل {})", b.year))
+        .bind(id)
+        .bind(batch)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for cell in cells.iter().filter(|c| Some(**c) != keep) {
+        sqlx::query("UPDATE receipts SET deleted_at = now() WHERE id = $1").bind(cell).execute(&mut *tx).await?;
+    }
+    Ok(())
 }
 
 /// The hotspot sheet's supplier bills and daily counts, as the app keeps its own: a bill
@@ -1692,6 +1802,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(who.0, "عبدالرشید رحیمی");
+        tx.rollback().await.unwrap();
+    }
+
+    /// A month paid at the desk and written in the book counts once; other months still come in.
+    /// A book's cell can then be corrected, added and taken out.
+    /// PZ_SCRATCH_URL=postgres://…/pz_scratch cargo test billed_month_on_a_copy -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn billed_month_on_a_copy() {
+        let url = std::env::var("PZ_SCRATCH_URL").expect("PZ_SCRATCH_URL");
+        assert!(url.ends_with("/pz_scratch"));
+        let db = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let user: CurrentUser = sqlx::query_as(
+            "SELECT u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.theme_color, \
+                    u.theme_mode::text AS theme_mode, u.must_change_password \
+             FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.role = 'partner' LIMIT 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        // The member, registered at the desk in Aqrab 1405 with a bill.
+        let member = Uuid::new_v4();
+        sqlx::query("INSERT INTO members (id, member_no, first_name, joined_on) VALUES ($1, 999002, 'عضو دو جایی', '2026-10-25')").bind(member).execute(&mut *tx).await.unwrap();
+        let plan: Uuid = sqlx::query_scalar("SELECT id FROM plans WHERE kind = 'monthly' ORDER BY active DESC LIMIT 1").fetch_one(&mut *tx).await.unwrap();
+        let period = Uuid::new_v4();
+        sqlx::query("INSERT INTO memberships (id, member_id, plan_id, start_date, fee, discount) VALUES ($1, $2, $3, '2026-10-25', 250, 0)")
+            .bind(period).bind(member).bind(plan).execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO receipts (id, receipt_no, department, issued_on, amount, membership_id, income_category, description) VALUES ($1, 'T-1', 'hall', '2026-10-25', 250, $2, 'monthly', 'desk')")
+            .bind(Uuid::new_v4()).bind(period).execute(&mut *tx).await.unwrap();
+
+        // The book has him in Aqrab (8) and Mizan (7).
+        let book = Book {
+            members: vec![person(999002, Some("عضو دو جایی"), 3)],
+            entries: vec![paid(0, 8), paid(0, 7)],
+            ..Default::default()
+        };
+        let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
+        let r = store(&mut tx, &user, &p, "test3", book).await.ok().expect("store");
+        assert_eq!((r.in_app, r.in_app_amount, r.receipts), (1, 250.0, 1));
+        let cells: Vec<(i32, i32)> = sqlx::query_as("SELECT month, amount::int FROM v_excel_months WHERE member_id = $1 ORDER BY month").bind(member).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(cells, vec![(7, 250)], "only Mizan comes from the book");
+
+        // Corrected, then a new month, then taken out.
+        let cell = |month, amount| ExcelCell { kind: "monthly".into(), year: 1405, month, amount };
+        set_cell(&mut tx, member, &cell(7, 300.0)).await.ok().expect("correct");
+        set_cell(&mut tx, member, &cell(6, 150.0)).await.ok().expect("add");
+        let cells: Vec<(i32, i32)> = sqlx::query_as("SELECT month, amount::int FROM v_excel_months WHERE member_id = $1 ORDER BY month").bind(member).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(cells, vec![(6, 150), (7, 300)]);
+        set_cell(&mut tx, member, &cell(7, 0.0)).await.ok().expect("take out");
+        let cells: Vec<(i32, i32)> = sqlx::query_as("SELECT month, amount::int FROM v_excel_months WHERE member_id = $1 ORDER BY month").bind(member).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(cells, vec![(6, 150)]);
         tx.rollback().await.unwrap();
     }
 }

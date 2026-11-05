@@ -1137,10 +1137,16 @@ pub struct PeriodDates {
     start_date: NaiveDate,
     end_date: NaiveDate,
     note: Option<String>,
+    /// The money corrected too: the price, the discount, and all that was really paid for it.
+    fee: Option<f64>,
+    discount: Option<f64>,
+    paid: Option<f64>,
 }
 
-/// Correcting the dates of a period typed wrong. The bill keeps its amount; the audit log
-/// keeps the old dates. Same rule as removing: a partner at any time, the manager on the day.
+/// Correcting a period typed wrong: its dates, and with `fee`, `discount` or `paid` its money.
+/// Income and everything counted from it read the bills, so the bills change with it; the
+/// audit log keeps the old values. Same rule as removing: a partner at any time, the manager
+/// on the day.
 pub async fn update_period(
     State(s): State<AppState>,
     user: CurrentUser,
@@ -1168,9 +1174,80 @@ pub async fn update_period(
         .bind(clean(&b.note))
         .execute(&mut *tx)
         .await?;
+    if b.fee.is_some() || b.discount.is_some() || b.paid.is_some() {
+        set_period_money(&mut tx, &user, id, &b).await?;
+    }
     tx.commit().await?;
     crate::k50::poke();
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sets a period's price and discount, and its bills so they add up to what was really paid
+/// (`paid`; left out: what they add up to now, but never more than is due). More money goes
+/// on the first bill, less comes off the latest bills first. A period with no bill gets one,
+/// dated its first day (today at the latest), when money is given for it.
+async fn set_period_money(tx: &mut PgConnection, user: &CurrentUser, id: Uuid, b: &PeriodDates) -> Result<(), ApiError> {
+    let (old_fee, old_discount, kind, plan, who, member): (f64, f64, String, String, String, Option<Uuid>) = sqlx::query_as(
+        "SELECT ms.fee::float8, ms.discount::float8, p.kind::text, p.name, \
+                COALESCE(NULLIF(trim(m.first_name || ' ' || COALESCE(m.last_name, '')), ''), ms.guest_name, ''), ms.member_id \
+         FROM memberships ms JOIN plans p ON p.id = ms.plan_id LEFT JOIN members m ON m.id = ms.member_id WHERE ms.id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let fee = b.fee.unwrap_or(old_fee);
+    let discount = b.discount.unwrap_or(old_discount);
+    if !fee.is_finite() || !discount.is_finite() || fee < 0.0 || discount < 0.0 || discount > fee {
+        return Err(ApiError::bad("bad_amount"));
+    }
+    let due = fee - discount;
+    let bills: Vec<(Uuid, f64)> = sqlx::query_as(
+        "SELECT id, amount::float8 FROM receipts WHERE membership_id = $1 AND NOT voided AND deleted_at IS NULL ORDER BY pays_rest DESC, created_at DESC",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let paid_now: f64 = bills.iter().map(|x| x.1).sum();
+    let target = b.paid.unwrap_or(paid_now.min(due));
+    if !target.is_finite() || target < 0.0 || target > due + 0.001 {
+        return Err(ApiError::bad("bad_paid"));
+    }
+    sqlx::query("UPDATE memberships SET fee = $2, discount = $3 WHERE id = $1").bind(id).bind(fee).bind(discount).execute(&mut *tx).await?;
+    if bills.is_empty() {
+        if target > 0.0 {
+            // That month's money from the Excel book is corrected on its own cell, or it would count twice.
+            let in_excel: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM v_excel_months x WHERE x.member_id = $1 AND x.kind = $2 AND $3 BETWEEN x.month_start AND x.month_end)",
+            )
+            .bind(member)
+            .bind(&kind)
+            .bind(b.start_date)
+            .fetch_one(&mut *tx)
+            .await?;
+            if in_excel {
+                return Err(ApiError::bad("money_in_excel"));
+            }
+            issue_on(tx, user, b.start_date.min(today()), &kind, target, &format!("{plan} · {who}"), Some(id), None).await?;
+        }
+        return Ok(());
+    }
+    let mut change = target - paid_now;
+    let mut amounts: Vec<f64> = bills.iter().map(|x| x.1).collect();
+    if change > 0.0 {
+        *amounts.last_mut().expect("a bill") += change;
+    } else {
+        for a in amounts.iter_mut() {
+            let off = a.min(-change);
+            *a -= off;
+            change += off;
+        }
+    }
+    for ((bill, old), new) in bills.iter().zip(&amounts) {
+        if (old - new).abs() >= 0.005 {
+            sqlx::query("UPDATE receipts SET amount = $2 WHERE id = $1").bind(bill).bind(new).execute(&mut *tx).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Removing a member (partners only). Their periods and documents go with them (by trigger,
@@ -1238,6 +1315,68 @@ pub async fn restore_member(State(s): State<AppState>, user: CurrentUser, Path(i
 
 #[cfg(test)]
 mod tests {
+    /// A period's money corrected: the bills, what is owed and the income follow.
+    /// PZ_SCRATCH_URL=postgres://…/pz_scratch cargo test period_money_on_a_copy -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn period_money_on_a_copy() {
+        use super::*;
+        let url = std::env::var("PZ_SCRATCH_URL").expect("PZ_SCRATCH_URL");
+        assert!(url.ends_with("/pz_scratch"));
+        let db = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let user: CurrentUser = sqlx::query_as(
+            "SELECT u.id, u.staff_id, s.full_name, u.username, u.role::text AS role, u.can_see_pec_finance, u.theme_color, \
+                    u.theme_mode::text AS theme_mode, u.must_change_password \
+             FROM app_users u JOIN staff s ON s.id = u.staff_id WHERE u.role = 'partner' LIMIT 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        let member = Uuid::new_v4();
+        sqlx::query("INSERT INTO members (id, member_no, first_name, joined_on) VALUES ($1, 999003, 'عضو فیس', '2026-10-25')").bind(member).execute(&mut *tx).await.unwrap();
+        let plan: Uuid = sqlx::query_scalar("SELECT id FROM plans WHERE kind = 'monthly' ORDER BY active DESC LIMIT 1").fetch_one(&mut *tx).await.unwrap();
+        let start = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let period = Uuid::new_v4();
+        sqlx::query("INSERT INTO memberships (id, member_id, plan_id, start_date, fee, discount) VALUES ($1, $2, $3, $4, 250, 0)")
+            .bind(period).bind(member).bind(plan).bind(start).execute(&mut *tx).await.unwrap();
+        let first = Uuid::new_v4();
+        sqlx::query("INSERT INTO receipts (id, receipt_no, department, issued_on, amount, membership_id, income_category, description) VALUES ($1, 'T-2', 'hall', $3, 250, $2, 'monthly', 'desk')")
+            .bind(first).bind(period).bind(start).execute(&mut *tx).await.unwrap();
+        let money = |fee, discount, paid| PeriodDates { start_date: start, end_date: start, note: None, fee, discount, paid };
+        // (due, paid, owed) as every report reads them, and the income of the bills.
+        macro_rules! state {
+            () => {{
+                let v: (f64, f64, f64) = sqlx::query_as("SELECT due, paid, owed FROM v_period_paid WHERE membership_id = $1").bind(period).fetch_one(&mut *tx).await.unwrap();
+                v
+            }};
+        }
+        // The price goes up, nothing more was paid: he owes the difference.
+        set_period_money(&mut tx, &user, period, &money(Some(300.0), None, None)).await.ok().expect("price up");
+        assert_eq!(state!(), (300.0, 250.0, 50.0));
+        // He had paid it all: the bill and the income follow.
+        set_period_money(&mut tx, &user, period, &money(None, None, Some(300.0))).await.ok().expect("paid up");
+        assert_eq!(state!(), (300.0, 300.0, 0.0));
+        let amount: f64 = sqlx::query_scalar("SELECT amount::float8 FROM receipts WHERE id = $1").bind(first).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(amount, 300.0);
+        // A discount, with the price the same: less is due, so less was paid.
+        set_period_money(&mut tx, &user, period, &money(None, Some(50.0), None)).await.ok().expect("discount");
+        assert_eq!(state!(), (250.0, 250.0, 0.0));
+        // Two bills: less comes off the later one first.
+        let rest = Uuid::new_v4();
+        sqlx::query("UPDATE receipts SET amount = 150 WHERE id = $1").bind(first).execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO receipts (id, receipt_no, department, issued_on, amount, membership_id, income_category, description, pays_rest) VALUES ($1, 'T-3', 'hall', $3, 100, $2, 'monthly', 'rest', true)")
+            .bind(rest).bind(period).bind(start).execute(&mut *tx).await.unwrap();
+        set_period_money(&mut tx, &user, period, &money(None, None, Some(180.0))).await.ok().expect("paid down");
+        let amounts: Vec<f64> = sqlx::query_scalar("SELECT amount::float8 FROM receipts WHERE membership_id = $1 ORDER BY pays_rest").bind(period).fetch_all(&mut *tx).await.unwrap();
+        assert_eq!(amounts, vec![150.0, 30.0]);
+        assert_eq!(state!(), (250.0, 180.0, 70.0));
+        // More paid than due is refused; a discount above the price too.
+        assert!(set_period_money(&mut tx, &user, period, &money(None, None, Some(999.0))).await.is_err());
+        assert!(set_period_money(&mut tx, &user, period, &money(Some(10.0), Some(50.0), None)).await.is_err());
+        tx.rollback().await.unwrap();
+    }
+
     use super::split;
 
     #[test]

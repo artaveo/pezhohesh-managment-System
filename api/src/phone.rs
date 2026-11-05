@@ -56,6 +56,28 @@ async fn enabled(db: &sqlx::PgPool) -> bool {
 
 /// Runs the phone page on every network of this laptop. A failure (the port is taken) only
 /// turns the phone page off; the app itself goes on.
+/// The last phone that opened the page, for the hotspot's status on the inbox page.
+static LAST_OPEN: std::sync::Mutex<Option<(String, chrono::DateTime<chrono::Utc>)>> = std::sync::Mutex::new(None);
+/// The hotspot's state as last told by the desktop, so the log shows only its changes.
+static HOTSPOT_NOTED: std::sync::Mutex<Option<(bool, u32)>> = std::sync::Mutex::new(None);
+
+#[derive(Deserialize)]
+pub struct HotspotNote {
+    on: bool,
+    clients: u32,
+}
+
+/// POST /api/v1/phone/hotspot: goes in the log when it changes, next to «phone page opened»:
+/// a phone that joined the hotspot and never opened the page, or one that never joined.
+pub async fn note_hotspot(_user: CurrentUser, Json(b): Json<HotspotNote>) -> StatusCode {
+    let mut noted = HOTSPOT_NOTED.lock().unwrap();
+    if *noted != Some((b.on, b.clients)) {
+        *noted = Some((b.on, b.clients));
+        tracing::info!("hotspot: {}, {} phones joined", if b.on { "on" } else { "off" }, b.clients);
+    }
+    StatusCode::NO_CONTENT
+}
+
 pub async fn serve(state: AppState) {
     let bind: SocketAddr = std::env::var("PHONE_BIND")
         .ok()
@@ -82,6 +104,7 @@ async fn page(State(s): State<AppState>, ConnectInfo(from): ConnectInfo<SocketAd
     // Which phones reach the page at all (the QR from the hotspot failed to open on
     // 2026-11-04 while the office had no internet; this tells whether the phone got here).
     tracing::info!("phone page opened from {} ({})", from.ip(), if open { "open" } else { "closed" });
+    *LAST_OPEN.lock().unwrap() = Some((from.ip().to_string(), chrono::Utc::now()));
     Html(include_str!("phone.html").replace("__OPEN__", if open { "true" } else { "false" }))
 }
 
@@ -289,6 +312,17 @@ pub struct Status {
     port: u16,
     addresses: Vec<Address>,
     hotspot_url: String,
+    /// The last phone that opened the page since the app started, and when.
+    last_open: Option<LastOpen>,
+    /// The channel this computer's Wi-Fi is on. Its hotspot has to use the same one, so above
+    /// 14 the hotspot is on 5 GHz and phones that only have 2.4 GHz do not see it.
+    wifi_channel: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct LastOpen {
+    ip: String,
+    at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Networks no phone can be on: VPNs, Tailscale, Hyper-V and other virtual adapters.
@@ -325,7 +359,9 @@ fn addresses() -> Vec<Address> {
 pub async fn status(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Status>, ApiError> {
     hall_only(&user)?;
     let addresses = tokio::task::spawn_blocking(addresses).await.unwrap_or_default();
-    Ok(Json(Status { enabled: enabled(&s.db).await, port: PORT, addresses, hotspot_url: format!("http://{HOTSPOT_IP}:{PORT}/") }))
+    let wifi_channel = tokio::task::spawn_blocking(crate::k50::wifi_channel).await.unwrap_or_default();
+    let last_open = LAST_OPEN.lock().unwrap().clone().map(|(ip, at)| LastOpen { ip, at });
+    Ok(Json(Status { enabled: enabled(&s.db).await, port: PORT, addresses, hotspot_url: format!("http://{HOTSPOT_IP}:{PORT}/"), last_open, wifi_channel }))
 }
 
 #[derive(Deserialize)]

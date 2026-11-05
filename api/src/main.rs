@@ -309,6 +309,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/documents/:id/thumb", put(documents::set_thumb))
         .route("/api/v1/documents/thumbless", get(documents::thumbless))
         .route("/api/v1/periods/:id", put(hall::update_period).delete(hall::delete_period))
+        .route("/api/v1/members/:id/excel-month", put(import_excel::set_excel_month))
+        .route("/api/v1/phone/hotspot", post(phone::note_hotspot))
         .route("/api/v1/periods/:id/rest", post(hall::pay_rest))
         .route("/api/v1/owed", get(lists::owed))
         .route("/api/v1/daily-seats", post(hall::daily_seat))

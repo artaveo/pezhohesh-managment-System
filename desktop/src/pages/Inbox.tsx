@@ -241,9 +241,19 @@ function HotspotBar() {
   const [h, setH] = useState<Hotspot | null>(null);
   const [busy, setBusy] = useState(false);
   const [, setNow] = useState(0);
+  // While it is on: which phone reached the page, and the Wi-Fi's band.
+  const [phone, setPhone] = useState<PhoneUpload | null>(null);
   useEffect(() => {
     let live = true;
-    const check = () => hotspotStatus().then((x) => live && setH(x));
+    const check = async () => {
+      const x = await hotspotStatus();
+      if (!live) return;
+      setH(x);
+      if (x?.available) {
+        void api.noteHotspot(x.on, x.clients).catch(() => {});
+        if (x.on) api.phoneUpload().then((p) => { if (live) setPhone(p); }).catch(() => {});
+      }
+    };
     void check();
     const t = window.setInterval(() => { void check(); setNow(Date.now()); }, 10_000);
     return () => { live = false; window.clearInterval(t); };
@@ -265,6 +275,9 @@ function HotspotBar() {
     }
   }
   const left = h.closes_at ? Math.max(1, Math.ceil((h.closes_at * 1000 - Date.now()) / 60000)) : null;
+  // The page opened from a phone within the last quarter of an hour.
+  const opened = phone?.last_open && Date.now() - new Date(phone.last_open.at).getTime() < 15 * 60000 ? phone.last_open : null;
+  const fiveGhz = (phone?.wifi_channel ?? 0) > 14;
   return (
     <div className="glass hotspot-bar">
       <Icon name="wifi" size={20} />
@@ -276,6 +289,16 @@ function HotspotBar() {
         <div className="muted small">
           گوشی اعضا از راه هاتسپات به برنامه می‌رسد. ویندوز از این راه انترنت لپ‌تاپ را هم می‌دهد، پس فقط وقتی کسی عکس می‌فرستد روشنش کنید.
         </div>
+        {h.on && opened && <p className="form-ok small">صفحه از گوشی <bdi dir="ltr">{opened.ip}</bdi> باز شد. راه درست کار می‌کند.</p>}
+        {h.on && !opened && h.clients > 0 && (
+          <p className="notice warn small">گوشی به هاتسپات وصل است ولی صفحه هنوز باز نشده. در گوشی <b>دیتای موبایل را خاموش کنید</b> و QR دوم را دوباره اسکن کنید؛ اگر پرسید «این Wi-Fi انترنت ندارد»، بگویید وصل بماند.</p>
+        )}
+        {h.on && !opened && !h.clients && (
+          <p className="notice small">
+            هنوز هیچ گوشی‌ای وصل نشده. در Wi-Fi گوشی «<bdi dir="ltr">{h.ssid}</bdi>» را بزنید{h.password && <> (رمز <bdi dir="ltr">{h.password}</bdi>)</>}. تا این عدد «۱ گوشی» نشود، QR دوم باز نمی‌شود.
+            {fiveGhz && " این لپ‌تاپ الان روی 5GHz به Wi-Fi وصل است، پس هاتسپات هم روی 5GHz است و گوشی‌های ساده آن را نمی‌بینند."}
+          </p>
+        )}
       </div>
       <div className="row-actions">
         {h.on
@@ -396,13 +419,13 @@ function PhoneSticker({ onClose }: { onClose: () => void }) {
           </p>
         </div>
       )}
-      <div className="sticker-stage"><Sticker pageQr={pageQr} wifiQr={wifiQr} address={address} ssid={wifi.ssid.trim()} /></div>
-      {createPortal(<div className="print-only sticker-print"><Sticker pageQr={pageQr} wifiQr={wifiQr} address={address} ssid={wifi.ssid.trim()} /></div>, document.body)}
+      <div className="sticker-stage"><Sticker pageQr={pageQr} wifiQr={wifiQr} address={address} ssid={wifi.ssid.trim()} password={wifi.password} /></div>
+      {createPortal(<div className="print-only sticker-print"><Sticker pageQr={pageQr} wifiQr={wifiQr} address={address} ssid={wifi.ssid.trim()} password={wifi.password} /></div>, document.body)}
     </Modal>
   );
 }
 
-function Sticker({ pageQr, wifiQr, address, ssid }: { pageQr: string | null; wifiQr: string | null; address: string; ssid: string }) {
+function Sticker({ pageQr, wifiQr, address, ssid, password }: { pageQr: string | null; wifiQr: string | null; address: string; ssid: string; password: string }) {
   return (
     <div className="sticker">
       <header>
@@ -416,12 +439,12 @@ function Sticker({ pageQr, wifiQr, address, ssid }: { pageQr: string | null; wif
         {wifiQr && (
           <figure>
             <img src={wifiQr} alt="" />
-            <figcaption><b>۱.</b> به وای‌فای وصل شوید<br /><bdi dir="ltr">{ssid}</bdi></figcaption>
+            <figcaption><b>۱.</b> به وای‌فای وصل شوید<br /><bdi dir="ltr">{ssid}</bdi>{password && <><br />رمز: <bdi dir="ltr">{password}</bdi></>}</figcaption>
           </figure>
         )}
         <figure>
           {pageQr ? <img src={pageQr} alt="" /> : <div className="qr-wait" />}
-          <figcaption><b>{wifiQr ? "۲." : ""}</b> این را اسکن کنید<br /><bdi dir="ltr">{address}</bdi></figcaption>
+          <figcaption><b>{wifiQr ? "۲." : ""}</b> دیتای موبایل را خاموش کنید و این را اسکن کنید<br /><bdi dir="ltr">{address}</bdi></figcaption>
         </figure>
       </div>
     </div>

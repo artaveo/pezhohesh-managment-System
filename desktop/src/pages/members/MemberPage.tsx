@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText, type MemberK50, type MemberDetail, type MemberInput, type Period, type PeriodInput, type Plan, type Timeline } from "../../lib/api";
-import { daysBetween, fa, formatDay, iso, MONTHS, parseIso } from "../../lib/solar";
+import { daysBetween, fa, formatDay, iso, MONTHS, parseIso, toSolar } from "../../lib/solar";
+import { amount, decimal } from "../../lib/numbers";
 import { DaysLeft } from "../../components/DaysLeft";
 import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview } from "../../components/BillSheet";
@@ -28,6 +29,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   // Removing a member lets their number go by default: off the fingerprint device, fingers too.
   const [freeNo, setFreeNo] = useState(true);
   const [dates, setDates] = useState<Period | null>(null);
+  const [cell, setCell] = useState<{ kind: string; year: number; month: number; amount: number } | null>(null);
   const [paying, setPaying] = useState<Period | null>(null);
   const [d, setD] = useState<MemberDetail | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -156,7 +158,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
                 <td>
                   <span className="row-tools">
                     {p.owed > 0 && <button className="btn small" onClick={() => setPaying(p)}>پرداخت باقی</button>}
-                    {p.editable && <button className="btn small ghost" onClick={() => setDates(p)}><Icon name="edit" /> اصلاح تاریخ</button>}
+                    {p.editable && <button className="btn small ghost" onClick={() => setDates(p)}><Icon name="edit" /> اصلاح</button>}
                     {p.removable && <button className="btn small ghost" aria-label="حذف" onClick={() => setRemoving(p)}><Icon name="trash" /></button>}
                   </span>
                 </td>
@@ -167,7 +169,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
         {!d.periods.length && <p className="muted empty">هنوز هیچ دوره‌ای ثبت نشده. اگر این عضو از اکسل آمده، تاریخ عضویت فعلی‌اش را از دستگاه اثر انگشت ثبت کنید.</p>}
       </section>
 
-      {d.excel_months.length > 0 && <ExcelMonths months={d.excel_months} />}
+      {d.excel_months.length > 0 && <ExcelMonths months={d.excel_months} onEdit={partner ? setCell : null} />}
 
       {removing === "member" && (
         <DeleteDialog title={`حذف ${name}`} action="حذف عضو" reasonRequired onClose={() => setRemoving(null)}
@@ -193,7 +195,8 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
         </DeleteDialog>
       )}
       {paying && <PayRest first={paying} owing={owing} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
-      {dates && <PeriodDates period={dates} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("تاریخ دوره اصلاح شد."); } }} />}
+      {dates && <PeriodDates period={dates} memberId={id} partner={partner} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("دوره اصلاح شد."); } }} />}
+      {cell && <ExcelCell memberId={id} cell={cell} onClose={(saved) => { setCell(null); if (saved) { void load(); toast("فیس این ماه اصلاح شد."); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
@@ -288,28 +291,88 @@ function AddPeriod({ id, detail, plans, record, onDone, onCancel }: {
   );
 }
 
-/** Correcting the dates of a period typed wrong; the bill keeps its amount. */
-function PeriodDates({ period, onClose }: { period: Period; onClose: (saved: boolean) => void }) {
+/**
+ * Correcting a period: its dates and its money. Income, the reports and what the member owes
+ * all read the bills, so what is typed here changes them too. A period whose money came from
+ * the Excel book is corrected on that month's cell; one with no money yet gets a bill.
+ */
+function PeriodDates({ period, memberId, partner, onClose }: { period: Period; memberId: string; partner: boolean; onClose: (saved: boolean) => void }) {
+  const billed = !!period.receipt_id;
+  const excel = !billed && period.excel_fee !== null;
+  const wasPaidInFull = billed && period.paid >= period.fee - period.discount - 0.005;
   const [start, setStart] = useState(period.start_date);
   const [end, setEnd] = useState(period.end_date);
   const [note, setNote] = useState(period.note ?? "");
+  const [fee, setFee] = useState(String(billed ? period.fee : excel ? period.excel_fee : 0));
+  const [discount, setDiscount] = useState(String(period.discount));
+  const [paidText, setPaidText] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const feeN = amount(fee);
+  const discountN = billed ? amount(discount) : 0;
+  const due = feeN - discountN;
+  // A period paid in full stays paid in full when its price changes, until «پرداخت شده» is typed.
+  const paidN = paidText !== null ? amount(paidText) : wasPaidInFull ? due : Math.min(period.paid, due);
   async function save() {
     if (!start || !end) return setError("هر دو تاریخ را انتخاب کنید.");
     if (end < start) return setError("تاریخ ختم پیش از شروع است.");
+    if (discountN > feeN) return setError("تخفیف از مبلغ بیشتر است.");
+    if (billed && paidN > due) return setError("پرداخت شده از مبلغ بیشتر است.");
     setBusy(true);
-    try { await api.updatePeriod(period.id, { start_date: start, end_date: end, note }); onClose(true); } catch (e) { setError(errorText(e)); setBusy(false); }
+    try {
+      const money = billed ? { fee: feeN, discount: discountN, paid: paidN } : !excel && feeN > 0 ? { fee: feeN, discount: 0, paid: feeN } : {};
+      if (excel && feeN !== period.excel_fee) {
+        const { y, m } = toSolar(period.start_date);
+        await api.setExcelMonth(memberId, { kind: period.kind, year: y, month: m, amount: feeN });
+      }
+      await api.updatePeriod(period.id, { start_date: start, end_date: end, note, ...money });
+      onClose(true);
+    } catch (e) { setError(errorText(e)); setBusy(false); }
   }
   return (
-    <Modal label="اصلاح تاریخ دوره" onClose={() => onClose(false)}>
-      <h2>اصلاح تاریخ دوره</h2>
-      <p className="muted">{period.plan_name}{period.receipt_no && <>، بل <bdi dir="ltr">{period.receipt_no}</bdi> (مبلغ بل تغییر نمی‌کند)</>}. تاریخ‌های قبلی در «چه کسی چه کرد» می‌مانند.</p>
+    <Modal label="اصلاح دوره" onClose={() => onClose(false)}>
+      <h2>اصلاح دوره</h2>
+      <p className="muted">{period.plan_name}{period.receipt_no && <>، بل <bdi dir="ltr">{period.receipt_no}</bdi></>}. مقدارهای قبلی در «چه کسی چه کرد» می‌مانند.</p>
       <div className="form-grid">
         <SolarDate label="از" value={start} onChange={setStart} />
         <SolarDate label="تا" value={end} onChange={setEnd} />
+        {billed && (
+          <>
+            <label className="field wide"><span>فیس (افغانی)</span><input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(decimal(e.target.value))} /></label>
+            <label className="field wide"><span>تخفیف</span><input dir="ltr" inputMode="decimal" value={discount} onChange={(e) => setDiscount(decimal(e.target.value))} /></label>
+            <label className="field wide"><span>پرداخت شده</span><input dir="ltr" inputMode="decimal" value={paidText ?? String(paidN)} onChange={(e) => setPaidText(decimal(e.target.value))} /></label>
+          </>
+        )}
+        {excel && partner && <label className="field wide"><span>فیس این ماه در اکسل (افغانی)</span><input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(decimal(e.target.value))} /></label>}
+        {!billed && !excel && <label className="field wide"><span>پول این دوره (افغانی)</span><input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(decimal(e.target.value))} /></label>}
         <label className="field wide span-2"><span>یادداشت</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: روزهای بسته بودن سالن اضافه شد" /></label>
       </div>
+      {billed && <p className="muted small">درآمد به اندازهٔ «پرداخت شده» است. {due - paidN > 0 ? `باقی نزد عضو: ${fa(due - paidN)}` : "باقی ندارد."}</p>}
+      {excel && partner && <p className="muted small">این پول در درآمد همان ماه است. اگر اکسل دوباره وارد شود، عدد اکسل برمی‌گردد؛ پس در خود اکسل هم درستش کنید.</p>}
+      {!billed && !excel && feeN > 0 && <p className="muted small">برای این پول یک بل ساخته می‌شود و در درآمد روز شروع دوره می‌آید. اگر پولش پیش از برنامه گرفته شده و در حساب‌ها هست، خالی بگذارید.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" disabled={busy} onClick={() => void save()}>ذخیره</button>
+        <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** One month's money of the member's row in the Excel book, corrected by a partner. */
+function ExcelCell({ memberId, cell, onClose }: { memberId: string; cell: { kind: string; year: number; month: number; amount: number }; onClose: (saved: boolean) => void }) {
+  const [value, setValue] = useState(cell.amount ? String(cell.amount) : "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    try { await api.setExcelMonth(memberId, { ...cell, amount: amount(value) }); onClose(true); } catch (e) { setError(errorText(e)); setBusy(false); }
+  }
+  return (
+    <Modal label="اصلاح فیس اکسل" onClose={() => onClose(false)}>
+      <h2>{cell.kind === "internet" ? "انترنت" : "عضویت"} {MONTHS[cell.month - 1]} {cell.year}</h2>
+      <label className="field wide"><span>مبلغ (افغانی)</span><input dir="ltr" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(decimal(e.target.value))} /></label>
+      <p className="muted small">این پول در درآمد همان ماه است و گزارش‌ها با آن عوض می‌شوند. خالی یا 0 یعنی این ماه پولی نداده. اگر اکسل دوباره وارد شود، عدد اکسل برمی‌گردد؛ پس در خود اکسل هم درستش کنید.</p>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="actions">
         <button className="btn" disabled={busy} onClick={() => void save()}>ذخیره</button>
@@ -320,7 +383,7 @@ function PeriodDates({ period, onClose }: { period: Period; onClose: (saved: boo
 }
 
 /** The fee cells of the member's row in the Excel book, one line per year and kind. */
-function ExcelMonths({ months }: { months: MemberDetail["excel_months"] }) {
+function ExcelMonths({ months, onEdit }: { months: MemberDetail["excel_months"]; onEdit: ((c: { kind: string; year: number; month: number; amount: number }) => void) | null }) {
   const lines = [...new Set(months.map((x) => `${x.year}|${x.kind}`))];
   return (
     <section className="glass excel-months" aria-label="ماه‌های اکسل">
@@ -334,13 +397,20 @@ function ExcelMonths({ months }: { months: MemberDetail["excel_months"] }) {
             <ul>
               {MONTHS.map((name, i) => {
                 const cell = row.find((x) => x.month === i + 1);
-                return <li key={name} className={cell ? "paid" : ""}><span>{name}</span><strong>{cell ? fa(cell.amount) : "—"}</strong></li>;
+                const shown = <><span>{name}</span><strong>{cell ? fa(cell.amount) : "—"}</strong></>;
+                return (
+                  <li key={name} className={cell ? "paid" : ""}>
+                    {onEdit
+                      ? <button type="button" className="excel-cell" aria-label={`اصلاح ${name}`} onClick={() => onEdit({ kind, year: Number(y), month: i + 1, amount: cell?.amount ?? 0 })}>{shown}</button>
+                      : shown}
+                  </li>
+                );
               })}
             </ul>
           </div>
         );
       })}
-      <p className="muted small">از دفتر اکسل. این پول‌ها در حساب‌ها هستند و دوباره حساب نمی‌شوند.</p>
+      <p className="muted small">از دفتر اکسل. این پول‌ها در حساب‌ها هستند و دوباره حساب نمی‌شوند.{onEdit && " برای اصلاح، روی ماه بزنید."}</p>
     </section>
   );
 }

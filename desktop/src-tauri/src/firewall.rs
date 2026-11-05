@@ -10,7 +10,7 @@ const PORT: &str = "8760";
 pub fn firewall_open() -> Option<bool> {
     #[cfg(windows)]
     {
-        Some(netsh(&["advfirewall", "firewall", "show", "rule", &format!("name={RULE}")]))
+        Some(netsh(&["advfirewall", "firewall", "show", "rule", &format!("name={RULE}")]) && !blocked())
     }
     #[cfg(not(windows))]
     None
@@ -45,6 +45,9 @@ pub fn helper(args: &[String]) -> Option<i32> {
         // The core API itself too, so Windows does not ask about it the first time it listens.
         if let Some(api) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("pezhohesh-api.exe"))) {
             let name = format!("name={RULE} (api)");
+            // Every inbound rule for the API goes first: answering «Cancel» to Windows' question
+            // once leaves a block rule for it, and a block rule wins over any allow rule.
+            netsh(&["advfirewall", "firewall", "delete", "rule", "name=all", "dir=in", &format!("program={}", api.display())]);
             netsh(&["advfirewall", "firewall", "delete", "rule", &name]);
             ok &= netsh(&[
                 "advfirewall", "firewall", "add", "rule", &name, "dir=in", "action=allow", "protocol=TCP",
@@ -55,6 +58,29 @@ pub fn helper(args: &[String]) -> Option<i32> {
     }
     #[cfg(not(windows))]
     Some(2)
+}
+
+/// An enabled inbound block rule for the API or its port: phones are refused whatever else
+/// allows them.
+#[cfg(windows)]
+fn blocked() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(out) = std::process::Command::new("netsh.exe")
+        .args(["advfirewall", "firewall", "show", "rule", "name=all", "dir=in", "verbose"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return false;
+    };
+    String::from_utf8_lossy(&out.stdout).split("Rule Name:").any(|rule| {
+        let field = |name: &str| {
+            rule.lines().find_map(|l| l.trim().strip_prefix(name).map(|v| v.trim().to_lowercase())).unwrap_or_default()
+        };
+        field("Enabled:") == "yes"
+            && field("Action:") == "block"
+            && (field("Program:").ends_with("pezhohesh-api.exe") || field("LocalPort:") == PORT)
+    })
 }
 
 #[cfg(windows)]
