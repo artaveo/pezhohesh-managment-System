@@ -12,12 +12,15 @@ import { useAuth } from "../auth/AuthProvider";
 import { PARTNERS } from "../lib/shares";
 import { Shares } from "./Shares";
 import { StaffAccounts } from "./Salaries";
+import { OtherIncome } from "./OtherIncome";
+import { Tabs } from "../components/Tabs";
 
 type Period = Range & { label: string };
 
 /** Where the page is: expenses, or withdrawals by staff (one person) or by the partners. */
 type View =
   | { tab: "expenses" }
+  | { tab: "income" }
   | { tab: "staff" }
   | { tab: "partners"; part: PartnerPart };
 /** «menu»: the list of what there is for the partners; the rest open one of them. */
@@ -29,25 +32,11 @@ const viewKey = (user: string) => `pz.moneyView.${user}`;
 function remembered(key: string): View {
   try {
     const v = JSON.parse(localStorage.getItem(key) ?? "null") as View | null;
-    if (v && (v.tab === "expenses" || v.tab === "staff" || v.tab === "partners")) return v;
+    if (v && (v.tab === "expenses" || v.tab === "income" || v.tab === "staff" || v.tab === "partners")) return v;
   } catch { /* nothing kept */ }
   return { tab: "expenses" };
 }
 
-/** A row of buttons that picks one of a few views (the pressed one is the view shown). */
-function Tabs<T extends string>({ label, value, items, onChange, sub }: {
-  label: string; value: T; items: { id: T; label: string; hint?: string }[]; onChange: (v: T) => void; sub?: boolean;
-}) {
-  return (
-    <div className={`segmented${sub ? " sub" : ""}`} role="group" aria-label={label}>
-      {items.map((i) => (
-        <button key={i.id} aria-pressed={value === i.id} className={value === i.id ? "on" : ""} onClick={() => onChange(i.id)}>
-          {i.label}{i.hint && <small className="muted"> {i.hint}</small>}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /**
  * Money going out. «مصارف»: daily expenses by statement line. «برداشت‌ها»: what staff are
@@ -59,7 +48,8 @@ export function Money() {
   const has = (s: Section) => partner || (user?.sections ?? []).includes(s);
   // A manager with the expenses section writes down a partner's withdrawal too (the partner
   // is often not at the desk); the shares stay with whoever was given them.
-  const may = { expenses: has("expenses"), staff: has("salaries"), partners: partner || has("shares") || has("expenses"), shares: partner || has("shares") };
+  // «عواید» (عواید متفرقه and طلبات) are bills: whoever may see the bills sees them here.
+  const may = { expenses: has("expenses"), income: has("receipts"), staff: has("salaries"), partners: partner || has("shares") || has("expenses"), shares: partner || has("shares") };
   const firstPart: PartnerPart = partner ? "menu" : may.shares ? "shares" : "new";
   const okPart = (p: PartnerPart) => partner || (p === "shares" && may.shares) || (p === "new" && may.expenses);
   const key = viewKey(user?.id ?? "");
@@ -71,18 +61,23 @@ export function Money() {
   // Never open on a part this person may not see.
   const shown: View =
     view.tab === "expenses" && may.expenses ? view
+      : view.tab === "income" && may.income ? view
       : view.tab === "staff" && may.staff ? view
       : view.tab === "partners" && may.partners ? (okPart(view.part) ? view : { tab: "partners", part: firstPart })
-      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart };
-  const top = shown.tab === "expenses" ? "expenses" : "withdrawals";
+      : may.expenses ? { tab: "expenses" } : may.income ? { tab: "income" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart };
+  const top = shown.tab === "expenses" || shown.tab === "income" ? shown.tab : "withdrawals";
   const who = shown.tab === "partners" ? "partners" : "staff";
 
   return (
     <div className="page">
       <div className="money-nav">
         <Tabs label="بخش" value={top}
-          items={[...(may.expenses ? [{ id: "expenses" as const, label: "مصارف" }] : []), ...(may.staff || may.partners ? [{ id: "withdrawals" as const, label: "برداشت‌ها" }] : [])]}
-          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart })} />
+          items={[
+            ...(may.expenses ? [{ id: "expenses" as const, label: "مصارف" }] : []),
+            ...(may.staff || may.partners ? [{ id: "withdrawals" as const, label: "برداشت‌ها" }] : []),
+            ...(may.income ? [{ id: "income" as const, label: "عواید" }] : []),
+          ]}
+          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : t === "income" ? { tab: "income" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart })} />
         {top === "withdrawals" && (
           <Tabs sub label="برداشت‌های چه کسانی" value={who}
             items={[...(may.staff ? [{ id: "staff" as const, label: "کارمندان" }] : []), ...(may.partners ? [{ id: "partners" as const, label: "شرکا" }] : [])]}
@@ -95,6 +90,7 @@ export function Money() {
         )}
       </div>
       {shown.tab === "expenses" && <ExpensesView />}
+      {shown.tab === "income" && <OtherIncome />}
       {shown.tab === "staff" && <StaffAccounts />}
       {shown.tab === "partners" && <PartnersView part={shown.part} partner={partner} onPart={(part) => setView({ tab: "partners", part })} />}
     </div>

@@ -289,7 +289,7 @@ const TABLE_LABEL: Record<string, string> = {
   members: "اعضا", memberships: "دوره‌های عضویت", receipts: "بل‌ها", expenses: "مصارف", expense_categories: "دستهٔ مصارف",
   withdrawals: "برداشت‌ها", salary_accruals: "معاش‌ها", staff: "کارمندان", books: "کتاب‌ها", book_loans: "امانت کتاب",
   loan_deposits: "ضمانت‌ها", hotspot_cards: "کارت هاتسپات", hotspot_buys: "خرید هاتسپات", hotspot_sales: "فروش هاتسپات",
-  hotspot_purchases: "خرید هاتسپات", plans: "قیمت‌ها", settings: "تنظیمات", app_users: "کاربران", devices: "کمپیوترها",
+  hotspot_purchases: "خرید هاتسپات", notes: "یادداشت‌ها", plans: "قیمت‌ها", settings: "تنظیمات", app_users: "کاربران", devices: "کمپیوترها",
   member_documents: "عکس و تذکره", month_summaries: "خلاصهٔ ماه‌ها", partner_shares: "سهم شرکا", attendance: "حاضری",
   pec_clients: "خدمات تحصیلی", pec_contracts: "خدمات تحصیلی", pec_services: "خدمات تحصیلی", import_batches: "ورود از اکسل",
 };

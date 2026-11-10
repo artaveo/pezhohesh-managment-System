@@ -20,12 +20,12 @@ export type User = {
 /** Sections a partner can give the manager or the education staff (see the users page). */
 export type Section =
   | "dashboard" | "memberships" | "members" | "registrations" | "books" | "hotspot" | "inbox"
-  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "pec"
+  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "notes" | "pec"
   | "audit" | "users" | "prices" | "backup" | "device" | "import";
 export const SECTION_LABEL: Record<Section, string> = {
   dashboard: "داشبورد (درآمد و مصرف)", memberships: "پذیرش و تمدید", members: "اعضا", registrations: "ثبت‌نام‌ها",
   books: "امانت کتاب", hotspot: "کارت هاتسپات", inbox: "رسیده از موبایل", receipts: "بل‌ها",
-  expenses: "مصارف", salaries: "برداشت‌های کارمندان و معاش", shares: "برداشت‌ها و سهم شرکا", reports: "گزارش مالی", pec: "خدمات تحصیلی",
+  expenses: "مصارف", salaries: "برداشت‌های کارمندان و معاش", shares: "برداشت‌ها و سهم شرکا", reports: "گزارش مالی", notes: "یادداشت‌ها", pec: "خدمات تحصیلی",
   audit: "چه کسی چه کرد", users: "کاربران", prices: "قیمت‌ها", backup: "پشتیبان", device: "دستگاه انگشت", import: "ورود از اکسل",
 };
 /**
@@ -34,11 +34,12 @@ export const SECTION_LABEL: Record<Section, string> = {
  */
 export const SECTION_TREE: { group: string; items: { label?: string; id?: Section; parts?: Section[]; note?: string }[] }[] = [
   { group: "", items: [{ id: "dashboard" }] },
-  { group: "کار روزانه", items: [{ id: "memberships" }, { id: "members" }, { id: "registrations" }, { id: "inbox" }, { id: "books" }, { id: "hotspot" }] },
+  { group: "قرائت‌خانه", items: [{ id: "memberships" }, { id: "members" }, { id: "registrations" }, { id: "inbox" }, { id: "books" }, { id: "hotspot" }] },
   { group: "حساب و پول", items: [
     { id: "receipts" },
     { label: "مصارف و برداشت‌ها", parts: ["expenses", "salaries", "shares"] },
     { id: "reports" },
+    { id: "notes", note: "حساب‌های کنار دفتر. در هیچ درآمد، مصرف یا گزارشی شمرده نمی‌شود." },
   ] },
   { group: "خدمات تحصیلی", items: [{ id: "pec", note: "بخش‌های داخل خدمات تحصیلی وقتی آن بخش ساخته شد همین‌جا یکی‌یکی می‌آیند." }] },
   { group: "مدیریت", items: [
@@ -481,6 +482,10 @@ export type Borrower = {
   /** Members: a seat or internet period running today. */
   active: boolean;
 };
+/** «یادداشت‌ها»: kept apart from the books; no report counts them. */
+export type NoteLine = { label: string; amount: number; out: boolean };
+export type NoteInput = { title: string; body: string | null; lines: NoteLine[]; currency: "AFN" | "USD"; noted_on: string; pinned: boolean };
+export type Note = NoteInput & { id: string; created_by: string | null; updated_at: string };
 export type BookSection = { id: string; code: string; name: string; titles: number; copies: number; next_code: string };
 export type CatalogBook = {
   id: string; section_id: string | null; section: string | null; code: string | null; shelf: string | null;
@@ -715,6 +720,10 @@ export const api = {
   updatePlan: (id: string, p: Omit<Plan, "id">) => request<void>(`/plans/${id}`, { method: "PUT", body: p }),
   categories: () => request<Category[]>("/expense-categories"),
   createCategory: (name: string) => request<string>("/expense-categories", { method: "POST", body: { name } }),
+  notes: (signal?: AbortSignal) => request<Note[]>("/notes", { signal }),
+  createNote: (n: NoteInput) => request<string>("/notes", { method: "POST", body: n }),
+  updateNote: (id: string, n: NoteInput) => request<void>(`/notes/${id}`, { method: "PUT", body: n }),
+  deleteNote: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
   renameCategory: (id: string, name: string) => request<void>(`/expense-categories/${id}`, { method: "PUT", body: { name } }),
   /** `into`: where its expenses move; needed when it has any. */
   deleteCategory: (id: string, into?: string) => request<void>(`/expense-categories/${id}?${query({ into })}`, { method: "DELETE" }),

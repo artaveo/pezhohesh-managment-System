@@ -14,7 +14,6 @@ import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
 import { NewMember } from "./pages/members/NewMember";
 import { Bills } from "./pages/Bills";
-import { OtherIncome } from "./pages/OtherIncome";
 import { Attendance } from "./pages/Attendance";
 import { DeviceUsers } from "./pages/DeviceUsers";
 import { Money } from "./pages/Money";
@@ -30,39 +29,51 @@ import { DebtPage } from "./pages/Debts";
 import { Inbox } from "./pages/Inbox";
 import { SyncChip } from "./components/SyncChip";
 import { Reports } from "./pages/Reports";
+import { Tabs } from "./components/Tabs";
+import { Notes } from "./pages/Notes";
 import { useFileSending } from "./lib/images";
 
 /**
  * The menu. A section with `section` is shown to the roles a partner gave it to on the users
  * page (partners see all); `partner` sections are for partners only. The API checks the
- * same thing; hiding a section here only keeps the menu tidy. Grouped as the work is: the
- * desk, the money, the education department, running the system.
+ * same thing; hiding a section here only keeps the menu tidy. Grouped by department (the
+ * hall, its money, the education department) and then running the system, most used first.
+ * Pages with a `hub` share one menu item and are tabs inside it, so the menu stays short.
  */
-type NavItem = { id: string; icon: string; label: string; group: string; section?: Section; also?: readonly Section[]; partner?: true; soon?: true };
+type Hub = "members" | "device";
+type NavItem = { id: string; icon: string; label: string; group: string; hub?: Hub; section?: Section; also?: readonly Section[]; partner?: true; soon?: true };
 export const NAV = [
   { id: "dashboard", icon: "home", label: "داشبورد", group: "" },
-  { id: "memberships", icon: "card", label: "پذیرش و تمدید", section: "memberships", group: "کار روزانه" },
-  { id: "members", icon: "users", label: "اعضا", section: "members", group: "کار روزانه" },
-  { id: "registrations", icon: "userPlus", label: "ثبت‌نام‌ها", section: "registrations", group: "کار روزانه" },
-  { id: "attendance", icon: "calendar", label: "حاضری روزانه", section: "members", group: "کار روزانه" },
-  { id: "inbox", icon: "phone", label: "رسیده از موبایل", section: "inbox", group: "کار روزانه" },
-  { id: "books", icon: "book", label: "امانت کتاب", section: "books", group: "کار روزانه" },
-  { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", section: "hotspot", group: "کار روزانه" },
+  { id: "memberships", icon: "card", label: "پذیرش و تمدید", section: "memberships", group: "قرائت‌خانه", hub: "members" },
+  { id: "members", icon: "users", label: "فهرست اعضا", section: "members", group: "قرائت‌خانه", hub: "members" },
+  { id: "registrations", icon: "userPlus", label: "ثبت‌نام‌ها", section: "registrations", group: "قرائت‌خانه", hub: "members" },
+  { id: "attendance", icon: "calendar", label: "حاضری روزانه", section: "members", group: "قرائت‌خانه", hub: "members" },
+  { id: "inbox", icon: "phone", label: "رسیده از موبایل", section: "inbox", group: "قرائت‌خانه", hub: "members" },
+  { id: "books", icon: "book", label: "امانت کتاب", section: "books", group: "قرائت‌خانه" },
+  { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", section: "hotspot", group: "قرائت‌خانه" },
   { id: "receipts", icon: "receipt", label: "بل‌ها", section: "receipts", group: "حساب و پول" },
-  { id: "otherIncome", icon: "money", label: "عواید متفرقه", section: "receipts", group: "حساب و پول" },
-  // Staff salaries and the partners' shares live inside it, under «برداشت‌ها».
-  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares"], group: "حساب و پول" },
+  // Staff salaries and the partners' shares live inside it, under «برداشت‌ها»; «عواید
+  // متفرقه» and «طلبات» under «عواید».
+  { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares", "receipts"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
+  { id: "notes", icon: "note", label: "یادداشت‌ها", section: "notes", group: "حساب و پول" },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
-  { id: "audit", icon: "history", label: "چه کسی چه کرد", section: "audit", group: "مدیریت" },
-  { id: "users", icon: "shield", label: "کاربران", section: "users", group: "مدیریت" },
-  { id: "prices", icon: "tag", label: "قیمت‌ها", section: "prices", group: "مدیریت" },
-  { id: "backup", icon: "database", label: "پشتیبان", section: "backup", group: "مدیریت" },
-  { id: "device", icon: "fingerprint", label: "دستگاه انگشت", section: "device", group: "مدیریت" },
-  { id: "deviceUsers", icon: "users", label: "کاربران دستگاه", section: "device", group: "مدیریت" },
   { id: "import", icon: "upload", label: "ورود از اکسل", section: "import", group: "مدیریت" },
+  { id: "device", icon: "fingerprint", label: "وضعیت و تنظیم", section: "device", group: "مدیریت", hub: "device" },
+  { id: "deviceUsers", icon: "users", label: "کاربران دستگاه", section: "device", group: "مدیریت", hub: "device" },
+  { id: "backup", icon: "database", label: "پشتیبان", section: "backup", group: "مدیریت" },
+  { id: "prices", icon: "tag", label: "قیمت‌ها", section: "prices", group: "مدیریت" },
+  { id: "users", icon: "shield", label: "کاربران", section: "users", group: "مدیریت" },
+  { id: "audit", icon: "history", label: "چه کسی چه کرد", section: "audit", group: "مدیریت" },
   { id: "settings", icon: "user", label: "تنظیمات من", group: "" },
 ] as const satisfies readonly NavItem[];
+
+/** The one menu item of a hub, and the title over its tabs. */
+const HUB: Record<Hub, { icon: string; label: string }> = {
+  members: { icon: "users", label: "اعضا" },
+  device: { icon: "fingerprint", label: "دستگاه انگشت" },
+};
+const hubOf = (n: object): Hub | undefined => ("hub" in n ? (n.hub as Hub) : undefined);
 
 /** Whether this person sees a menu item. */
 function sees(user: User, n: NavItem) {
@@ -120,8 +131,19 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   });
   const current = nav.find((n) => n.id === page) ?? nav[0];
-  const main = nav.filter((n) => n.id !== "settings");
+  const hub = hubOf(current);
+  // The tab last open in each hub, so the menu item brings you back where you were.
+  const [lastTab, setLastTab] = useState<Partial<Record<Hub, PageId>>>({});
+  useEffect(() => { if (hub) setLastTab((t) => (t[hub] === page ? t : { ...t, [hub]: page })); }, [hub, page]);
+  const openHub = (h: Hub) => {
+    const tabs = nav.filter((n) => hubOf(n) === h);
+    const to = tabs.find((n) => n.id === lastTab[h]) ?? tabs[0];
+    if (to) setPage(to.id);
+  };
+  // One entry per hub: the first page of a hub stands for it in the menu.
+  const main = nav.filter((n) => n.id !== "settings" && (!hubOf(n) || nav.find((x) => hubOf(x) === hubOf(n)) === n));
   const groups = [...new Set(main.map((n) => n.group))];
+  const hubTabs = hub ? nav.filter((n) => hubOf(n) === hub) : [];
 
   return (
     <div className="shell">
@@ -136,15 +158,21 @@ function Shell() {
         <nav aria-label="بخش‌ها">
           {groups.map((g) => (
             <div key={g || "top"} role="group" aria-label={g || "داشبورد"}>
-              {g && <div className="nav-group">{g}</div>}
-              {main.filter((n) => n.group === g).map((n) => (
-                <button key={n.id} className={n.id === page ? "active" : ""} aria-current={n.id === page ? "page" : undefined} onClick={() => setPage(n.id)}>
-                  <Icon name={n.icon} size={19} />
-                  <span>{n.label}</span>
-                  {"soon" in n && n.soon && <span className="soon">به‌زودی</span>}
-                  {n.id === "inbox" && arrived > 0 && <span className="badge" aria-label={`${arrived} منتظر`}>{arrived}</span>}
-                </button>
-              ))}
+              {/* A group of one item named as the item itself needs no heading of its own. */}
+              {g && !(main.filter((n) => n.group === g).length === 1 && main.find((n) => n.group === g)?.label === g) && <div className="nav-group">{g}</div>}
+              {main.filter((n) => n.group === g).map((n) => {
+                const h = hubOf(n);
+                const on = h ? h === hub : n.id === page;
+                const waiting = h === "members" && nav.some((x) => x.id === "inbox") ? arrived : 0;
+                return (
+                  <button key={n.id} className={on ? "active" : ""} aria-current={on ? "page" : undefined} onClick={() => (h ? openHub(h) : setPage(n.id))}>
+                    <Icon name={h ? HUB[h].icon : n.icon} size={19} />
+                    <span>{h ? HUB[h].label : n.label}</span>
+                    {"soon" in n && n.soon && <span className="soon">به‌زودی</span>}
+                    {waiting > 0 && <span className="badge" aria-label={`${waiting} عکس از موبایل منتظر`}>{waiting}</span>}
+                  </button>
+                );
+              })}
             </div>
           ))}
         </nav>
@@ -184,7 +212,13 @@ function Shell() {
           user!.role === "partner" || user!.sections?.includes("dashboard") ? <Dashboard go={goFromDashboard} /> : <Home />
         ) : (
           <>
-            <h1>{member?.id === null ? "عضو جدید" : member?.debts || view.debt ? "باقی‌ها" : current.label}</h1>
+            <h1>{member?.id === null ? "عضو جدید" : member?.debts || view.debt ? "باقی‌ها" : hub ? HUB[hub].label : current.label}</h1>
+            {hub && !member && !view.debt && hubTabs.length > 1 && (
+              <div className="hub-tabs">
+                <Tabs label={HUB[hub].label} value={page as string} onChange={(id) => setPage(id as PageId)}
+                  items={hubTabs.map((n) => ({ id: n.id as string, label: n.label, badge: n.id === "inbox" ? arrived : 0 }))} />
+              </div>
+            )}
             {page === "settings" ? <Settings />
               : page === "users" ? <Users />
               : page === "members" ? (
@@ -203,9 +237,9 @@ function Shell() {
               : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => go({ page: "members", member: { id: null } })} />
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
-              : page === "otherIncome" ? <OtherIncome />
               : page === "attendance" ? <Attendance openMember={(id) => openMember(id)} />
               : page === "reports" ? <Reports />
+              : page === "notes" ? <Notes />
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />
               : page === "books" ? <Books />

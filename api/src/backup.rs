@@ -501,6 +501,13 @@ pub async fn dump(url: &str, dir: &Path, target: &Path) -> Result<(), String> {
     let mut cmd = pg_command("pg_dump", url)?;
     // pz_keep only lives for the moment of a restore (see restore.rs).
     cmd.arg("--format=custom").arg("--exclude-schema=pz_keep").arg("--file").arg(&partial);
+    // A computer working on the server directly backs up the server, whose change history for
+    // the other computers (sync_log) and "who did what" log are most of its size. Neither is
+    // used by a restore (a restore keeps the log as it is now, and such a computer cannot
+    // restore at all), so their rows are left out; the tables themselves stay.
+    if crate::sync::online_device().is_some() {
+        cmd.arg("--exclude-table-data=public.sync_log").arg("--exclude-table-data=public.audit_log");
+    }
     if let Err(e) = run(cmd, "pg_dump").await {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(e);

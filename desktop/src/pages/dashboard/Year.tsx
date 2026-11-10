@@ -9,6 +9,7 @@ import { api, errorText, type MonthSummary, type SalaryPage } from "../../lib/ap
 import { AmountInput } from "../../components/AmountInput";
 import { useAuth } from "../../auth/AuthProvider";
 import { useToast } from "../../components/Toast";
+import { inTill } from "../../lib/shares";
 
 const INCOME_ORDER = Object.keys(LABELS);
 
@@ -17,6 +18,9 @@ const INCOME_ORDER = Object.keys(LABELS);
  * column ("ملاحظات" in the Excel book), and every year since the first record.
  */
 export function YearView() {
+  const user = useAuth().user!;
+  // The partners' withdrawals are theirs to see, as on the finance report.
+  const canShares = user.role === "partner" || (user.sections ?? []).includes("shares");
   const now = new Date();
   const [ys, setYs] = useState(() => yearStart(now));
   const current = iso(ys) === iso(yearStart(now));
@@ -74,10 +78,15 @@ export function YearView() {
           {cur.estimated !== 0 && " بعضی ماه‌های این سال فقط بیلانس برآوردی دارند."}
         </p>
       </div>
-      <section className="kpis four">
+      <section className={`kpis ${canShares ? "five" : "four"}`}>
         <Kpi hero icon="wallet" label={`درآمد سال ${y}`} value={cur.income} unit="؋" compare={[{ prev: last.income, vs }]} />
         <Kpi icon="receipt" label={`مصارف سال ${y}`} value={cur.expenses} unit="؋" upIsGood={false} compare={[{ prev: last.expenses, vs }]} />
         <Kpi icon="chart" label={`سود خالص سال ${y}`} value={balance(cur)} unit="؋" compare={[{ prev: balance(last), vs }]} />
+        {canShares && (
+          // The whole till: what every month since 1 Hamal 1405 left, less the partners' withdrawals.
+          <Kpi icon="banknote" label={current ? "موجودی صندوق تا امروز" : `موجودی آخر سال ${y}`} value={inTill(cur)} unit="؋"
+            note={`از سال قبل ${fa(cur.carried)} + سود خالص − برداشت شرکا`} />
+        )}
         <Kpi icon="card" label="درآمد کل دیتابیس" value={data.allTime} unit="؋"
           note={data.first ? `از ${formatShort(data.first)} ${yearNumber(data.first)} تا امروز` : "هنوز درآمدی ثبت نشده"} />
       </section>

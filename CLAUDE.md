@@ -26,7 +26,8 @@ claude.ai Projects to this local checkout on 2026-11-03.
   never reaches the other computers.
 - Requests run in a transaction as the user's DB role (`auth::begin_as`), which sets
   `role` and `app.user_id`; the audit log reads them. Section permissions are checked again
-  in `access.rs` (the menu hiding in `App.tsx` is only cosmetic). A new section must be added
+  in `access.rs` (the menu hiding in `App.tsx` is only cosmetic). Menu items with a `hub`
+  («اعضا», «دستگاه انگشت») are one menu entry with tabs. A new section must be added
   to `access.rs::SECTIONS` (and `HALL` if the manager may get it), `Section`/`SECTION_LABEL`/
   `SECTION_TREE` in `api.ts`, and `NAV` in `App.tsx`.
 - Never edit an applied migration (checksums); add a new one. Files are LF (`.gitattributes`);
@@ -51,7 +52,9 @@ claude.ai Projects to this local checkout on 2026-11-03.
   the later months of a multi-month payment count on their own start day.
 - The import skips a member's month cell when the app has a bill for that member, line and month.
   An expense or withdrawal typed in the app skips the book's line of the same kind, day and
-  amount; a day with meals typed in the app skips that day's book meals (split or whole).
+  amount; a day with meals typed in the app skips that day's book meals (split or whole). A book
+  expense cell equal to the sum of some of that day's other app lines (any line, e.g. «مصارف
+  جانبی 720» typed as 100 + 500 + 120) is skipped too (`subset_sum`, at most 16 lines a day).
   Other income: a dated cell skips an app bill of the same line, day and amount; a statement
   month figure (books, «طلبات») loses the app's bills of that line in that month. Hotspot: the
   sheet's day count loses the cards the app counted that day (per card size, profit with them);
@@ -61,6 +64,9 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - A re-import writes only what changed: one batch per year is reused, and money rows are compared
   by their content (`xl_rx` etc. in `import_excel.rs`); bulk work sets `pezhohesh.bulk` so
   `write_audit` skips it and writes one summary line. The audit log keeps only changed fields.
+- «یادداشت‌ها» (`notes`, `notes.rs`) are side reckonings: no report, total or import reads them.
+- The dashboard's month card «موجودی ماه» is that month alone (net − partners' withdrawals); the
+  whole till (`inTill`) is on «امسال».
 - «موجودی از ماه قبل» is never typed: `reports.rs` works out the till at a range's start from
   `TILL_START` (1 Hamal 1405, empty): income − expenses + estimates − partners' withdrawals.
   It is added only to «موجودی» (`inTill`). The old manual category `carryover` stays excluded from
@@ -79,7 +85,10 @@ and keeps a copy (`/documents/:id/copy`).
 ## Sync (see `api/src/sync.rs`, `0018_sync.sql`)
 
 Neon is the hub. An office PC ("node") keeps a local Postgres; triggers write every change
-to `sync_log`, the API pushes then pulls when online. A partner laptop ("online device")
+to `sync_log`, the API pushes then pulls when online. Once a day a node tidies the hub:
+`sync_prune(3)` drops older states of a row (the newest stays), and `shrink` rewrites
+`sync_log`/`audit_log` with VACUUM FULL when they are mostly empty space. An online device's
+backup leaves out the rows of those two tables (a restore never uses them). A partner laptop ("online device")
 has no own database and works on the hub directly, naming itself per connection via
 `app.device_id`. Files in `%APPDATA%\Pezhohesh\`: `database-url.txt` (local DB),
 `online-url.txt` (hub), `online-device.txt` / `online-device-paused.txt`. These hold

@@ -1179,6 +1179,19 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The fewest of `parts` (cents, at most 16) that add up to `target`, by their indexes.
+fn subset_sum(parts: &[i64], target: i64) -> Option<Vec<usize>> {
+    let n = parts.len().min(16);
+    if target <= 0 || n == 0 {
+        return None;
+    }
+    let pick = |m: u32| (0..n).filter(move |b| m >> b & 1 == 1);
+    (1u32..1 << n)
+        .filter(|&m| pick(m).map(|b| parts[b]).sum::<i64>() == target)
+        .min_by_key(|m| m.count_ones())
+        .map(|m| pick(m).collect())
+}
+
 fn date_of(book_year: i32, month: u32, day: Option<u32>, warnings: &mut Vec<String>) -> NaiveDate {
     let len = solar::month_len(book_year, month);
     let d = match day {
@@ -1547,28 +1560,46 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .await?;
     let food_days: std::collections::HashSet<NaiveDate> =
         typed.iter().filter(|(c, _, _)| food.is_some_and(|f| f.contains(c))).map(|(_, d, _)| *d).collect();
-    let mut pool: HashMap<(Uuid, NaiveDate, i64), usize> = HashMap::new();
+    // The app's lines by day: (line, cents, matched already).
+    let mut by_day: HashMap<NaiveDate, Vec<(Uuid, i64, bool)>> = HashMap::new();
     for (c, d, a) in &typed {
-        *pool.entry((*c, *d, cents(*a))).or_default() += 1;
+        by_day.entry(*d).or_default().push((*c, cents(*a), false));
+    }
+    let split_meal = |c: &Uuid| food.is_some_and(|f| f.contains(c));
+    let mut keep = vec![true; spent.len()];
+    for (i, (c, d, _, a)) in spent.iter().enumerate() {
+        // The book's meals of the day, split or whole, when the app has that day's meals.
+        if (split_meal(c) || *c == category_ids["ماکولات"]) && food_days.contains(d) {
+            keep[i] = false;
+        } else if let Some(t) = by_day.get_mut(d).and_then(|v| v.iter_mut().find(|t| !t.2 && t.0 == *c && t.1 == cents(*a))) {
+            t.2 = true;
+            keep[i] = false;
+        }
+    }
+    // One cell of the book for several lines typed in the app that day, perhaps under other
+    // lines («مصارف جانبی 720: تانکر/روغن/چسب» typed as 100 + 500 + 120): the day's other
+    // lines that add up to the cell are the same money. Larger cells first; meal lines are
+    // left to the day rule above.
+    let mut rest: Vec<usize> = (0..spent.len()).filter(|&i| keep[i]).collect();
+    rest.sort_by(|&x, &y| spent[y].3.total_cmp(&spent[x].3));
+    for i in rest {
+        let (_, d, _, a) = &spent[i];
+        let Some(v) = by_day.get_mut(d) else { continue };
+        let free: Vec<usize> = v.iter().enumerate().filter(|(_, t)| !t.2 && !split_meal(&t.0)).map(|(k, _)| k).take(16).collect();
+        if let Some(pick) = subset_sum(&free.iter().map(|&k| v[k].1).collect::<Vec<_>>(), cents(*a)) {
+            for p in pick {
+                v[free[p]].2 = true;
+            }
+            keep[i] = false;
+        }
     }
     let (mut expenses_in_app, mut expenses_in_app_amount) = (0usize, 0.0f64);
-    spent.retain(|(c, d, _, a)| {
-        // The book's meals of the day, split or whole, when the app has that day's meals.
-        let meal = food.is_some_and(|f| f.contains(c)) || *c == category_ids["ماکولات"];
-        let left_out = if meal && food_days.contains(d) {
-            true
-        } else if let Some(n) = pool.get_mut(&(*c, *d, cents(*a))).filter(|n| **n > 0) {
-            *n -= 1;
-            true
-        } else {
-            false
-        };
-        if left_out {
-            expenses_in_app += 1;
-            expenses_in_app_amount += a;
-        }
-        !left_out
-    });
+    for (i, _) in keep.iter().enumerate().filter(|(_, k)| !**k) {
+        expenses_in_app += 1;
+        expenses_in_app_amount += spent[i].3;
+    }
+    let mut kept = keep.into_iter();
+    spent.retain(|_| kept.next().unwrap_or(true));
     let ex: (i64, i64, i64) = sqlx::query_as(
         r#"
         WITH n AS (SELECT x.*, row_number() OVER (PARTITION BY x.category, x.day, x.note, x.amount) AS k
@@ -2421,6 +2452,15 @@ mod tests {
         let raw = std::fs::read(std::env::var("PZ_XL").unwrap()).unwrap();
         let plain = office_crypto::decrypt_from_bytes(raw, &std::env::var("PZ_XL_PASS").unwrap()).unwrap();
         std::fs::write(std::env::var("PZ_XL_OUT").unwrap(), plain).unwrap();
+    }
+
+    #[test]
+    fn one_cell_many_lines() {
+        // «مصارف جانبی 720» in the book; 100, 500, 120 (and a 90 for something else) in the app.
+        assert_eq!(subset_sum(&[10000, 9000, 50000, 12000], 72000), Some(vec![0, 2, 3]));
+        assert_eq!(subset_sum(&[50000, 20000, 30000], 50000), Some(vec![0]));
+        assert_eq!(subset_sum(&[10000, 20000], 45000), None);
+        assert_eq!(subset_sum(&[], 100), None);
     }
 
     #[test]

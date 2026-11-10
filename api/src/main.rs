@@ -40,6 +40,7 @@ mod k50;
 mod lists;
 mod logging;
 mod money;
+mod notes;
 mod online;
 mod people;
 mod phone;
@@ -329,6 +330,8 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/catalog/books", post(catalog::create_book))
         .route("/api/v1/catalog/books/:id", put(catalog::update_book).delete(catalog::delete_book))
         .route("/api/v1/catalog/sections", post(catalog::create_section))
+        .route("/api/v1/notes", get(notes::list).post(notes::create))
+        .route("/api/v1/notes/:id", put(notes::update).delete(notes::remove))
         .route("/api/v1/catalog/sections/:id", put(catalog::update_section).delete(catalog::delete_section))
         .route(
             "/api/v1/catalog/import",

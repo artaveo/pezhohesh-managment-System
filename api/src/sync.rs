@@ -362,8 +362,29 @@ async fn verify(db: &PgPool, hub: &PgPool) -> Result<(), String> {
     Ok(())
 }
 
+/// Deleted rows leave their space in the table file; Postgres only reuses it. When the log
+/// tables on the server are mostly empty space (after tidying, or a big clean-up like 0032),
+/// they are rewritten to their real size, which takes seconds at these sizes.
+async fn shrink(hub: &PgPool) {
+    for t in ["sync_log", "audit_log"] {
+        let sizes: Result<(i64, i64), _> = sqlx::query_as(&format!(
+            "SELECT pg_total_relation_size('public.{t}'), COALESCE((SELECT sum(pg_column_size(x.*)) FROM public.{t} x), 0)::int8"
+        ))
+        .fetch_one(hub)
+        .await;
+        let Ok((total, live)) = sizes else { continue };
+        if total > 64 << 20 && total > 4 * live {
+            // VACUUM may not run in a transaction: the simple protocol sends it on its own.
+            match sqlx::raw_sql(&format!("VACUUM (FULL) public.{t}")).execute(hub).await {
+                Ok(_) => tracing::info!("sync: {t} on the server rewritten ({} MB was {} MB)", live >> 20, total >> 20),
+                Err(e) => tracing::warn!("sync: rewriting {t}: {e}"),
+            }
+        }
+    }
+}
+
 /// About once an hour the server's size, about once a day its old history tidied (older
-/// states of a row after 180 days; the newest state of every row stays).
+/// states of a row after 3 days; the newest state of every row stays).
 async fn chores(hub: &PgPool) {
     let now = std::time::Instant::now();
     let (size_due, prune_due) = {
@@ -379,11 +400,15 @@ async fn chores(hub: &PgPool) {
         }
     }
     if prune_due {
-        match sqlx::query_scalar::<_, i64>("SELECT sync_prune(30)").fetch_one(hub).await {
+        // Computers take the changes within minutes, and one that was away longer still gets
+        // the newest state of every row, so older states are not kept long (each Excel import
+        // used to leave thousands of them for a month).
+        match sqlx::query_scalar::<_, i64>("SELECT sync_prune(3)").fetch_one(hub).await {
             Ok(n) if n > 0 => tracing::info!("sync: {n} old states tidied on the server"),
             Ok(_) => {}
             Err(e) => tracing::warn!("sync: tidy: {e}"),
         }
+        shrink(hub).await;
     }
     let mut c = CHORES.lock().unwrap();
     let (s0, p0) = c.unwrap_or((now, now));
