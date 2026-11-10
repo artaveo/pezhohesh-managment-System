@@ -1,7 +1,7 @@
 {
   "name": "pezhohesh-desktop",
   "private": true,
-  "license": "MIT",
+  "license": "UNLICENSED",
   "version": "1.2.9",
   "type": "module",
   "scripts": {

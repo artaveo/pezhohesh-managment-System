@@ -28,4 +28,4 @@ Offline-first desktop app; online backup and sync to Neon.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+All rights reserved: no use, copying or changes without written permission. See [LICENSE](LICENSE).

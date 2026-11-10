@@ -2,7 +2,8 @@
 name = "pezhohesh-api"
 version = "1.2.9"
 edition = "2021"
-license = "MIT"
+license-file = "../LICENSE"
+publish = false
 description = "Core API for the Pezhohesh management system (study hall + educational services)"
 
 [dependencies]
