@@ -296,6 +296,24 @@ pub async fn create(State(s): State<AppState>, user: CurrentUser, Json(i): Json<
     Ok(Json(id))
 }
 
+/// DELETE /api/v1/salaries/:id (partners): someone put on the payroll by mistake (or twice).
+/// Gone from the payroll and its months; money already paid stays in its expense line. Not
+/// someone who signs in to the app (their account goes first, on the users page).
+pub async fn remove(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    partner(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let signs_in: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM app_users WHERE staff_id = $1)").bind(id).fetch_one(&mut *tx).await?;
+    if signs_in {
+        return Err(ApiError(StatusCode::CONFLICT, "has_account"));
+    }
+    let done = sqlx::query(&format!("UPDATE staff s SET deleted_at = now() WHERE s.id = $1 AND {PAYROLL}")).bind(id).execute(&mut *tx).await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError(StatusCode::NOT_FOUND, "not_found"));
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// PUT /api/v1/salaries/:id (partners). A new amount counts from this month on; a later start
 /// removes the months before it; months while the person was not working are not counted
 /// when they come back.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorText, type Bill, type BillMonth } from "../lib/api";
 import { fa, formatDay, formatNumeric } from "../lib/solar";
@@ -8,6 +8,7 @@ import { Modal } from "./Modal";
 export const CATEGORY_LABEL: Record<string, string> = {
   monthly: "عضویت ماهانه", daily: "عضویت روزانه", internet: "انترنت ماهانه", hotspot: "انترنت هاتسپات",
   books: "امانت کتاب", misc: "عواید متفرقه", services: "طلبات (عواید خدمات)",
+  carryover: "افزوده موجودی از ماه قبل", net_services: "انترنت خدمات",
 };
 
 /** The top of every paper bill: the hall, the bill's number and date, and who paid. */
@@ -124,11 +125,30 @@ function BillFoot({ bill }: { bill: Bill }) {
  * sheet stays clean for the next bill or for anything else.
  */
 const PAPER = {
-  "a4-a5": { label: "A4، بل A5 در گوشه", page: "A4 portrait", zoom: 1, corner: true },
-  "a4-a6": { label: "A4، بل A6 در گوشه", page: "A4 portrait", zoom: 0.7, corner: true },
-  a5: { label: "ورق A5", page: "A5 portrait", zoom: 1, corner: false },
-  a6: { label: "ورق A6", page: "105mm 148mm", zoom: 0.7, corner: false },
+  "a4-a5": { label: "A4، بل A5 در گوشه", page: "A4 portrait", zoom: 1, corner: true, sheet: [210, 297], bill: 148 },
+  "a4-a6": { label: "A4، بل A6 در گوشه", page: "A4 portrait", zoom: 0.7, corner: true, sheet: [210, 297], bill: 105 },
+  a5: { label: "ورق A5", page: "A5 portrait", zoom: 1, corner: false, sheet: [148, 210], bill: 148 },
+  a6: { label: "ورق A6", page: "105mm 148mm", zoom: 0.7, corner: false, sheet: [105, 148], bill: 105 },
 } as const;
+
+/**
+ * The bill as a PDF file on the chosen paper: the sheet is drawn to a picture at three times
+ * screen size (sharp when printed) and placed as printing would place it.
+ */
+async function savePdf(el: HTMLElement, bill: Bill, paper: Paper) {
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas"), import("jspdf")]);
+  await document.fonts.ready;
+  const canvas = await html2canvas(el, { scale: 3, backgroundColor: "#ffffff", useCORS: true, logging: false });
+  const p = PAPER[paper];
+  const [w, h] = p.sheet;
+  const doc = new jsPDF({ unit: "mm", format: [w, h], orientation: "portrait", compress: true });
+  const bw = p.bill;
+  const bh = Math.min((canvas.height / canvas.width) * bw, h);
+  // On A4 the bill sits in the top-right corner, as when printed.
+  doc.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", w - bw, 0, bw, bh, undefined, "FAST");
+  doc.setProperties({ title: `بل ${bill.receipt_no}` });
+  doc.save(`bill-${bill.receipt_no}.pdf`);
+}
 type Paper = keyof typeof PAPER;
 const PAPER_KEY = "pz.billPaper";
 function savedPaper(): Paper {
@@ -150,6 +170,9 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
   const [error, setError] = useState("");
   // Remembered on this computer: each desk prints on the paper its printer holds.
   const [paper, setPaper] = useState<Paper>(savedPaper);
+  // While a PDF is made: the bill drawn once more off screen at its real size.
+  const [pdf, setPdf] = useState<"" | "busy" | "failed">("");
+  const stage = useRef<HTMLDivElement>(null);
   const choose = (p: Paper) => { setPaper(p); try { localStorage.setItem(PAPER_KEY, p); } catch { /* not remembered */ } };
 
   useEffect(() => { api.bill(id).then(setBill).catch((e) => setError(errorText(e))); }, [id]);
@@ -169,10 +192,25 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
     window.print();
   }
 
+  async function toPdf() {
+    if (!bill) return;
+    setPdf("busy");
+    // A moment for the off-screen copy to be drawn (a timer, which also runs in a window behind others).
+    await new Promise((ok) => window.setTimeout(ok, 60));
+    try {
+      await savePdf(stage.current!.firstElementChild as HTMLElement, bill, paper);
+      setPdf("");
+    } catch (e) {
+      void api.clientLog({ level: "error", place: "bill-pdf", message: String(e) });
+      setPdf("failed");
+    }
+  }
+
   return (
     <Modal label="بل" onClose={onClose} bare>
       <div className="modal-tools no-print">
         <button className="btn" onClick={print} disabled={!bill}>چاپ</button>
+        <button className="btn ghost" disabled={!bill || pdf === "busy"} onClick={() => void toPdf()}>{pdf === "busy" ? "در حال ساختن PDF…" : "ذخیرهٔ PDF"}</button>
         <label className="paper-pick">
           <span className="muted small">اندازهٔ ورق</span>
           <select value={paper} onChange={(e) => choose(e.target.value as Paper)}>
@@ -187,6 +225,8 @@ export function BillPreview({ id, onClose }: { id: string; onClose: () => void }
           : "در پنجرهٔ چاپ، اندازهٔ کاغذ را همین اندازه و مقیاس را «Default» یا 100٪ بگذارید."}
       </p>
       {error && <p className="form-error">{error}</p>}
+      {pdf === "failed" && <p className="form-error no-print">PDF ساخته نشد. دوباره امتحان کنید، یا «چاپ» را بزنید و «Microsoft Print to PDF» را انتخاب کنید.</p>}
+      {bill && pdf === "busy" && <div ref={stage} className="pdf-stage" aria-hidden="true"><BillSheet bill={bill} /></div>}
       {bill ? <div style={{ zoom: Math.min(PAPER[paper].zoom, 1) }}><BillSheet bill={bill} /></div> : !error && <p className="muted">در حال بارگذاری…</p>}
     {/* Printing shows only this copy, outside the app, so the bill is exactly one page. */}
     {bill && createPortal(<div className={`print-only bill-print${PAPER[paper].corner ? " corner" : ""}`}><BillSheet bill={bill} /></div>, document.body)}

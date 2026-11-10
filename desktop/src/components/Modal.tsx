@@ -1,11 +1,13 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * A dialog over the page: Esc or a click outside closes it, Tab stays inside it, and the
  * focus goes back to the button that opened it. `bare` leaves out the panel (for a picture
- * or a printable card that brings its own frame).
+ * or a printable card that brings its own frame). It is drawn into <body>, so no panel with
+ * a blur or transform around it can clip it or pin it inside its own box.
  */
 export function Modal({ label, onClose, children, bare, className = "" }: {
   label: string;
@@ -35,9 +37,10 @@ export function Modal({ label, onClose, children, bare, className = "" }: {
     return () => { document.removeEventListener("keydown", key, true); opener?.focus?.(); };
   }, []);
 
-  return (
+  return createPortal(
     <div className="modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div ref={box} tabIndex={-1} className={`modal-body${bare ? "" : " panel"} ${className}`.trim()}>{children}</div>
-    </div>
+    </div>,
+    document.body,
   );
 }

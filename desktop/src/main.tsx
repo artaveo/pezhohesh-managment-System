@@ -8,15 +8,20 @@ import { ThemeProvider } from "./theme/ThemeProvider";
 import { AuthProvider } from "./auth/AuthProvider";
 import App from "./App";
 import { ToastHost } from "./components/Toast";
+import { ErrorBoundary, watchErrors } from "./components/ErrorBoundary";
+
+watchErrors();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ThemeProvider>
-      <AuthProvider>
-        <ToastHost>
-          <App />
-        </ToastHost>
-      </AuthProvider>
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <AuthProvider>
+          <ToastHost>
+            <App />
+          </ToastHost>
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

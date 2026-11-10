@@ -51,6 +51,21 @@ claude.ai Projects to this local checkout on 2026-11-03.
   the later months of a multi-month payment count on their own start day.
 - The import skips a member's month cell when the app has a bill for that member, line and month.
   Expenses, withdrawals and other income typed in both are still counted twice.
+- A re-import writes only what changed: one batch per year is reused, and money rows are compared
+  by their content (`xl_rx` etc. in `import_excel.rs`); bulk work sets `pezhohesh.bulk` so
+  `write_audit` skips it and writes one summary line. The audit log keeps only changed fields.
+- Category `carryover` («افزوده موجودی از ماه قبل») is cash carried in, never income or profit;
+  it is added only to «موجودی» (`inTill`). Book guarantees are shown apart, never as income.
+- A debt («باقی», `debts.rs`) paid late gets a bill dated today (`billed_on`), but its money counts
+  on the day it was owed (`issued_on`). Overdue home loans are debts too, settled by returning the book.
+
+## Files (photos and scans)
+
+Not on the hub. Each computer keeps its files under `%APPDATA%\Pezhohesh\files` and the window
+sends them to the file server (Supabase project `pezhohesh-files`, edge function `files`, private
+bucket `documents`, header `x-pz-key`; setting `files_store`, set by a partner on the backup
+page). Another computer fetches a missing file from there (`file_missing` 404 carries its name)
+and keeps a copy (`/documents/:id/copy`).
 
 ## Sync (see `api/src/sync.rs`, `0018_sync.sql`)
 

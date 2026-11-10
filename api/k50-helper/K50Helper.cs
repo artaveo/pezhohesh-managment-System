@@ -202,12 +202,16 @@ static class K50Helper
         zk.GetDeviceStatus(m, 2, ref users);
         zk.GetDeviceStatus(m, 3, ref fps);
         zk.GetDeviceStatus(m, 6, ref logs);
+        // How much the device can hold, and what is left (0 where the firmware does not say).
+        int fingerRoom = 0, userRoom = 0, logRoom = 0, fingersLeft = 0;
+        try { zk.GetDeviceStatus(m, 7, ref fingerRoom); zk.GetDeviceStatus(m, 8, ref userRoom); zk.GetDeviceStatus(m, 9, ref logRoom); zk.GetDeviceStatus(m, 10, ref fingersLeft); } catch { }
         int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
         zk.GetDeviceTime(m, ref y, ref mo, ref d, ref h, ref mi, ref se);
         var calls = new Dictionary<string, object>();
         foreach (var c in new[] { "SetUserValidDate", "GetUserValidDate", "SSR_SetUserInfo", "StartEnrollEx", "SSR_GetGeneralLogData", "DisableDeviceWithTimeOut", "ReadTimeGLogData" })
             calls[c] = Has(c);
         return Obj("ok", true, "serial", sn, "mac", mac, "firmware", fw, "platform", plat, "users", users, "fingers", fps, "logs", logs,
+            "finger_capacity", fingerRoom, "user_capacity", userRoom, "log_capacity", logRoom, "fingers_left", fingersLeft,
             "time", Stamp(y, mo, d, h, mi, se), "calls", calls, "bits", IntPtr.Size * 8);
     }
 

@@ -221,8 +221,10 @@ pub struct Book {
     title: String,
     author: Option<String>,
     copies: i32,
-    /// Copies lent from the catalogue and not back yet.
+    /// Copies lent from the catalogue and not back yet (taken home or read in the hall).
     on_loan: i64,
+    /// Copies on the list but out of reach (lost, damaged, at the binder…).
+    unavailable: i64,
     note: Option<String>,
 }
 
@@ -263,6 +265,7 @@ pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
     let books = sqlx::query_as(
         "SELECT b.id, b.section_id, s.name AS section, b.code, b.shelf, b.title, b.author, b.copies, \
                 (SELECT count(*) FROM book_loans l WHERE l.book_id = b.id AND l.returned_on IS NULL AND l.deleted_at IS NULL) AS on_loan, \
+                COALESCE((SELECT sum(u.copies) FROM book_unavailable u WHERE u.book_id = b.id AND u.resolved_on IS NULL AND u.deleted_at IS NULL), 0)::bigint AS unavailable, \
                 b.note \
          FROM books b LEFT JOIN book_sections s ON s.id = b.section_id \
          WHERE b.deleted_at IS NULL AND ($2::uuid IS NULL OR b.section_id = $2) \
@@ -279,6 +282,119 @@ pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
     .await?;
     tx.commit().await?;
     Ok(Json(Catalog { sections, total_titles, total_copies, books }))
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Holder {
+    loan_id: Uuid,
+    scope: String,
+    borrower: String,
+    card_no: Option<String>,
+    phone: Option<String>,
+    loaned_on: chrono::NaiveDate,
+    due_on: chrono::NaiveDate,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct OutOfReach {
+    id: Uuid,
+    copies: i32,
+    reason: String,
+    note: Option<String>,
+    since: chrono::NaiveDate,
+}
+
+#[derive(Serialize)]
+pub struct BookStatus {
+    holders: Vec<Holder>,
+    out_of_reach: Vec<OutOfReach>,
+}
+
+/// GET /api/v1/catalog/books/:id/status: who holds each copy, in which kind of loan, and the
+/// copies out of reach with why.
+pub async fn status(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<BookStatus>, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let holders = sqlx::query_as(
+        "SELECT l.id AS loan_id, l.scope, COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), l.borrower_name, '—') AS borrower, \
+                COALESCE(d.code, m.member_no::text) AS card_no, COALESCE(d.phone, m.phone, l.borrower_phone) AS phone, l.loaned_on, l.due_on \
+         FROM book_loans l LEFT JOIN members m ON m.id = l.member_id LEFT JOIN loan_deposits d ON d.id = l.deposit_id \
+         WHERE l.book_id = $1 AND l.returned_on IS NULL AND l.deleted_at IS NULL ORDER BY l.loaned_on",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let out_of_reach = sqlx::query_as(
+        "SELECT id, copies, reason, note, since FROM book_unavailable WHERE book_id = $1 AND resolved_on IS NULL AND deleted_at IS NULL ORDER BY since",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(BookStatus { holders, out_of_reach }))
+}
+
+#[derive(Deserialize)]
+pub struct Unavailable {
+    copies: i32,
+    /// lost | not_returned | damaged | repair | with_staff | removed | other
+    reason: String,
+    note: Option<String>,
+    since: Option<chrono::NaiveDate>,
+}
+
+/// POST /api/v1/catalog/books/:id/unavailable: these copies stay on the list but cannot be lent.
+pub async fn mark_unavailable(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(b): Json<Unavailable>) -> Result<Json<Uuid>, ApiError> {
+    hall_only(&user)?;
+    let note = clean_opt(&b.note);
+    if !matches!(b.reason.as_str(), "lost" | "not_returned" | "damaged" | "repair" | "with_staff" | "removed" | "other") {
+        return Err(ApiError::bad("bad_kind"));
+    }
+    if b.reason == "other" && note.is_none() {
+        return Err(ApiError::bad("reason_required"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let left: Option<i64> = sqlx::query_scalar(
+        "SELECT b.copies - (SELECT count(*) FROM book_loans l WHERE l.book_id = b.id AND l.returned_on IS NULL AND l.deleted_at IS NULL) \
+                - COALESCE((SELECT sum(u.copies) FROM book_unavailable u WHERE u.book_id = b.id AND u.resolved_on IS NULL AND u.deleted_at IS NULL), 0)::bigint \
+         FROM books b WHERE b.id = $1 AND b.deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let left = left.ok_or(NOT_FOUND)?;
+    if b.copies < 1 || i64::from(b.copies) > left {
+        return Err(ApiError(StatusCode::CONFLICT, "not_enough_copies"));
+    }
+    let new = Uuid::new_v4();
+    sqlx::query("INSERT INTO book_unavailable (id, book_id, copies, reason, note, since, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(new)
+        .bind(id)
+        .bind(b.copies)
+        .bind(&b.reason)
+        .bind(&note)
+        .bind(b.since.unwrap_or_else(crate::hall::today))
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(new))
+}
+
+/// POST /api/v1/catalog/unavailable/:id/resolve: found again, back on the shelf.
+pub async fn resolve_unavailable(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query("UPDATE book_unavailable SET resolved_on = $2 WHERE id = $1 AND resolved_on IS NULL AND deleted_at IS NULL")
+        .bind(id)
+        .bind(crate::hall::today())
+        .execute(&mut *tx)
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

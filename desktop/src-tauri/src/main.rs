@@ -139,6 +139,17 @@ fn api_log() -> String {
     lines[lines.len().saturating_sub(15)..].join("\n")
 }
 
+/// Opens the folder with the logs (api.log and the older api.1..4.log) in Explorer, with
+/// api.log picked, so it can be sent when something goes wrong.
+#[tauri::command]
+fn open_logs() -> Result<(), String> {
+    let dir = std::path::Path::new(&std::env::var_os("APPDATA").ok_or("no_appdata")?).join("Pezhohesh");
+    let log = dir.join("api.log");
+    let mut cmd = std::process::Command::new("explorer");
+    if log.is_file() { cmd.arg(format!("/select,{}", log.display())); } else { cmd.arg(&dir); }
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// The Windows folder picker (opens at "This PC"), for the backup folders. None when cancelled.
 #[tauri::command]
 async fn pick_folder(window: tauri::WebviewWindow, start: Option<String>) -> Option<String> {
@@ -244,6 +255,7 @@ fn main() {
             set_database_password,
             use_local_database,
             api_log,
+            open_logs,
             pick_folder,
             firewall::firewall_open,
             firewall::open_firewall,

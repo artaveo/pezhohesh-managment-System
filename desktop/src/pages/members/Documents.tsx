@@ -3,7 +3,7 @@ import { api, ApiError, errorText, type DocKind, type MemberDocument } from "../
 import { shrink, useDocumentUrl } from "../../lib/images";
 import { CameraCapture } from "../../components/CameraCapture";
 import { RemoveButton } from "../../components/RemoveButton";
-import { Modal } from "../../components/Modal";
+import { ImageViewer } from "../../components/ImageViewer";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -61,7 +61,7 @@ export function Documents({ memberId, docs, onChange }: { memberId: string; docs
         <CameraCapture portrait={camera === "photo"} onClose={() => setCamera(null)}
           onTaken={(b) => { const k = camera; setCamera(null); void add(k, b); }} />
       )}
-      {view && <Viewer doc={view} onClose={() => setView(null)} />}
+      {view && <Viewer doc={view} label={SLOTS.find((s) => s.kind === view.kind)?.label ?? "عکس"} onClose={() => setView(null)} />}
     </section>
   );
 }
@@ -94,15 +94,10 @@ function Slot({ label, doc, busy, pdf, onFile, onCamera, onView, onRemove }: {
   );
 }
 
-function Viewer({ doc, onClose }: { doc: MemberDocument; onClose: () => void }) {
+function Viewer({ doc, label, onClose }: { doc: MemberDocument; label: string; onClose: () => void }) {
   const { url, failed } = useDocumentUrl(doc.id);
   return (
-    <Modal label="عکس" onClose={onClose} bare className="doc-view">
-      <div className="modal-tools"><button className="btn ghost" onClick={onClose}>بستن</button></div>
-      {failed ? <p className="form-error">{errorText(new ApiError(404, "file_missing"))}</p>
-        : !url ? <p className="muted">در حال بارگذاری…</p>
-        : doc.mime_type === "application/pdf" ? <iframe src={url} title="PDF" />
-        : <img src={url} alt="" />}
-    </Modal>
+    <ImageViewer url={url} label={label} name={`${doc.kind}-${doc.created_at.slice(0, 10)}`} pdf={doc.mime_type === "application/pdf"}
+      failed={failed ? errorText(new ApiError(404, "file_missing")) : undefined} onClose={onClose} />
   );
 }

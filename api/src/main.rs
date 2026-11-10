@@ -5,7 +5,7 @@
 //! PostgreSQL, and in the cloud against Neon.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use axum::{
@@ -20,16 +20,17 @@ use serde::Serialize;
 use serde_json::json;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::postgres::{PgPool, PgPoolOptions};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tower_http::cors::CorsLayer;
 
 mod access;
+mod attendance;
 mod audit;
 mod auth;
 mod backup;
 mod books;
 mod catalog;
 mod dashboard;
+mod debts;
 mod documents;
 mod hall;
 mod history;
@@ -37,6 +38,7 @@ mod hotspot;
 mod import_excel;
 mod k50;
 mod lists;
+mod logging;
 mod money;
 mod online;
 mod people;
@@ -89,13 +91,7 @@ struct Health {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let logs = tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
-        .with_ansi(false);
-    match log_file() {
-        Some(file) => logs.with_writer(std::io::stderr.and(Mutex::new(file))).init(),
-        None => logs.init(),
-    }
+    logging::init();
     let result = run().await;
     if let Err(e) = &result {
         tracing::error!("stopped: {e:#}");
@@ -156,17 +152,6 @@ async fn run() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
-}
-
-/// `%APPDATA%\\Pezhohesh\\api.log`, started over once it passes 1 MB.
-fn log_file() -> Option<std::fs::File> {
-    let dir = std::path::Path::new(&std::env::var("APPDATA").ok()?).join("Pezhohesh");
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("api.log");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1_000_000) {
-        let _ = std::fs::remove_file(&path);
-    }
-    std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
 async fn prepare_database(url: String, db: PgPool, core: Arc<RwLock<Core>>) {
@@ -308,6 +293,13 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/documents/:id", get(documents::file).delete(documents::remove))
         .route("/api/v1/documents/:id/thumb", put(documents::set_thumb))
         .route("/api/v1/documents/thumbless", get(documents::thumbless))
+        .route("/api/v1/documents/unsent", get(documents::unsent))
+        .route("/api/v1/documents/:id/sent", post(documents::sent))
+        .route(
+            "/api/v1/documents/:id/copy",
+            put(documents::keep_copy).layer(axum::extract::DefaultBodyLimit::max(documents::MAX_BYTES + 1024)),
+        )
+        .route("/api/v1/files-store", get(documents::files_store).put(documents::set_files_store))
         .route("/api/v1/periods/:id", put(hall::update_period).delete(hall::delete_period))
         .route("/api/v1/members/:id/excel-month", put(import_excel::set_excel_month))
         .route("/api/v1/phone/hotspot", post(phone::note_hotspot))
@@ -327,7 +319,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/expenses/:id/restore", post(money::restore_expense))
         .route("/api/v1/staff", get(money::staff))
         .route("/api/v1/salaries", get(salaries::list).post(salaries::create))
-        .route("/api/v1/salaries/:id", put(salaries::update))
+        .route("/api/v1/salaries/:id", put(salaries::update).delete(salaries::remove))
         .route("/api/v1/salaries/:id/month", put(salaries::set_month))
         .route("/api/v1/withdrawals", get(money::withdrawals).post(money::create_withdrawal))
         .route("/api/v1/withdrawals/:id", put(money::update_withdrawal).delete(money::delete_withdrawal))
@@ -394,9 +386,21 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/k50/quiesce", post(k50::quiesce_now))
         .route("/api/v1/k50/hold", post(k50::hold_now))
         .route("/api/v1/k50/logs/clear", post(k50::clear_logs))
+        .route("/api/v1/k50/stale", get(k50::stale))
+        .route("/api/v1/k50/remove", post(k50::remove_stale))
+        .route("/api/v1/attendance/day", get(attendance::day))
+        .route("/api/v1/debts", get(debts::list).post(debts::create))
+        .route("/api/v1/debts/pay", post(debts::pay))
+        .route("/api/v1/debts/:id", delete(debts::delete))
+        .route("/api/v1/hall-loans", get(books::hall_loans))
+        .route("/api/v1/catalog/books/:id/status", get(catalog::status))
+        .route("/api/v1/catalog/books/:id/unavailable", post(catalog::mark_unavailable))
+        .route("/api/v1/catalog/unavailable/:id/resolve", post(catalog::resolve_unavailable))
+        .route("/api/v1/book-loans/:id/back", post(books::back_in_hall))
+        .route("/api/v1/client-log", post(logging::client_log))
         .layer(middleware::from_fn_with_state(state.clone(), wait_for_database))
+        .route_layer(middleware::from_fn(logging::requests))
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 

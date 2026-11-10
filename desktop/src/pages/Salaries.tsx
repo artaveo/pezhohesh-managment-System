@@ -119,6 +119,7 @@ function PersonPage({ p, page, partner, period, notice, onDone }: {
         <div className="actions">
           {p.category_id && <button className="btn" onClick={() => setMode(mode === "pay" ? null : "pay")}>+ پرداخت به {p.full_name}</button>}
           {partner && <button className="btn ghost" onClick={() => setMode(mode === "edit" ? null : "edit")}>ویرایش معاش</button>}
+          {partner && <RemoveStaff p={p} onDone={onDone} />}
         </div>
       </div>
       <section className="glass salary-head">
@@ -389,5 +390,26 @@ function SalaryForm({ person, categories, onDone, onCancel }: {
         <button className="btn ghost" onClick={onCancel}>انصراف</button>
       </div>
     </section>
+  );
+}
+
+/**
+ * Removes someone entered by mistake (or twice). Their payments stay in the books; someone
+ * who signs in to the app is removed on the users page first.
+ */
+function RemoveStaff({ p, onDone }: { p: SalaryPerson; onDone: (msg: string) => void }) {
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState("");
+  async function remove() {
+    setError("");
+    try { await api.removeStaff(p.id); onDone(`${p.full_name} حذف شد.`); } catch (e) { setError(errorText(e)); setAsking(false); }
+  }
+  return (
+    <>
+      {asking
+        ? <><button className="btn danger" onClick={() => void remove()}>{p.full_name} حذف شود؟</button><button className="btn ghost" onClick={() => setAsking(false)}>نه</button></>
+        : <button className="btn ghost danger-text" onClick={() => setAsking(true)}><Icon name="trash" /> حذف کارمند</button>}
+      {error && <span className="form-error small" role="alert">{error}</span>}
+    </>
   );
 }

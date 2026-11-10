@@ -355,7 +355,8 @@ fn read_member_sheet(book: &mut Book, rg: &Range<Data>, sheet_name: &'static str
     let c_name = col_containing(rg, h, "نام و تخلص").unwrap_or(1);
     let c_father = col_containing(rg, h, "نام پدر");
     let c_phone = col_containing(rg, h, "تماس");
-    let c_field = col_containing(rg, h, "رشته");
+    // «وضعیت» (student, language learner…) is what the book calls it now; «رشته» before.
+    let c_field = col_containing(rg, h, "وضعیت").or_else(|| col_containing(rg, h, "رشته"));
     let c_tazkira = col_containing(rg, h, "تذکره");
     let opt = |r: usize, c: Option<usize>| c.and_then(|c| text(cell(rg, r, c)));
     let label = if category == "monthly" { "عضویت ماهانه" } else { "انترنت ماهانه" };
@@ -873,6 +874,11 @@ pub struct Report {
     members: usize,
     members_new: i64,
     receipts: usize,
+    /// Of the book's income, expense and withdrawal rows already in the app: how many stayed as
+    /// they were, how many were taken out (no longer in the book) and how many were new.
+    rows_kept: i64,
+    rows_removed: i64,
+    rows_added: i64,
     /// Cells of a member's month the app already has a bill for: not counted a second time.
     in_app: usize,
     in_app_amount: f64,
@@ -1189,40 +1195,54 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     };
     entries.retain(|e| !(e.kind == Kind::Income && e.key == "hotspot" && sheet_month(e.month)));
 
-    // An earlier run of the same year is replaced: its rows are marked deleted.
-    let replaces: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT max(imported_at) FROM import_batches WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL",
+    // The book's thousands of rows are not each written into «چه کسی چه کرد»: one line for
+    // the import says it (write_audit reads this). Sync still carries every change.
+    sqlx::query("SELECT set_config('pezhohesh.bulk', 'on', true)").execute(&mut *db).await?;
+
+    // A year has one batch. Importing the book again keeps it and its rows: what is the same
+    // stays as it is, only rows gone from the book are taken out and new ones put in. So a
+    // new import writes tens of rows, not thousands (and the server, the backups and the log
+    // stay small).
+    let held_batch: Option<(Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT id, imported_at FROM import_batches WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL ORDER BY imported_at DESC LIMIT 1",
     )
     .bind(SOURCE)
     .bind(year)
-    .fetch_one(&mut *db)
+    .fetch_optional(&mut *db)
     .await?;
-    for table in ["receipts", "expenses", "withdrawals", "hotspot_buys", "hotspot_purchases", "hotspot_sales"] {
-        sqlx::query(&format!(
-            "UPDATE {table} SET deleted_at = now() WHERE deleted_at IS NULL AND import_batch_id IN \
-             (SELECT id FROM import_batches WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL)"
-        ))
-        .bind(SOURCE)
-        .bind(year)
-        .execute(&mut *db)
-        .await?;
+    let replaces = held_batch.map(|b| b.1);
+    let batch = match held_batch {
+        Some((id, _)) => {
+            sqlx::query("UPDATE import_batches SET file_name = $2, file_sha256 = $3, imported_by = $4, imported_at = now() WHERE id = $1")
+                .bind(id)
+                .bind(&p.file_name)
+                .bind(sha)
+                .bind(user.id)
+                .execute(&mut *db)
+                .await?;
+            id
+        }
+        None => {
+            let id = Uuid::new_v4();
+            sqlx::query("INSERT INTO import_batches (id, source, solar_year, file_name, file_sha256, imported_by) VALUES ($1, $2, $3, $4, $5, $6)")
+                .bind(id)
+                .bind(SOURCE)
+                .bind(year)
+                .bind(&p.file_name)
+                .bind(sha)
+                .bind(user.id)
+                .execute(&mut *db)
+                .await?;
+            id
+        }
+    };
+    // Each run numbers its new rows itself, so they never meet the numbers of rows kept.
+    let run = Uuid::new_v4();
+    // The hotspot sheet's bills and counts depend on each other; they are written again.
+    for table in ["hotspot_sales", "hotspot_purchases", "hotspot_buys"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE import_batch_id = $1")).bind(batch).execute(&mut *db).await?;
     }
-    sqlx::query("UPDATE import_batches SET replaced_at = now() WHERE source = $1 AND solar_year = $2 AND replaced_at IS NULL")
-        .bind(SOURCE)
-        .bind(year)
-        .execute(&mut *db)
-        .await?;
-
-    let batch = Uuid::new_v4();
-    sqlx::query("INSERT INTO import_batches (id, source, solar_year, file_name, file_sha256, imported_by) VALUES ($1, $2, $3, $4, $5, $6)")
-        .bind(batch)
-        .bind(SOURCE)
-        .bind(year)
-        .bind(&p.file_name)
-        .bind(sha)
-        .bind(user.id)
-        .execute(&mut *db)
-        .await?;
+    sqlx::query("DELETE FROM receipts WHERE import_batch_id = $1 AND receipt_no ~ '-H[0-9]+$'").bind(batch).execute(&mut *db).await?;
 
     // Members: a new ID is added; an ID the app has is the same member only when the names
     // are alike, and then only its empty fields are filled (see match_members).
@@ -1283,13 +1303,13 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
                                   AND x.name IS NOT NULL THEN x.name ELSE m.first_name END,
             father_name    = COALESCE(m.father_name, x.father),
             phone          = COALESCE(m.phone, x.phone),
-            field_of_study = COALESCE(m.field_of_study, x.field),
+            field_of_study = COALESCE(x.field, m.field_of_study),
             tazkira_no     = COALESCE(m.tazkira_no, x.tazkira)
         FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS x(id, name, father, phone, field, tazkira)
         WHERE m.id = x.id AND (
             (trim(concat_ws(' ', m.first_name, m.last_name)) IN ('', 'بدون نام', 'بی‌نام') AND x.name IS NOT NULL)
             OR (m.father_name IS NULL AND x.father IS NOT NULL) OR (m.phone IS NULL AND x.phone IS NOT NULL)
-            OR (m.field_of_study IS NULL AND x.field IS NOT NULL) OR (m.tazkira_no IS NULL AND x.tazkira IS NOT NULL))
+            OR (x.field IS NOT NULL AND m.field_of_study IS DISTINCT FROM x.field) OR (m.tazkira_no IS NULL AND x.tazkira IS NOT NULL))
         "#,
     )
     .bind(fill.iter().map(|(id, _)| *id).collect::<Vec<_>>())
@@ -1358,15 +1378,15 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
 
     // Income: one receipt per Excel cell. Imported receipts were never printed.
     let income: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Income && !in_app(e)).collect();
-    let short = &batch.simple().to_string()[..6];
+    let short_run = run.simple().to_string();
+    let short = &short_run[..6];
     // Each monthly or internet cell belongs to the member of its row (v_excel_months), when
-    // that row's person is a member; a clash leaves it with nobody.
+    // that row's person is a member; a clash leaves it with nobody. A cell is the same as a
+    // kept one when line, month, amount, words and member are; its day may have been set since.
+    sqlx::query("DROP TABLE IF EXISTS xl_rx").execute(&mut *db).await?;
+    sqlx::query("CREATE TEMP TABLE xl_rx (no TEXT, day DATE, amount NUMERIC, category TEXT, note TEXT, member UUID) ON COMMIT DROP").execute(&mut *db).await?;
     sqlx::query(
-        r#"
-        INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, member_id, import_batch_id)
-        SELECT gen_random_uuid(), r.no, 'hall', r.day, r.amount, r.category, r.note, r.member, $7
-        FROM unnest($1::text[], $2::date[], $3::numeric[], $4::text[], $5::text[], $6::uuid[]) AS r(no, day, amount, category, note, member)
-        "#,
+        "INSERT INTO xl_rx SELECT * FROM unnest($1::text[], $2::date[], $3::numeric[], $4::text[], $5::text[], $6::uuid[])",
     )
     .bind(income.iter().enumerate().map(|(i, _)| format!("XL{year}-{short}-{:05}", i + 1)).collect::<Vec<_>>())
     .bind(income.iter().map(|(_, d)| *d).collect::<Vec<_>>())
@@ -1374,8 +1394,31 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(income.iter().map(|(e, _)| e.key.to_string()).collect::<Vec<_>>())
     .bind(income.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
     .bind(income.iter().map(|(e, _)| e.person.and_then(|i| member_of[i])).collect::<Vec<Option<Uuid>>>())
-    .bind(batch)
     .execute(&mut *db)
+    .await?;
+    let rx: (i64, i64, i64) = sqlx::query_as(
+        r#"
+        WITH n AS (SELECT x.*, sm.starts_on AS m,
+                          row_number() OVER (PARTITION BY x.category, sm.starts_on, x.amount, x.note, x.member ORDER BY x.no) AS k
+                   FROM xl_rx x JOIN solar_months sm ON x.day BETWEEN sm.starts_on AND sm.ends_on),
+             o AS (SELECT r.id, sm.starts_on AS m, r.income_category AS c, r.amount AS a, r.description AS d, r.member_id AS mem,
+                          row_number() OVER (PARTITION BY r.income_category, sm.starts_on, r.amount, r.description, r.member_id ORDER BY r.created_at, r.id) AS k
+                   FROM receipts r JOIN solar_months sm ON r.issued_on BETWEEN sm.starts_on AND sm.ends_on
+                   WHERE r.import_batch_id = $1 AND r.deleted_at IS NULL AND r.receipt_no !~ '-H[0-9]+$'),
+             gone AS (DELETE FROM receipts WHERE id IN (
+                          SELECT o.id FROM o WHERE NOT EXISTS (SELECT 1 FROM n WHERE n.category = o.c AND n.m = o.m AND n.amount = o.a
+                              AND n.note IS NOT DISTINCT FROM o.d AND n.member IS NOT DISTINCT FROM o.mem AND n.k = o.k))
+                      RETURNING 1),
+             added AS (INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, member_id, import_batch_id)
+                       SELECT gen_random_uuid(), n.no, 'hall', n.day, n.amount, n.category, n.note, n.member, $1 FROM n
+                       WHERE NOT EXISTS (SELECT 1 FROM o WHERE n.category = o.c AND n.m = o.m AND n.amount = o.a
+                              AND n.note IS NOT DISTINCT FROM o.d AND n.member IS NOT DISTINCT FROM o.mem AND n.k = o.k)
+                       RETURNING 1)
+        SELECT (SELECT count(*) FROM o), (SELECT count(*) FROM gone), (SELECT count(*) FROM added)
+        "#,
+    )
+    .bind(batch)
+    .fetch_one(&mut *db)
     .await?;
 
     // Expense categories in the statement's order.
@@ -1392,11 +1435,23 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         category_ids.insert(l.key, id);
     }
     let spent: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Expense).collect();
-    sqlx::query(
+    let ex: (i64, i64, i64) = sqlx::query_as(
         r#"
-        INSERT INTO expenses (id, department, category_id, spent_on, description, amount, import_batch_id)
-        SELECT gen_random_uuid(), 'hall', x.category, x.day, x.note, x.amount, $5
-        FROM unnest($1::uuid[], $2::date[], $3::text[], $4::numeric[]) AS x(category, day, note, amount)
+        WITH n AS (SELECT x.*, row_number() OVER (PARTITION BY x.category, x.day, x.note, x.amount) AS k
+                   FROM unnest($1::uuid[], $2::date[], $3::text[], $4::numeric[]) AS x(category, day, note, amount)),
+             o AS (SELECT e.id, e.category_id AS c, e.spent_on AS d, e.description AS t, e.amount AS a,
+                          row_number() OVER (PARTITION BY e.category_id, e.spent_on, e.description, e.amount ORDER BY e.created_at, e.id) AS k
+                   FROM expenses e WHERE e.import_batch_id = $5 AND e.deleted_at IS NULL),
+             gone AS (DELETE FROM expenses WHERE id IN (
+                          SELECT o.id FROM o WHERE NOT EXISTS (SELECT 1 FROM n WHERE n.category = o.c AND n.day = o.d
+                              AND n.note IS NOT DISTINCT FROM o.t AND n.amount = o.a AND n.k = o.k))
+                      RETURNING 1),
+             added AS (INSERT INTO expenses (id, department, category_id, spent_on, description, amount, import_batch_id)
+                       SELECT gen_random_uuid(), 'hall', n.category, n.day, n.note, n.amount, $5 FROM n
+                       WHERE NOT EXISTS (SELECT 1 FROM o WHERE n.category = o.c AND n.day = o.d
+                              AND n.note IS NOT DISTINCT FROM o.t AND n.amount = o.a AND n.k = o.k)
+                       RETURNING 1)
+        SELECT (SELECT count(*) FROM o), (SELECT count(*) FROM gone), (SELECT count(*) FROM added)
         "#,
     )
     .bind(spent.iter().map(|(e, _)| category_ids[e.key]).collect::<Vec<_>>())
@@ -1404,7 +1459,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(spent.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
     .bind(spent.iter().map(|(e, _)| e.amount).collect::<Vec<f64>>())
     .bind(batch)
-    .execute(&mut *db)
+    .fetch_one(&mut *db)
     .await?;
 
     // Partners' withdrawals go to their own accounts, not into the hall's expenses.
@@ -1434,11 +1489,23 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         partner_ids.insert(key, id);
     }
     let taken: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Withdrawal).collect();
-    sqlx::query(
+    let wd: (i64, i64, i64) = sqlx::query_as(
         r#"
-        INSERT INTO withdrawals (id, staff_id, department, taken_on, amount, note, import_batch_id)
-        SELECT gen_random_uuid(), w.staff, 'hall', w.day, w.amount, w.note, $5
-        FROM unnest($1::uuid[], $2::date[], $3::numeric[], $4::text[]) AS w(staff, day, amount, note)
+        WITH n AS (SELECT w.*, row_number() OVER (PARTITION BY w.staff, w.day, w.amount, w.note) AS k
+                   FROM unnest($1::uuid[], $2::date[], $3::numeric[], $4::text[]) AS w(staff, day, amount, note)),
+             o AS (SELECT x.id, x.staff_id AS s, x.taken_on AS d, x.amount AS a, x.note AS t,
+                          row_number() OVER (PARTITION BY x.staff_id, x.taken_on, x.amount, x.note ORDER BY x.created_at, x.id) AS k
+                   FROM withdrawals x WHERE x.import_batch_id = $5 AND x.deleted_at IS NULL),
+             gone AS (DELETE FROM withdrawals WHERE id IN (
+                          SELECT o.id FROM o WHERE NOT EXISTS (SELECT 1 FROM n WHERE n.staff = o.s AND n.day = o.d AND n.amount = o.a
+                              AND n.note IS NOT DISTINCT FROM o.t AND n.k = o.k))
+                      RETURNING 1),
+             added AS (INSERT INTO withdrawals (id, staff_id, department, taken_on, amount, note, import_batch_id)
+                       SELECT gen_random_uuid(), n.staff, 'hall', n.day, n.amount, n.note, $5 FROM n
+                       WHERE NOT EXISTS (SELECT 1 FROM o WHERE n.staff = o.s AND n.day = o.d AND n.amount = o.a
+                              AND n.note IS NOT DISTINCT FROM o.t AND n.k = o.k)
+                       RETURNING 1)
+        SELECT (SELECT count(*) FROM o), (SELECT count(*) FROM gone), (SELECT count(*) FROM added)
         "#,
     )
     .bind(taken.iter().map(|(e, _)| partner_ids[e.key]).collect::<Vec<_>>())
@@ -1446,8 +1513,9 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     .bind(taken.iter().map(|(e, _)| e.amount).collect::<Vec<f64>>())
     .bind(taken.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
     .bind(batch)
-    .execute(&mut *db)
+    .fetch_one(&mut *db)
     .await?;
+    let (rows_before, rows_removed, rows_added) = (rx.0 + ex.0 + wd.0, rx.1 + ex.1 + wd.1, rx.2 + ex.2 + wd.2);
 
     let hotspot = store_hotspot(db, year, batch, short, &hot_buys, &hot_sales, &hot_stock, &stated, &sheet_month, &mut warnings).await?;
 
@@ -1495,6 +1563,9 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         members: members.len(),
         members_new,
         receipts: income.len(),
+        rows_kept: rows_before - rows_removed,
+        rows_removed,
+        rows_added,
         in_app: in_app_count,
         in_app_amount,
         fees_exact,
@@ -1514,9 +1585,19 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
             "members": report.members, "members_new": report.members_new, "receipts": report.receipts,
             "expenses": report.expenses, "withdrawals": report.withdrawals, "warnings": report.warnings.len(),
             "clashes": report.clashes.len(),
+            "rows_kept": report.rows_kept, "rows_removed": report.rows_removed, "rows_added": report.rows_added,
         }))
         .execute(&mut *db)
         .await?;
+    // The import's one line in «چه کسی چه کرد».
+    sqlx::query("SELECT set_config('pezhohesh.bulk', 'off', true)").execute(&mut *db).await?;
+    sqlx::query(
+        "INSERT INTO audit_log (user_id, table_name, row_id, action, after) \
+         SELECT nullif(current_setting('app.user_id', true), '')::uuid, 'import_batches', $1, 'import', summary FROM import_batches WHERE id = $1",
+    )
+    .bind(batch)
+    .execute(&mut *db)
+    .await?;
     Ok(report)
 }
 
@@ -1761,11 +1842,13 @@ pub(crate) async fn date_excel_fees(db: &mut PgConnection) -> Result<(usize, usi
     for (id, member, kind, from, to, now) in cells {
         let found = starts.get(&(member, kind)).and_then(|s| fee_day(s, from, to));
         match found {
-            Some((_, true)) => exact += 1,
-            Some((_, false)) => counted += 1,
-            None => {}
+            Some((d, true)) if d <= today => exact += 1,
+            Some((d, false)) if d <= today => counted += 1,
+            _ => {}
         }
-        let day = found.map_or(from, |(d, _)| d).min(today).max(from);
+        // A day counted past today is not known yet: the fee stays on its month's first day
+        // (moving it to today piled a month's fees on the day of the import).
+        let day = found.map(|(d, _)| d).filter(|d| *d <= today).unwrap_or(from).max(from);
         if day != now {
             ids.push(id);
             days.push(day);
@@ -2313,8 +2396,12 @@ mod tests {
         // A second run with the same book adds nothing and changes nothing.
         let book = parse(&plain).ok().expect("parse");
         let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
-        let again = store(&mut tx, &user, &p, "real2", book).await.ok().expect("store again");
+        let again = match store(&mut tx, &user, &p, "real2", book).await { Ok(r) => r, Err(e) => panic!("store again: {} {}", e.0, e.1) };
         assert_eq!((again.loans.deposits_new, again.loans.loans_new, again.loans.no_card.len()), (0, 0, 0));
+        println!("first run: kept {} removed {} added {}; second run: kept {} removed {} added {}", r.rows_kept, r.rows_removed, r.rows_added, again.rows_kept, again.rows_removed, again.rows_added);
+        assert_eq!((again.rows_removed, again.rows_added), (0, 0), "the same book again writes nothing");
+        let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE at > now() - interval '1 hour'").fetch_one(&mut *tx).await.unwrap();
+        println!("audit lines written by both runs: {audit}");
         println!("second run: fees exact {} counted {}", again.fees_exact, again.fees_counted);
         tx.rollback().await.unwrap();
     }

@@ -159,6 +159,8 @@ pub struct MemberDetail {
     timelines: Vec<Timeline>,
     /// Photo and tazkira scans.
     documents: Vec<crate::documents::Document>,
+    /// Owed outside membership periods (hotspot cards, books…).
+    other_owed: f64,
 }
 
 #[derive(Serialize, FromRow)]
@@ -450,8 +452,9 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     .fetch_all(&mut *tx)
     .await?;
     let documents = crate::documents::of_member(&mut tx, id).await?;
+    let other_owed = crate::debts::member_owed(&mut tx, id).await?;
     tx.commit().await?;
-    Ok(Json(MemberDetail { member, periods, excel_months, timelines, documents }))
+    Ok(Json(MemberDetail { member, periods, excel_months, timelines, documents, other_owed }))
 }
 
 /// The day after the member's last period of this kind (seat or internet), or today.
@@ -503,15 +506,31 @@ pub async fn pay_rest(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
+    row.ok_or(NOT_FOUND)?;
+    let (receipt, member) = pay_period(&mut tx, &user, id, b.amount).await?;
+    tx.commit().await?;
+    Ok(Json(Saved { member_id: member, member_no: None, membership_id: Some(id), receipt_id: Some(receipt) }))
+}
+
+/// A bill for (some of) what a period still owes. The money counts where the period's first
+/// bill did, in the month it was owed; the paper says the day it was paid.
+pub(crate) async fn pay_period(tx: &mut PgConnection, user: &CurrentUser, id: Uuid, amount: f64) -> Result<(Uuid, Option<Uuid>), ApiError> {
+    let row: Option<(Option<Uuid>, String, String)> = sqlx::query_as(
+        "SELECT ms.member_id, p.kind::text, p.name FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
+         WHERE ms.id = $1 AND ms.deleted_at IS NULL FOR UPDATE OF ms",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let (member, kind, plan) = row.ok_or(NOT_FOUND)?;
-    let (owed, billed): (f64, bool) = sqlx::query_as("SELECT owed, receipt_id IS NOT NULL FROM v_period_paid WHERE membership_id = $1")
+    let (owed, billed, first): (f64, bool, Option<NaiveDate>) = sqlx::query_as("SELECT owed, receipt_id IS NOT NULL, issued_on FROM v_period_paid WHERE membership_id = $1")
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
     if !billed || owed <= 0.0 {
         return Err(ApiError::bad("nothing_owed"));
     }
-    if !b.amount.is_finite() || b.amount <= 0.0 || b.amount > owed + 0.001 {
+    if !amount.is_finite() || amount <= 0.0 || amount > owed + 0.001 {
         return Err(ApiError::bad("bad_paid"));
     }
     let who: String = match member {
@@ -521,10 +540,16 @@ pub async fn pay_rest(
             .await?,
         None => sqlx::query_scalar("SELECT COALESCE(guest_name, '') FROM memberships WHERE id = $1").bind(id).fetch_one(&mut *tx).await?,
     };
-    let receipt = issue(&mut tx, &user, &kind, b.amount, &format!("باقی {plan} · {who}"), Some(id), None).await?;
-    sqlx::query("UPDATE receipts SET pays_rest = true WHERE id = $1").bind(receipt).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(Json(Saved { member_id: member, member_no: None, membership_id: Some(id), receipt_id: Some(receipt) }))
+    let receipt = issue(tx, user, &kind, amount, &format!("باقی {plan} · {who}"), Some(id), None).await?;
+    let now = today();
+    let counts = first.unwrap_or(now);
+    sqlx::query("UPDATE receipts SET pays_rest = true, issued_on = $2, billed_on = $3 WHERE id = $1")
+        .bind(receipt)
+        .bind(counts)
+        .bind((counts != now).then_some(now))
+        .execute(&mut *tx)
+        .await?;
+    Ok((receipt, member))
 }
 
 #[derive(Deserialize)]
@@ -812,13 +837,15 @@ pub async fn issue_on(
 
 /// Income lines a desk bill may be for (the same names as the year statement).
 /// Hotspot cards are not here: their count moves stock (hotspot.rs).
-const OTHER_INCOME: [&str; 3] = ["misc", "services", "books"];
+const OTHER_INCOME: [&str; 5] = ["misc", "services", "books", "carryover", "net_services"];
 
 #[derive(Deserialize)]
 pub struct OtherBill {
     income_category: String,
     amount: f64,
     description: Option<String>,
+    /// The day it counts on, in this month or an earlier one. Default today.
+    paid_on: Option<NaiveDate>,
 }
 
 pub async fn other_bill(State(s): State<AppState>, user: CurrentUser, Json(b): Json<OtherBill>) -> Result<Json<Saved>, ApiError> {
@@ -830,7 +857,8 @@ pub async fn other_bill(State(s): State<AppState>, user: CurrentUser, Json(b): J
         return Err(ApiError::bad("bad_amount"));
     }
     let mut tx = begin_as(&s.db, &user).await?;
-    let id = issue(&mut tx, &user, &b.income_category, b.amount, clean(&b.description).as_deref().unwrap_or(""), None, None).await?;
+    let day = paid_day(&user, b.paid_on)?;
+    let id = issue_on(&mut tx, &user, day, &b.income_category, b.amount, clean(&b.description).as_deref().unwrap_or(""), None, None).await?;
     tx.commit().await?;
     Ok(Json(Saved { member_id: None, member_no: None, membership_id: None, receipt_id: Some(id) }))
 }
@@ -845,6 +873,8 @@ pub struct BillQuery {
     to: Option<NaiveDate>,
     limit: Option<i64>,
     offset: Option<i64>,
+    /// Only these income lines, separated by commas.
+    categories: Option<String>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -852,6 +882,8 @@ pub struct Bill {
     id: Uuid,
     receipt_no: String,
     issued_on: NaiveDate,
+    /// A debt paid late: the day its money counts on (issued_on above is the day on the paper).
+    counts_on: Option<NaiveDate>,
     amount: f64,
     currency: String,
     income_category: String,
@@ -900,10 +932,10 @@ pub struct BillMonth {
     voided: bool,
 }
 
-const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::float8 AS amount, r.currency::text AS currency, \
+const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, COALESCE(r.billed_on, r.issued_on) AS issued_on, CASE WHEN r.billed_on IS NOT NULL THEN r.issued_on END AS counts_on, r.amount::float8 AS amount, r.currency::text AS currency, \
         r.income_category, r.description, r.voided, r.void_reason, r.printed_count, s.full_name AS issued_by, \
         m.id AS member_id, m.member_no, \
-        COALESCE(trim(m.first_name || ' ' || COALESCE(m.last_name, '')), ms.guest_name, d.name) AS customer, \
+        COALESCE(trim(m.first_name || ' ' || COALESCE(m.last_name, '')), ms.guest_name, d.name, bl.borrower_name) AS customer, \
         COALESCE(m.father_name, d.father_name) AS father_name, COALESCE(m.phone, d.phone) AS phone, d.code AS card_no, \
         p.name AS plan_name, r.book_loan_id, \
         COALESCE(ms.start_date, bl.loaned_on) AS start_date, COALESCE(ms.end_date, bl.returned_on) AS end_date, \
@@ -914,7 +946,7 @@ const BILL_SELECT: &str = "SELECT r.id, r.receipt_no, r.issued_on, r.amount::flo
     LEFT JOIN memberships ms ON ms.id = r.membership_id \
     LEFT JOIN book_loans bl ON bl.id = r.book_loan_id \
     LEFT JOIN loan_deposits d ON d.id = bl.deposit_id \
-    LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id) \
+    LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id, r.member_id) \
     LEFT JOIN plans p ON p.id = ms.plan_id \
     LEFT JOIN LATERAL (SELECT sum(o.amount)::float8 AS paid FROM receipts o WHERE ms.id IS NOT NULL AND o.membership_id = ms.id \
         AND NOT o.voided AND o.deleted_at IS NULL AND (o.created_at, o.id) <= (r.created_at, r.id)) so_far ON true";
@@ -931,29 +963,35 @@ pub async fn bills(State(s): State<AppState>, user: CurrentUser, Query(p): Query
     hall_only(&user)?;
     let q = clean(&p.q).map(|q| format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
     let filter = "r.deleted_at IS NULL AND r.department = 'hall' AND r.import_batch_id IS NULL \
-        AND ($1::date IS NULL OR r.issued_on >= $1) AND ($2::date IS NULL OR r.issued_on <= $2) \
+        AND ($1::date IS NULL OR COALESCE(r.billed_on, r.issued_on) >= $1) AND ($2::date IS NULL OR COALESCE(r.billed_on, r.issued_on) <= $2) \
+        AND ($6::text[] IS NULL OR r.income_category = ANY($6)) \
         AND ($3::text IS NULL OR r.receipt_no ILIKE $3 OR r.description ILIKE $3 OR m.phone ILIKE $3 \
              OR m.member_no::text LIKE $3 OR ms.guest_name ILIKE $3 OR d.name ILIKE $3 OR d.code ILIKE $3)";
     let joins = "FROM receipts r LEFT JOIN memberships ms ON ms.id = r.membership_id \
         LEFT JOIN book_loans bl ON bl.id = r.book_loan_id LEFT JOIN loan_deposits d ON d.id = bl.deposit_id \
-        LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id)";
+        LEFT JOIN members m ON m.id = COALESCE(ms.member_id, bl.member_id, r.member_id)";
+    let categories: Option<Vec<String>> = clean(&p.categories).map(|c| c.split(',').map(|x| x.trim().to_string()).collect());
     let mut tx = begin_as(&s.db, &user).await?;
     let (total, sum): (i64, f64) = sqlx::query_as(&format!(
-        "SELECT count(*), COALESCE(sum(r.amount) FILTER (WHERE NOT r.voided), 0)::float8 {joins} WHERE {filter}"
+        "SELECT count(*), COALESCE(sum(r.amount) FILTER (WHERE NOT r.voided), 0)::float8 {joins} WHERE {filter} AND $4::bigint IS NULL AND $5::bigint IS NULL"
     ))
     .bind(p.from)
     .bind(p.to)
     .bind(&q)
+    .bind(None::<i64>)
+    .bind(None::<i64>)
+    .bind(&categories)
     .fetch_one(&mut *tx)
     .await?;
     let rows: Vec<Bill> = sqlx::query_as(&format!(
-        "{BILL_SELECT} WHERE {filter} ORDER BY r.issued_on DESC, r.created_at DESC LIMIT $4 OFFSET $5"
+        "{BILL_SELECT} WHERE {filter} ORDER BY COALESCE(r.billed_on, r.issued_on) DESC, r.created_at DESC LIMIT $4 OFFSET $5"
     ))
     .bind(p.from)
     .bind(p.to)
     .bind(&q)
     .bind(p.limit.unwrap_or(100).clamp(1, 500))
     .bind(p.offset.unwrap_or(0).max(0))
+    .bind(&categories)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1020,7 +1058,7 @@ pub async fn void_bill(
     }
     let mut tx = begin_as(&s.db, &user).await?;
     let row: Option<(NaiveDate, bool, Option<Uuid>, Option<Uuid>, bool)> = sqlx::query_as(
-        "SELECT issued_on, voided, membership_id, book_loan_id, pays_rest FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        "SELECT COALESCE(billed_on, issued_on), voided, membership_id, book_loan_id, pays_rest FROM receipts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -1072,6 +1110,11 @@ pub async fn void_bill(
         let periods: Vec<Uuid> = bills.iter().filter_map(|(_, m)| *m).collect();
         sqlx::query("UPDATE memberships SET deleted_at = now() WHERE id = ANY($1)").bind(&periods).execute(&mut *tx).await?;
     }
+    // A bill that paid a debt: the debt is owed again.
+    sqlx::query("UPDATE member_debts x SET paid = GREATEST(x.paid - r.debt_paid, 0) FROM receipts r WHERE r.id = $1 AND r.debt_id = x.id")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     // The cards of a wrong hotspot count go back into stock.
     sqlx::query("UPDATE hotspot_sales SET deleted_at = now() WHERE receipt_id = $1 AND deleted_at IS NULL")
         .bind(id)
@@ -1087,6 +1130,8 @@ pub async fn void_bill(
         .bind(l)
         .execute(&mut *tx)
         .await?;
+        // What was left unpaid at that return goes with it.
+        sqlx::query("UPDATE member_debts SET deleted_at = now() WHERE book_loan_id = $1 AND deleted_at IS NULL AND paid = 0").bind(l).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     crate::k50::poke();

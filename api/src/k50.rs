@@ -707,6 +707,7 @@ async fn fingers_due(db: &PgPool) -> bool {
 /// A user the device did not have was just made again: give back the fingers the app saved
 /// for that number. Fingers the device already has stay as they are.
 async fn restore_fingers(db: &PgPool, cfg: &Config, nos: &[String]) {
+    let _ = sqlx::query("UPDATE k50_fingers SET removed_at = NULL WHERE no = ANY($1)").bind(nos).execute(db).await;
     let rows: Vec<(String, i32, i32, String)> = match sqlx::query_as("SELECT no, finger, flag, template FROM k50_fingers WHERE no = ANY($1) ORDER BY no, finger")
         .bind(nos)
         .fetch_all(db)
@@ -755,7 +756,15 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
         .fetch_optional(db)
         .await
         .map_err(|e| e.to_string())?;
-    let since = since.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
+    let mut since = since.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
+    // A punch dated ahead of the clock (a wrong device clock, a bad record) must not hide all
+    // real ones after it: reading only goes on from what has really happened.
+    let latest = (chrono::Local::now() + chrono::Duration::days(1)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let stuck = since > latest;
+    if stuck {
+        tracing::warn!("k50 punches: the last read was marked {since}, in the future; reading all of them again");
+        since.clear();
+    }
     // How many punches the device held last time: the same count means nothing new to read.
     let known: Option<i64> = sqlx::query_scalar("SELECT (value #>> '{}')::bigint FROM settings WHERE key = 'k50_logs_count'")
         .fetch_optional(db)
@@ -763,7 +772,7 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
         .map_err(|e| e.to_string())?
         .flatten();
     let mut op = json!({ "op": "logs", "since": since });
-    if let Some(n) = known.filter(|_| !since.is_empty()) {
+    if let Some(n) = known.filter(|_| !since.is_empty() && !stuck) {
         op["known"] = json!(n);
     }
     let answers = talk(cfg, vec![op], Duration::from_secs(180)).await?;
@@ -776,9 +785,13 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
         one @ Value::Object(_) => serde_json::from_value(one.clone()).map(|p| vec![p]).unwrap_or_default(),
         _ => Vec::new(),
     };
-    let newest = list.iter().map(|p| p.at.as_str()).max().map(String::from);
+    let ahead = list.iter().filter(|p| p.at.as_str() > latest.as_str()).count();
+    if ahead > 0 {
+        tracing::warn!("k50 punches: {ahead} dated ahead of today were left out (is the device's clock right?)");
+    }
+    let newest = list.iter().map(|p| p.at.as_str()).filter(|at| *at <= latest.as_str()).max().map(String::from);
     let (mut nos, mut ats, mut modes) = (Vec::new(), Vec::new(), Vec::new());
-    for p in &list {
+    for p in list.iter().filter(|p| p.at.as_str() <= latest.as_str()) {
         if let (Ok(no), Some(at)) = (p.no.trim().parse::<i32>(), device_time(&p.at)) {
             nos.push(no);
             ats.push(at);
@@ -798,6 +811,12 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
     .await
     .map_err(|e| e.to_string())?
     .rows_affected();
+    if a["read"] != json!("none") {
+        tracing::info!(
+            "k50 punches: device holds {}, knew {known:?}, read {} ({}), new here {added}, from {since:?} to {newest:?}{}",
+            a["count"], list.len(), a["read"], if a["partial"] == json!(true) { ", cut short" } else { "" }
+        );
+    }
     if let Some(newest) = newest.filter(|n| *n > since) {
         save_setting(db, "k50_logs_since", json!(newest)).await.map_err(|e| e.to_string())?;
     }
@@ -2384,6 +2403,90 @@ async fn free_asked(db: &PgPool, cfg: &Config) -> Result<(), String> {
     let done = free_numbers(db, cfg, None, &nos, true).await?;
     tracing::info!("k50: freed {} of {} numbers asked for", done.iter().filter(|f| f.ok).count(), done.len());
     Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct StaleQuery {
+    /// Not in the hall for at least this many months.
+    months: Option<i32>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct StaleUser {
+    no: String,
+    fingers: i64,
+    member_id: Option<Uuid>,
+    name: Option<String>,
+    last_end: Option<NaiveDate>,
+    last_seen: Option<DateTime<Utc>>,
+}
+
+/// GET /api/v1/k50/stale?months=: who has fingers on the device but has not had a running
+/// membership or pressed for that long, longest ago first: the ones to take off for room.
+pub async fn stale(State(s): State<AppState>, user: CurrentUser, axum::extract::Query(p): axum::extract::Query<StaleQuery>) -> Result<Json<Vec<StaleUser>>, ApiError> {
+    partner(&user)?;
+    let months = p.months.unwrap_or(6).clamp(0, 240);
+    let rows = sqlx::query_as(
+        "WITH f AS (SELECT no, ltrim(no, '0') AS plain, count(*) AS fingers FROM k50_fingers WHERE removed_at IS NULL GROUP BY no), \
+         x AS (SELECT f.no, f.fingers, m.id AS member_id, trim(concat_ws(' ', m.first_name, m.last_name)) AS name, \
+                      (SELECT max(ms.end_date) FROM memberships ms WHERE ms.member_id = m.id AND ms.deleted_at IS NULL) AS last_end, \
+                      (SELECT max(a.punched_at) FROM attendance a WHERE a.device_user_no::text = f.plain) AS last_seen \
+               FROM f LEFT JOIN members m ON m.member_no::text = f.plain AND m.deleted_at IS NULL) \
+         SELECT no, fingers, member_id, name, last_end, last_seen FROM x \
+         WHERE COALESCE(last_end, DATE '1900-01-01') < current_date - make_interval(months => $1) \
+           AND COALESCE(last_seen, TIMESTAMPTZ '1900-01-01') < now() - make_interval(months => $1) \
+         ORDER BY GREATEST(last_end, last_seen::date) NULLS FIRST, no LIMIT 500",
+    )
+    .bind(months)
+    .fetch_all(&s.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct RemoveStale {
+    nos: Vec<String>,
+}
+
+/// POST /api/v1/k50/remove: takes these users off the device to make room. Their copy of the
+/// fingers stays in k50_fingers, and a renewal puts them back with the fingers. Device
+/// administrators and anyone with a running membership are refused.
+pub async fn remove_stale(State(s): State<AppState>, user: CurrentUser, Json(b): Json<RemoveStale>) -> Result<Json<DeviceAnswer>, ApiError> {
+    partner(&user)?;
+    if b.nos.is_empty() || b.nos.len() > 40 {
+        return Err(ApiError::bad("bad_count"));
+    }
+    let running: Vec<String> = sqlx::query_scalar(
+        "SELECT x FROM unnest($1::text[]) AS x JOIN members m ON m.member_no::text = ltrim(x, '0') AND m.deleted_at IS NULL \
+         JOIN memberships ms ON ms.member_id = m.id AND ms.deleted_at IS NULL WHERE ms.end_date >= $2",
+    )
+    .bind(&b.nos)
+    .bind(today())
+    .fetch_all(&s.db)
+    .await?;
+    let go: Vec<&String> = b.nos.iter().filter(|n| !running.contains(n)).collect();
+    let cfg = device_for(&s.db).await?;
+    let ops: Vec<Value> = go.iter().map(|no| json!({ "op": "delete_user", "no": no })).collect();
+    let answers = match talk(&cfg, ops, Duration::from_secs(120)).await {
+        Ok(a) => a,
+        Err(e) => return Ok(DeviceAnswer::from(Err(e))),
+    };
+    let mut removed = 0;
+    for (no, a) in go.iter().zip(&answers) {
+        if a["ok"] != json!(true) {
+            tracing::warn!("k50: {no} not removed: {}", a["error"]);
+            continue;
+        }
+        removed += 1;
+        let _ = sqlx::query("UPDATE k50_fingers SET removed_at = now() WHERE no = $1").bind(no).execute(&s.db).await;
+        // Sent again from scratch when the membership comes back.
+        let _ = sqlx::query("UPDATE k50_users SET pushed_at = NULL, pushed_enabled = NULL, pushed_start = NULL, pushed_end = NULL, fingers = 0 WHERE member_no::text = ltrim($1, '0')")
+            .bind(no)
+            .execute(&s.db)
+            .await;
+    }
+    tracing::warn!("k50: {} took {removed} of {} users off the device to make room", user.username, go.len());
+    Ok(DeviceAnswer::from(Ok(json!({ "ok": true, "removed": removed, "refused": running }))))
 }
 
 /// Right after a member is removed with "free the number": done at once when the device is

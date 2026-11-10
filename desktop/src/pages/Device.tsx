@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorText, k50ErrorText, K50_DIAGNOSIS, type K50Comparison, type K50Config, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status } from "../lib/api";
+import { api, errorText, k50ErrorText, K50_DIAGNOSIS, type K50Comparison, type K50Config, type K50Held, type K50Info, type K50Looked, type K50Sdk, type K50Status, type StaleUser } from "../lib/api";
 import { fa, formatDay } from "../lib/solar";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
@@ -256,6 +256,7 @@ export function Device() {
             {info.time && <> · ساعت دستگاه <bdi dir="ltr">{info.time}</bdi></>}
           </p>
         ) : <p className="form-error">{k50ErrorText(info.error)}</p>)}
+        {info?.ok && <Capacity info={info} />}
       </section>
 
       <section className="panel wide">
@@ -433,6 +434,8 @@ export function Device() {
       </section>
 
       <FreeNumbers configured={!!saved.ip} />
+
+      <StaleFingers configured={!!saved.ip} />
 
       <section className="panel wide">
         <h2>چطور کار می‌کند</h2>
@@ -617,6 +620,137 @@ function FreeNumbers({ configured }: { configured: boolean }) {
             <button className="btn ghost" onClick={() => setSure(false)}>انصراف</button>
           </div>
         </Modal>
+      )}
+    </section>
+  );
+}
+
+/** How full the device is: fingers, users and punches against what it can hold. */
+function Capacity({ info }: { info: K50Info }) {
+  const rows = [
+    { label: "انگشت", used: info.fingers ?? 0, cap: info.finger_capacity ?? 0, left: info.fingers_left },
+    { label: "کاربر", used: info.users ?? 0, cap: info.user_capacity ?? 0, left: undefined },
+    { label: "حاضری", used: info.logs ?? 0, cap: info.log_capacity ?? 0, left: undefined },
+  ].filter((r) => r.cap > 0);
+  if (!rows.length) return <p className="muted small">این دستگاه گنجایش خودش را نمی‌گوید.</p>;
+  return (
+    <div className="capacity">
+      {rows.map((r) => {
+        const left = r.left && r.left > 0 ? r.left : Math.max(r.cap - r.used, 0);
+        const pct = Math.min(100, Math.round((r.used / r.cap) * 100));
+        return (
+          <div key={r.label} className={`cap-row${pct >= 90 ? " full" : pct >= 75 ? " near" : ""}`}>
+            <div className="cap-head">
+              <span>{r.label}</span>
+              <span className="muted small">{fa(r.used)} از {fa(r.cap)} · جای خالی <strong>{fa(left)}</strong></span>
+            </div>
+            <div className="cap-bar" role="meter" aria-label={`${r.label}: ${pct}٪ پر`} aria-valuemin={0} aria-valuemax={r.cap} aria-valuenow={r.used}>
+              <span style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Making room for fingers: people with fingers on the device who have had no membership
+ * and not pressed for some months, longest ago first. Taken off the device only; their
+ * fingers stay saved in the app and go back when they renew.
+ */
+function StaleFingers({ configured }: { configured: boolean }) {
+  const toast = useToast();
+  const [months, setMonths] = useState(6);
+  const [rows, setRows] = useState<StaleUser[] | null>(null);
+  const [pick, setPick] = useState<Set<string>>(new Set());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const ctl = new AbortController();
+    setRows(null);
+    api.k50Stale(months, ctl.signal).then((r) => { setRows(r); setPick(new Set()); setError(""); })
+      .catch((e) => { if (!ctl.signal.aborted) setError(errorText(e)); });
+    return () => ctl.abort();
+  }, [months, open, tick]);
+  const fingers = (rows ?? []).filter((r) => pick.has(r.no)).reduce((t, r) => t + r.fingers, 0);
+  const oldest = (n: number) => setPick(new Set((rows ?? []).slice(0, n).map((r) => r.no)));
+  const flip = (no: string) => setPick((p) => {
+    const n = new Set(p);
+    if (n.has(no)) n.delete(no); else if (n.size < 40) n.add(no);
+    return n;
+  });
+
+  async function remove() {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.k50Remove([...pick]);
+      if (!r.ok) setError(k50ErrorText(r.error));
+      else toast(`${fa(Number(r.removed ?? 0))} نفر از دستگاه برداشته شد${r.refused?.length ? `؛ ${fa(r.refused.length)} نفر عضویت جاری داشتند و ماندند` : ""}.`);
+      setTick((t) => t + 1);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const last = (r: StaleUser) => [r.last_end, r.last_seen?.slice(0, 10)].filter((x): x is string => !!x).sort().pop() ?? null;
+
+  return (
+    <section className="panel wide">
+      <h2>جا باز کردن برای انگشت‌ها</h2>
+      <p className="muted">
+        کسانی که چند ماه است نه عضویت داشته‌اند و نه انگشت زده‌اند. با برداشتن آن‌ها از دستگاه جای انگشت تازه باز می‌شود؛
+        انگشت‌هایشان در برنامه می‌ماند و وقتی دوباره تمدید کنند، خودش به دستگاه برمی‌گردد. قدیمی‌ترین اول است.
+      </p>
+      {!open ? <div className="actions"><button className="btn ghost" disabled={!configured} onClick={() => setOpen(true)}>نشان بده</button></div> : (
+        <>
+          <div className="list-tools">
+            <label className="field">
+              <span>نیامده از</span>
+              <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+                {[3, 6, 12, 24].map((m) => <option key={m} value={m}>{fa(m)} ماه پیش</option>)}
+              </select>
+            </label>
+            {rows && rows.length > 0 && <>
+              <button className="btn ghost small" onClick={() => oldest(Math.min(40, rows.length))}>{fa(Math.min(40, rows.length))} قدیمی‌ترین</button>
+              {pick.size > 0 && <button className="btn ghost small" onClick={() => setPick(new Set())}>هیچ</button>}
+            </>}
+          </div>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          {!rows && !error && <p className="muted">در حال خواندن…</p>}
+          {rows && !rows.length && <p className="muted">کسی نیست؛ همه در این مدت آمده‌اند یا عضویت داشته‌اند.</p>}
+          {rows && rows.length > 0 && (
+            <div className="table-wrap flush">
+              <table className="table">
+                <thead><tr><th><span className="sr-only">انتخاب</span></th><th>آیدی</th><th>نام</th><th className="num">انگشت</th><th>آخرین بار</th></tr></thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.no} className="clickable" onClick={() => flip(r.no)}>
+                      <td><input type="checkbox" checked={pick.has(r.no)} onChange={() => flip(r.no)} onClick={(e) => e.stopPropagation()} aria-label={`انتخاب ${r.no}`} /></td>
+                      <td className="num"><bdi dir="ltr">{r.no}</bdi></td>
+                      <td>{r.name || <span className="muted">در برنامه نیست</span>}</td>
+                      <td className="num">{fa(r.fingers)}</td>
+                      <td>{last(r) ? formatDay(last(r)!) : <span className="muted">هیچ وقت</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {pick.size > 0 && (
+            <div className="actions">
+              <button className="btn danger" disabled={busy} onClick={() => void remove()}>
+                {busy ? "در حال برداشتن…" : `برداشتن ${fa(pick.size)} نفر (${fa(fingers)} انگشت) از دستگاه`}
+              </button>
+              <span className="muted small">در هر بار تا 40 نفر.</span>
+            </div>
+          )}
+        </>
       )}
     </section>
   );

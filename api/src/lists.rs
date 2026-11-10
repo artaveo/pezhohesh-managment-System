@@ -71,7 +71,7 @@ fn member_filter(has: Option<&str>) -> Result<&'static str, ApiError> {
         "finger" => "member_no IN (SELECT k50_finger_nos())",
         "no_finger" => "member_no NOT IN (SELECT k50_finger_nos())",
         "no_photo" => "NOT EXISTS (SELECT 1 FROM member_documents d WHERE d.member_id = v_member_status.member_id AND d.kind = 'photo' AND d.deleted_at IS NULL)",
-        "owed" => "owed > 0",
+        "owed" => "(owed > 0 OR EXISTS (SELECT 1 FROM member_debts x WHERE x.member_id = v_member_status.member_id AND x.deleted_at IS NULL AND x.amount > x.paid))",
         _ => return Err(ApiError::bad("bad_filter")),
     })
 }
@@ -92,7 +92,8 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     // as their own row, so a sign-up at the desk is always on top of the list.
     let rows_sql = format!(
         "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, \
-                last_start, last_at, NULL::uuid AS receipt_id, owed \
+                last_start, last_at, NULL::uuid AS receipt_id, \
+                owed + COALESCE((SELECT sum(x.amount - x.paid) FROM member_debts x WHERE x.member_id = v_member_status.member_id AND x.deleted_at IS NULL), 0)::float8 AS owed \
          FROM v_member_status WHERE {filter} \
          UNION ALL \
          SELECT NULL, NULL, ms.guest_name, NULL, NULL, p.name, ms.end_date, ms.end_date - current_date, \

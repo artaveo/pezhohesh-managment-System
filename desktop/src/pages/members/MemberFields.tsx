@@ -20,7 +20,12 @@ export function MemberFields({ value, onChange }: { value: MemberInput; onChange
       <label className="field wide"><span>تخلص</span><input value={value.last_name ?? ""} onChange={set("last_name")} /></label>
       <label className="field wide"><span>نام پدر</span><input value={value.father_name ?? ""} onChange={set("father_name")} /></label>
       <label className="field wide"><span>شماره تماس</span><input dir="ltr" inputMode="tel" value={value.phone ?? ""} onChange={set("phone")} /></label>
-      <label className="field wide"><span>رشته</span><input value={value.field_of_study ?? ""} onChange={set("field_of_study")} /></label>
+      <label className="field wide">
+        <span>وضعیت</span>
+        <input list="member-status" value={value.field_of_study ?? ""} onChange={set("field_of_study")} placeholder="محصل، متعلم زبان…" />
+        {/* The values of the Excel book's «وضعیت» column; anything else can be typed. */}
+        <datalist id="member-status">{["محصل", "متعلم زبان", "آموزش شغلی", "مطالعه آزاد"].map((v) => <option key={v} value={v} />)}</datalist>
+      </label>
       <label className="field wide"><span>نمبر تذکره</span><input dir="ltr" value={value.tazkira_no ?? ""} onChange={set("tazkira_no")} /></label>
       <label className="field wide span-2"><span>یادداشت</span><input value={value.notes ?? ""} onChange={set("notes")} /></label>
     </div>

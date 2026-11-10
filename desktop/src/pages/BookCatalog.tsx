@@ -10,6 +10,7 @@ import { Modal } from "../components/Modal";
 import { PasswordInput } from "../components/PasswordInput";
 import { PrintCopy } from "../components/PrintCopy";
 import { RemoveButton } from "../components/RemoveButton";
+import { BookWhereDialog, onShelf } from "./BookStatus";
 
 /**
  * Every book on the shelves, by section, as in the book list (لیست کتابها): search it,
@@ -19,6 +20,7 @@ export function BookCatalog({ lend }: { lend: (b: CatalogBook) => void }) {
   const partner = useAuth().user!.role === "partner";
   const [q, setQ] = useState("");
   const [section, setSection] = useState("");
+  const [where, setWhere] = useState<CatalogBook | null>(null);
   const [data, setData] = useState<Catalog | null>(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
@@ -68,7 +70,8 @@ export function BookCatalog({ lend }: { lend: (b: CatalogBook) => void }) {
           <thead><tr><th>کد</th><th>قفسه</th><th>نام کتاب</th><th>نویسنده</th><th>بخش</th><th>جلد</th><th>موجود</th><th /></tr></thead>
           <tbody>
             {data?.books.map((b) => {
-              const left = b.copies - b.on_loan;
+              const left = onShelf(b);
+              const away = b.copies - left;
               return (
                 <tr key={b.id}>
                   <td className="num nowrap"><bdi dir="ltr">{b.code ?? "—"}</bdi></td>
@@ -78,13 +81,16 @@ export function BookCatalog({ lend }: { lend: (b: CatalogBook) => void }) {
                   <td>{b.section ?? <span className="muted">بدون بخش</span>}</td>
                   <td className="num">{fa(b.copies)}</td>
                   <td>
-                    {b.on_loan === 0 ? <span className="days ok">همه</span>
-                      : left > 0 ? <span className="days due">{fa(left)} موجود · {fa(b.on_loan)} بیرون</span>
-                        : <span className="days late">همه بیرون</span>}
+                    <button className="link-cell" onClick={() => setWhere(b)} title="کجاست؟">
+                      {away === 0 ? <span className="days ok">همه</span>
+                        : left > 0 ? <span className="days due">{fa(left)} موجود · {fa(away)} بیرون</span>
+                          : <span className="days late">هیچ‌کدام</span>}
+                    </button>
                   </td>
                   <td>
                     <div className="row-actions">
                       <button className="btn small" disabled={left <= 0} title={left <= 0 ? "همهٔ جلدها بیرون است" : undefined} onClick={() => lend(b)}>امانت</button>
+                      <button className="btn small ghost" onClick={() => setWhere(b)}>وضعیت</button>
                       <button className="btn small ghost" onClick={() => setEditing(b)}>اصلاح</button>
                     </div>
                   </td>
@@ -104,6 +110,7 @@ export function BookCatalog({ lend }: { lend: (b: CatalogBook) => void }) {
         <BookForm book={editing === "new" ? null : editing} sections={data.sections} partner={partner}
           preset={section} onClose={(changed) => { setEditing(null); if (changed) reload(); }} />
       )}
+      {where && <BookWhereDialog book={where} onClose={(changed) => { setWhere(null); if (changed) reload(); }} />}
       {sections && data && <Sections sections={data.sections} onClose={(changed) => { setSections(false); if (changed) reload(); }} />}
       {importing && <ImportList onClose={(changed) => { setImporting(false); if (changed) reload(); }} />}
       {data && (

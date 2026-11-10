@@ -26,10 +26,16 @@ pub struct Period {
     from: chrono::NaiveDate,
     to: chrono::NaiveDate,
     income: f64,
+    /// «موجودی از ماه قبل»: cash carried in from the month before; never income.
+    carried: f64,
     expenses: f64,
     /// Hand-made balance estimates of months whose detail was lost (counted as balance).
     estimated: f64,
     new_members: i64,
+    /// Book guarantees held at the end of the range: held money, never income.
+    deposits_cash: f64,
+    deposits_books: i64,
+    deposits_people: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     income_by_category: Option<BTreeMap<String, f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,9 +59,14 @@ pub struct Periods {
 struct Totals {
     i: i32,
     income: f64,
+    /// «موجودی از ماه قبل»: cash carried in, not income (counting it again would count it twice).
+    carried: f64,
     expenses: f64,
     estimated: f64,
     new_members: i64,
+    deposits_cash: f64,
+    deposits_books: i64,
+    deposits_people: i64,
 }
 
 #[derive(FromRow)]
@@ -86,13 +97,18 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     let totals: Vec<Totals> = sqlx::query_as(
         r#"
         SELECT (b.n - 1)::int AS i,
-            COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL
+            COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.income_category <> 'carryover'
                 AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS income,
+            COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.income_category = 'carryover'
+                AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS carried,
             COALESCE((SELECT sum(amount) FROM expenses e WHERE e.deleted_at IS NULL
                 AND e.department = 'hall' AND e.currency = 'AFN' AND e.spent_on >= b.lo AND e.spent_on < b.hi), 0)::float8 AS expenses,
             COALESCE((SELECT sum(net_balance) FROM month_summaries ms WHERE ms.deleted_at IS NULL
                 AND ms.department = 'hall' AND ms.starts_on >= b.lo AND ms.starts_on < b.hi), 0)::float8 AS estimated,
-            (SELECT count(*) FROM members m WHERE m.deleted_at IS NULL AND m.joined_on >= b.lo AND m.joined_on < b.hi) AS new_members
+            (SELECT count(*) FROM members m WHERE m.deleted_at IS NULL AND m.joined_on >= b.lo AND m.joined_on < b.hi) AS new_members,
+            COALESCE((SELECT sum(d.amount) FROM loan_deposits d WHERE d.deleted_at IS NULL AND d.kind = 'cash' AND d.received_on < b.hi AND (d.returned_on IS NULL OR d.returned_on >= b.hi)), 0)::float8 AS deposits_cash,
+            (SELECT count(*) FROM loan_deposits d WHERE d.deleted_at IS NULL AND d.kind = 'book' AND d.received_on < b.hi AND (d.returned_on IS NULL OR d.returned_on >= b.hi)) AS deposits_books,
+            (SELECT count(*) FROM loan_deposits d WHERE d.deleted_at IS NULL AND d.kind = 'person' AND d.received_on < b.hi AND (d.returned_on IS NULL OR d.returned_on >= b.hi)) AS deposits_people
         FROM unnest($1::date[], $2::date[]) WITH ORDINALITY AS b(lo, hi, n)
         ORDER BY b.n
         "#,
@@ -110,7 +126,7 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
             SELECT (b.n - 1)::int AS i, r.income_category AS category, sum(r.amount)::float8 AS amount
             FROM unnest($1::date[], $2::date[]) WITH ORDINALITY AS b(lo, hi, n)
             JOIN receipts r ON r.issued_on >= b.lo AND r.issued_on < b.hi
-            WHERE NOT r.voided AND r.deleted_at IS NULL AND r.department = 'hall' AND r.currency = 'AFN'
+            WHERE NOT r.voided AND r.deleted_at IS NULL AND r.department = 'hall' AND r.currency = 'AFN' AND r.income_category <> 'carryover'
             GROUP BY b.n, r.income_category
             "#,
         )
@@ -178,9 +194,13 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
                 from: lo[i],
                 to: hi[i],
                 income: t.income,
+                carried: t.carried,
                 expenses: t.expenses,
                 estimated: t.estimated,
                 new_members: t.new_members,
+                deposits_cash: t.deposits_cash,
+                deposits_books: t.deposits_books,
+                deposits_people: t.deposits_people,
                 income_by_category: p.categories.then(|| std::mem::take(&mut inc_cat[i])),
                 expenses_by_category: p.categories.then(|| std::mem::take(&mut exp_cat[i])),
                 withdrawals_by_person: p.categories.then(|| std::mem::take(&mut taken[i])),

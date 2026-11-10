@@ -123,7 +123,11 @@ export type K50Answer = { ok: boolean; error: string | null; [k: string]: unknow
 /** Which copy of ZKTeco's SDK the helper loads: "app" is the app's own copy. */
 export type K50Sdk = K50Answer & { loaded?: boolean; app_copy?: boolean; app_version?: string | null; system?: string | null; sdk?: string };
 export type K50SdkCopy = K50Answer & { from?: string; files?: string[]; version?: string | null };
-export type K50Info = K50Answer & { serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string };
+export type K50Info = K50Answer & {
+  serial?: string; firmware?: string; users?: number; fingers?: number; logs?: number; time?: string;
+  /** What the device can hold, and fingers it still has room for (0: the firmware does not say). */
+  finger_capacity?: number; user_capacity?: number; log_capacity?: number; fingers_left?: number;
+};
 export type K50User = K50Answer & {
   exists?: boolean; name?: string; enabled?: boolean; privilege?: number; fingers?: number;
   /** Which fingers the device has (0 left little … 4 left thumb, 5 right thumb … 9 right little). */
@@ -199,6 +203,10 @@ export type Dashboard = {
 export type PeriodRow = {
   from: string; to: string;
   income: number; expenses: number; estimated: number; new_members: number;
+  /** «موجودی از ماه قبل»: cash carried in, never income. */
+  carried: number;
+  /** Book guarantees held at the range's end (money held, not income). */
+  deposits_cash: number; deposits_books: number; deposits_people: number;
   income_by_category?: Record<string, number>;
   expenses_by_category?: Record<string, number>;
   withdrawals_by_person?: Record<string, number>;
@@ -214,6 +222,8 @@ export type ImportReport = {
   members: number; members_new: number; receipts: number; expenses: number; withdrawals: number;
   /** Cells of a member's month the app already has a bill for: not counted a second time. */
   in_app: number; in_app_amount: number;
+  /** Money lines (bills, expenses, withdrawals): only what changed is written. */
+  rows_kept: number; rows_removed: number; rows_added: number;
   /** Fee cells that got a day from a period (the device's dates), or one counted back from it. */
   fees_exact: number; fees_counted: number;
   /** What the book's two loan sheets added. */
@@ -330,12 +340,19 @@ export type ExcelMonth = { kind: "monthly" | "internet"; year: number; month: nu
 /** The seat and the internet plan each run on their own; a renewal starts after its own last day. */
 export type Timeline = { kind: "monthly" | "internet"; end_date: string | null; days_left: number | null; next_start: string };
 export type DocKind = "photo" | "tazkira_front" | "tazkira_back" | "other";
-export type MemberDocument = { id: string; kind: DocKind; mime_type: string; size_bytes: number; created_at: string };
-export type MemberDetail = { member: Member; periods: Period[]; excel_months: ExcelMonth[]; timelines: Timeline[]; documents: MemberDocument[] };
+export type MemberDocument = { id: string; kind: DocKind; mime_type: string; size_bytes: number; created_at: string; remote_name: string };
+export type MemberDetail = {
+  member: Member; periods: Period[]; excel_months: ExcelMonth[]; timelines: Timeline[]; documents: MemberDocument[];
+  /** Owed outside membership periods (hotspot cards on credit, a book's fee…). */
+  other_owed: number;
+};
 export type PlanKind = "monthly" | "daily" | "internet";
 export type Plan = { id: string; kind: PlanKind; name: string; price: number; duration_days: number; active: boolean; sort_order: number };
 export type Bill = {
-  id: string; receipt_no: string; issued_on: string; amount: number; currency: string; income_category: string;
+  id: string; receipt_no: string; issued_on: string;
+  /** A debt paid late: the day its money counts on (issued_on is the day on the paper). */
+  counts_on: string | null;
+  amount: number; currency: string; income_category: string;
   description: string | null; voided: boolean; void_reason: string | null; printed_count: number; issued_by: string | null;
   member_id: string | null; member_no: number | null; customer: string | null; father_name: string | null; phone: string | null;
   card_no: string | null; book_loan_id: string | null;
@@ -438,7 +455,7 @@ export type HotspotSales = {
   /** Per card volume, within the range asked for. */
   by_card: { volume_gb: number; bought: number; sold: number }[];
 };
-export type BookRules = { loan_days: number; weekly_fee: number; fine_per_day: number };
+export type BookRules = { loan_days: number; weekly_fee: number; fine_per_week: number };
 export type DepositKind = "cash" | "book" | "person";
 export type Deposit = {
   id: string; code: string; kind: DepositKind; name: string; father_name: string | null; phone: string | null;
@@ -452,7 +469,8 @@ export type DepositInput = {
 };
 /** Who may borrow: an open guarantee (its card) or a study-hall member. */
 export type Borrower = {
-  kind: "deposit" | "member"; id: string; card_no: string; name: string; father_name: string | null; phone: string | null;
+  /** name: someone with no card or member record, kept by the name typed. */
+  kind: "deposit" | "member" | "name"; id: string; card_no: string; name: string; father_name: string | null; phone: string | null;
   guarantee: string | null; open_loans: number;
   /** Members: a seat or internet period running today. */
   active: boolean;
@@ -460,8 +478,44 @@ export type Borrower = {
 export type BookSection = { id: string; code: string; name: string; titles: number; copies: number; next_code: string };
 export type CatalogBook = {
   id: string; section_id: string | null; section: string | null; code: string | null; shelf: string | null;
-  title: string; author: string | null; copies: number; on_loan: number; note: string | null;
+  title: string; author: string | null; copies: number; on_loan: number;
+  /** Copies on the list but out of reach (lost, damaged, at the binder…). */
+  unavailable: number;
+  note: string | null;
 };
+export type BookHolder = { loan_id: string; scope: "home" | "hall"; borrower: string; card_no: string | null; phone: string | null; loaned_on: string; due_on: string };
+export type OutOfReach = { id: string; copies: number; reason: UnavailableReason; note: string | null; since: string };
+export type UnavailableReason = "lost" | "not_returned" | "damaged" | "repair" | "with_staff" | "removed" | "other";
+export type BookStatus = { holders: BookHolder[]; out_of_reach: OutOfReach[] };
+export type HallLoan = {
+  id: string; book_id: string | null; book_title: string; card_no: string | null; borrower: string; phone: string | null;
+  loaned_on: string; returned_on: string | null; note: string | null;
+};
+export type DebtKind = "monthly" | "daily" | "internet" | "hotspot" | "books" | "other" | "overdue";
+export type DebtItem = {
+  source: "period" | "debt" | "loan"; kind: DebtKind; id: string; title: string; on_day: string; until: string | null;
+  due: number; paid: number; owed: number; receipt_id: string | null; receipt_no: string | null; note: string | null;
+  weeks: number | null; days_late: number | null; fee: number | null; fine: number | null;
+};
+export type DebtGroup = {
+  key: string; member_id: string | null; deposit_id: string | null; member_no: number | null; card_no: string | null;
+  name: string; phone: string | null; total: number; items: DebtItem[];
+};
+export type Debts = { items: number; people: number; sum: number; groups: DebtGroup[] };
+export type DebtInput = {
+  member_id?: string | null; deposit_id?: string | null; guest_name?: string; phone?: string;
+  kind: "hotspot" | "books" | "other"; title?: string; amount?: number; owed_on?: string; note?: string;
+  volume_gb?: number; quantity?: number;
+};
+export type PaidBill = { id: string; receipt_no: string; amount: number; description: string | null };
+export type AttendanceDay = {
+  on: string;
+  came: { member_id: string | null; member_no: number; name: string | null; phone: string | null; first_at: string; last_at: string; punches: number }[];
+  absent: { member_id: string; member_no: number; name: string; phone: string | null; end_date: string; last_seen: string | null }[];
+  newest: string | null;
+};
+export type StaleUser = { no: string; fingers: number; member_id: string | null; name: string | null; last_end: string | null; last_seen: string | null };
+export type FilesStore = { url: string; key: string };
 export type Catalog = { sections: BookSection[]; total_titles: number; total_copies: number; books: CatalogBook[] };
 export type CatalogBookInput = {
   section_id: string | null; code: string | null; shelf: string | null; title: string; author: string | null; copies: number; note: string | null;
@@ -473,7 +527,12 @@ export type CatalogImport = {
   added: number; changed: number; unchanged: number; not_in_file: number; loans_linked: number;
   retitled: string[]; warnings: string[];
 };
-export type LoanInput = { deposit_id?: string; member_id?: string; book_id?: string; book_title?: string; loaned_on?: string; due_on?: string; weekly_fee?: number; note?: string };
+export type LoanInput = {
+  deposit_id?: string; member_id?: string; book_id?: string; book_title?: string; loaned_on?: string; due_on?: string; weekly_fee?: number; note?: string;
+  /** home (default): taken away for a weekly fee; hall: read in the hall today, free. */
+  scope?: "home" | "hall";
+  borrower_name?: string; borrower_phone?: string;
+};
 export type Charge = { weeks: number; days_late: number; fee: number; fine: number };
 export type Loan = {
   id: string; book_title: string; card_no: string; borrower: string; phone: string | null;
@@ -531,6 +590,8 @@ async function request<T>(path: string, init: { method?: string; body?: unknown;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const code = typeof data.error === "string" ? data.error : res.status === 413 ? "file_too_large" : "error";
+    // The API logged its side already; a server error gets the screen's side too.
+    if (res.status >= 500) void api.clientLog({ level: "error", place: location.hash || "app", message: `${init.method ?? "GET"} ${path.split("?")[0]} -> ${res.status} ${code}`, request_id: res.headers.get("x-request-id") ?? undefined });
     if (res.status === 401 && code === "unauthorized") onExpired();
     throw new ApiError(res.status, code, data);
   }
@@ -614,9 +675,31 @@ export const api = {
     request<void>(`/members/${id}?${query({ reason: reason || undefined, free_no: freeNo ? "true" : undefined })}`, { method: "DELETE" }),
   restoreMember: (id: string) => request<void>(`/members/${id}/restore`, { method: "POST" }),
   dailySeat: (b: { member_id?: string | null; guest_name?: string | null } & PeriodInput) => request<Saved>("/daily-seats", { method: "POST", body: b }),
-  otherBill: (b: { income_category: string; amount: number; description?: string }) => request<Saved>("/bills", { method: "POST", body: b }),
-  bills: (p: Range & { q?: string; limit?: number; offset?: number }, signal?: AbortSignal) =>
+  otherBill: (b: { income_category: string; amount: number; description?: string; paid_on?: string | null }) => request<Saved>("/bills", { method: "POST", body: b }),
+  bills: (p: Range & { q?: string; limit?: number; offset?: number; categories?: string }, signal?: AbortSignal) =>
     request<BillPage>(`/bills?${query(p)}`, { signal }),
+  debts: (p: { q?: string; from?: string; to?: string; key?: string }, signal?: AbortSignal) => request<Debts>(`/debts?${query(p)}`, { signal }),
+  payDebts: (items: { source: "period" | "debt"; id: string; amount: number }[]) => request<PaidBill[]>("/debts/pay", { method: "POST", body: { items } }),
+  addDebt: (d: DebtInput) => request<string>("/debts", { method: "POST", body: d }),
+  deleteDebt: (id: string) => request<void>(`/debts/${id}`, { method: "DELETE" }),
+  hallLoans: (p: { from?: string; to?: string; q?: string; open?: boolean }, signal?: AbortSignal) =>
+    request<HallLoan[]>(`/hall-loans?${query({ ...p, open: p.open ? "true" : undefined })}`, { signal }),
+  backInHall: (id: string, returned_on?: string) => request<void>(`/book-loans/${id}/back`, { method: "POST", body: { returned_on } }),
+  bookStatus: (id: string, signal?: AbortSignal) => request<BookStatus>(`/catalog/books/${id}/status`, { signal }),
+  markUnavailable: (id: string, b: { copies: number; reason: UnavailableReason; note?: string; since?: string }) =>
+    request<string>(`/catalog/books/${id}/unavailable`, { method: "POST", body: b }),
+  resolveUnavailable: (id: string) => request<void>(`/catalog/unavailable/${id}/resolve`, { method: "POST" }),
+  attendanceDay: (on: string, signal?: AbortSignal) => request<AttendanceDay>(`/attendance/day?${query({ on })}`, { signal }),
+  k50Stale: (months: number, signal?: AbortSignal) => request<StaleUser[]>(`/k50/stale?${query({ months })}`, { signal }),
+  k50Remove: (nos: string[]) => request<K50Answer & { removed?: number; refused?: string[] }>("/k50/remove", { method: "POST", body: { nos } }),
+  removeStaff: (id: string) => request<void>(`/salaries/${id}`, { method: "DELETE" }),
+  filesStore: () => request<FilesStore | null>("/files-store"),
+  setFilesStore: (s: FilesStore) => request<void>("/files-store", { method: "PUT", body: s }),
+  unsentFiles: () => request<{ id: string; name: string }[]>("/documents/unsent"),
+  fileSent: (id: string) => request<void>(`/documents/${id}/sent`, { method: "POST" }),
+  keepFileCopy: (id: string, b: Blob) => request<void>(`/documents/${id}/copy`, { method: "PUT", file: b }),
+  clientLog: (b: { level: "error" | "warn" | "info"; place: string; message: string; stack?: string; request_id?: string }) =>
+    fetch(`${API_BASE}/api/v1/client-log`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b), keepalive: true }).then(() => undefined, () => undefined),
   bill: (id: string) => request<Bill>(`/bills/${id}`),
   billPrinted: (id: string) => request<void>(`/bills/${id}/printed`, { method: "POST" }),
   voidBill: (id: string, reason: string) => request<void>(`/bills/${id}/void`, { method: "POST", body: { reason } }),
@@ -675,7 +758,7 @@ export const api = {
   deleteDeposit: (id: string) => request<void>(`/deposits/${id}`, { method: "DELETE" }),
   lend: (l: LoanInput) => request<string>("/book-loans", { method: "POST", body: l }),
   loan: (id: string, on?: string, signal?: AbortSignal) => request<Loan>(`/book-loans/${id}?${query({ on })}`, { signal }),
-  returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number }) =>
+  returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number; paid?: number }) =>
     request<{ receipt_id: string | null }>(`/book-loans/${id}/return`, { method: "POST", body: b }),
   deleteLoan: (id: string) => request<void>(`/book-loans/${id}`, { method: "DELETE" }),
   backup: () => request<BackupStatus>("/backup"),
@@ -795,6 +878,11 @@ export function errorText(e: unknown): string {
     case "remove_today_only": return "مدیر فقط چیزی را که امروز ثبت شده می‌تواند پاک کند.";
     case "void_the_bill": return "این دوره بل دارد؛ اول بل آن را باطل کنید.";
     case "member_has_open_loans": return "این عضو هنوز کتاب یا ضمانتی نزد کتابخانه دارد؛ اول آن را برگشت بزنید، بعد عضو را حذف کنید.";
+    case "has_account": return "این شخص حساب ورود به برنامه دارد؛ اول حسابش را در «کاربران» بردارید.";
+    case "not_enough_copies": return "این تعداد جلد روی قفسه نیست.";
+    case "void_the_bill": return "برای این باقی پول گرفته شده؛ اول بل آن را باطل کنید.";
+    case "bad_files_store": return "آدرس باید با https شروع شود و کلید دست‌کم 32 حرف باشد.";
+    case "bad_count": return "در هر بار تا 40 نفر.";
     case "money_in_excel": return "پول این ماه از اکسل آمده. آن را در «پرداخت‌های اکسل» پایین همین صفحه اصلاح کنید.";
     case "no_excel_year": return "اکسل این سال هنوز وارد نشده.";
     case "partners_only": return "برداشت فقط برای شرکا است. پول کارمند را از صفحهٔ «معاش کارمندان» با «پرداخت» ثبت کنید.";

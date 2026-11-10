@@ -367,6 +367,47 @@ pub async fn create_sale(State(s): State<AppState>, user: CurrentUser, Json(b): 
     Ok(Json(SavedSale { receipt_id, sales, cost, profit }))
 }
 
+/// Cards sold on credit: they leave the stock now, on the day given, with no bill; the income
+/// comes as they are paid. Returns the words for the debt, the sale price and the profit.
+pub(crate) async fn sell_on_credit(tx: &mut PgConnection, user: &CurrentUser, volume_gb: f64, quantity: i32, on: NaiveDate, debt: Uuid) -> Result<(String, f64, f64), ApiError> {
+    if quantity <= 0 || !volume_gb.is_finite() || volume_gb <= 0.0 {
+        return Err(ApiError::bad("no_cards"));
+    }
+    lock_stock(tx).await?;
+    let per_gb = cost_per_gb(tx).await?;
+    let row: Option<(f64, i64, Option<f64>)> = sqlx::query_as(
+        "SELECT s.price::float8, s.in_hand::int8, \
+                (SELECT (sum(p.quantity * p.unit_cost) / nullif(sum(p.quantity), 0))::float8 \
+                 FROM hotspot_purchases p JOIN hotspot_buys h ON h.id = p.buy_id \
+                 WHERE p.volume_gb = s.volume_gb AND p.deleted_at IS NULL AND h.deleted_at IS NULL) \
+         FROM v_hotspot_stock s WHERE s.volume_gb = $1::numeric",
+    )
+    .bind(volume_gb)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (price, in_hand, bought_at) = row.ok_or(ApiError::bad("bad_card"))?;
+    if i64::from(quantity) > in_hand {
+        return Err(ApiError(StatusCode::CONFLICT, "not_enough_cards"));
+    }
+    let unit_cost = cents(bought_at.unwrap_or(volume_gb * per_gb));
+    sqlx::query(
+        "INSERT INTO hotspot_sales (id, sold_on, volume_gb, quantity, unit_price, unit_cost, created_by, debt_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(on)
+    .bind(volume_gb)
+    .bind(quantity)
+    .bind(price)
+    .bind(unit_cost)
+    .bind(user.id)
+    .bind(debt)
+    .execute(&mut *tx)
+    .await?;
+    let sales = cents(price * f64::from(quantity));
+    let profit = cents(sales - unit_cost * f64::from(quantity)).max(0.0);
+    Ok((format!("{quantity} کارت هاتسپات {}", gb(volume_gb)), sales, profit))
+}
+
 #[derive(Serialize, FromRow)]
 pub struct Sale {
     /// None for a count from the Excel book whose month's income is the statement's figure.

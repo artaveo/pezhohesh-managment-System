@@ -72,14 +72,14 @@ export function Prices() {
   );
 }
 
-/** How long a book may stay out, its weekly fee, and the fine for each late day. */
-function LendingRules() {
+/** How long a book may stay out, its weekly fee, and the fine for each late week. */
+export function LendingRules() {
   // Kept as typed (text) so a decimal point can be typed.
   const [r, setR] = useState<Record<keyof BookRules, string> | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   useEffect(() => {
-    api.bookRules().then((b) => setR({ loan_days: String(b.loan_days), weekly_fee: String(b.weekly_fee), fine_per_day: String(b.fine_per_day) }))
+    api.bookRules().then((b) => setR({ loan_days: String(b.loan_days), weekly_fee: String(b.weekly_fee), fine_per_week: String(b.fine_per_week) }))
       .catch((e) => setError(errorText(e)));
   }, []);
   if (!r) return error ? <p className="form-error">{error}</p> : null;
@@ -87,7 +87,7 @@ function LendingRules() {
   async function save() {
     setError("");
     try {
-      await api.setBookRules({ loan_days: amount(r!.loan_days), weekly_fee: amount(r!.weekly_fee), fine_per_day: amount(r!.fine_per_day) });
+      await api.setBookRules({ loan_days: amount(r!.loan_days), weekly_fee: amount(r!.weekly_fee), fine_per_week: amount(r!.fine_per_week) });
       setSaved(true);
     } catch (e) {
       setError(errorText(e));
@@ -100,7 +100,7 @@ function LendingRules() {
       <div className="form-grid">
         <label className="field wide"><span>مدت امانت (روز)</span><input dir="ltr" inputMode="numeric" value={r.loan_days} onChange={(e) => set("loan_days", e.target.value)} /></label>
         <label className="field wide"><span>فیس هر هفته (افغانی)</span><input dir="ltr" inputMode="decimal" value={r.weekly_fee} onChange={(e) => set("weekly_fee", e.target.value)} /></label>
-        <label className="field wide"><span>جریمهٔ هر روز دیرکرد (افغانی)</span><input dir="ltr" inputMode="decimal" value={r.fine_per_day} onChange={(e) => set("fine_per_day", e.target.value)} /></label>
+        <label className="field wide"><span>جریمهٔ هر هفته دیرکرد (افغانی)</span><input dir="ltr" inputMode="decimal" value={r.fine_per_week} onChange={(e) => set("fine_per_week", e.target.value)} /></label>
       </div>
       {saved && <p className="form-ok" role="status">ذخیره شد.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}

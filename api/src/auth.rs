@@ -40,9 +40,15 @@ impl ApiError {
     }
 }
 
+/// The error code of a failed answer, for the request's line in the log.
+#[derive(Clone, Copy)]
+pub struct ErrorCode(pub &'static str);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({ "error": self.1 }))).into_response()
+        let mut res = (self.0, Json(json!({ "error": self.1 }))).into_response();
+        res.extensions_mut().insert(ErrorCode(self.1));
+        res
     }
 }
 

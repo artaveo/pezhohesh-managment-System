@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BackupMade, type BackupOutcome, type BackupStatus, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncServerState, type SyncStatus } from "../lib/api";
+import { api, errorText, type BackupMade, type BackupOutcome, type BackupStatus, type FilesStore, type OnlineStatus, type RestorePoint, type SyncProblem, type SyncServerState, type SyncStatus } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { Modal } from "../components/Modal";
 import { formatDay } from "../lib/solar";
 import { canPickFolder, pickFolder } from "../lib/savedLogin";
 import { useToast } from "../components/Toast";
+import { forgetFilesStore } from "../lib/images";
 
 const EVERY = [
   { h: 6, label: "هر 6 ساعت" },
@@ -134,6 +135,7 @@ export function Backup() {
           </p>
         </section>
         <Sync />
+        {partner && <FilesServer />}
       </div>
     );
   }
@@ -230,6 +232,8 @@ export function Backup() {
       <Sync />
 
       <Online />
+
+      <FilesServer />
 
       <Restore refresh={tick} />
     </div>
@@ -625,6 +629,57 @@ function Online() {
         <button className="btn" onClick={() => void save()}>ذخیره</button>
         {!shared && <button className="btn ghost" disabled={busy || !s.host} onClick={() => void now()}>{busy ? "در حال فرستادن…" : "همین حالا بفرست"}</button>}
       </div>
+    </section>
+  );
+}
+
+const FILES_URL = "https://ybrntsdtukwogkvrfjye.supabase.co/functions/v1/files";
+
+/**
+ * Where photos and tazkira scans are kept: a file server of their own (Supabase), so the
+ * main server holds only the data. Set once by a partner; it reaches every computer.
+ */
+function FilesServer() {
+  const [cur, setCur] = useState<FilesStore | null | undefined>(undefined);
+  const [url, setUrl] = useState(FILES_URL);
+  const [key, setKey] = useState("");
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { api.filesStore().then((x) => { setCur(x); if (x) setUrl(x.url); }, (e) => setError(errorText(e))); }, []);
+  async function save() {
+    setError("");
+    try {
+      await api.setFilesStore({ url: url.trim(), key: key.trim() || cur?.key || "" });
+      forgetFilesStore();
+      setCur({ url: url.trim(), key: key.trim() || cur?.key || "" });
+      setKey("");
+      setSaved(true);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+  if (cur === undefined) return error ? <p className="form-error">{error}</p> : null;
+  return (
+    <section className="panel wide">
+      <h2>سرور فایل (عکس و تذکره)</h2>
+      <p className="muted">
+        عکس‌ها و اسکن تذکره دیگر به سرور مرکزی نمی‌روند تا آن سبک بماند. هر کمپیوتر فایل‌هایش را به این سرور جدا می‌فرستد
+        و کمپیوترهای دیگر از همین‌جا باز می‌کنند.
+      </p>
+      <p>{cur ? <span className="form-ok">وصل است: <bdi dir="ltr">{new URL(cur.url).host}</bdi></span> : <span className="form-error">هنوز داده نشده؛ عکس‌ها فقط روی همان کمپیوتری هستند که گرفته شده‌اند.</span>}</p>
+      <div className="form-grid">
+        <label className="field wide span-2">
+          <span>آدرس</span>
+          <input dir="ltr" value={url} onChange={(e) => { setSaved(false); setUrl(e.target.value); }} />
+        </label>
+        <label className="field wide span-2">
+          <span>{cur ? "کلید تازه (فقط برای عوض کردن)" : "کلید"}</span>
+          <input dir="ltr" type="password" autoComplete="off" value={key} onChange={(e) => { setSaved(false); setKey(e.target.value); }} />
+        </label>
+      </div>
+      {saved && <p className="form-ok" role="status">ذخیره شد. فرستادن فایل‌ها تا چند دقیقه شروع می‌شود.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions"><button className="btn" disabled={!url.trim() || (!key.trim() && !cur)} onClick={() => void save()}>ذخیره</button></div>
     </section>
   );
 }

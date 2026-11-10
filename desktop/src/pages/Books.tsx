@@ -12,8 +12,11 @@ import { BillPreview } from "../components/BillSheet";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { BookCatalog } from "./BookCatalog";
+import { BookWhere, Copies, onShelf } from "./BookStatus";
+import { HallLoans } from "./HallLoans";
+import { LendingRules } from "./Prices";
 
-type Tab = "loans" | "lend" | "deposits" | "new-deposit" | "catalog";
+type Tab = "loans" | "lend" | "deposits" | "new-deposit" | "catalog" | "rules";
 
 const KIND_LABEL: Record<DepositKind, string> = { cash: "ضمانت پولی", book: "ضمانت کتاب", person: "ضمانت شخص" };
 
@@ -23,6 +26,8 @@ const KIND_LABEL: Record<DepositKind, string> = { cash: "ضمانت پولی", b
  * card), takes books on it, and pays the weekly fee and any late fine when a book comes back.
  */
 export function Books() {
+  // Two kinds of lending: taken home for a weekly fee, or read in the hall for the day.
+  const [kind, setKind] = useState<"home" | "hall">("home");
   const [tab, setTab] = useState<Tab>("loans");
   const [returning, setReturning] = useState<string | null>(null);
   const [bill, setBill] = useState<string | null>(null);
@@ -33,13 +38,23 @@ export function Books() {
   const lendTo = (b: Borrower | null) => { setBorrower(b); setLendBook(null); setTab("lend"); };
   return (
     <div className="page">
+      <div className="segmented books-kind" role="tablist" aria-label="نوع امانت">
+        <button role="tab" aria-selected={kind === "home"} className={kind === "home" ? "on" : ""} onClick={() => setKind("home")}>امانت هفته‌وار (بیرون)</button>
+        <button role="tab" aria-selected={kind === "hall"} className={kind === "hall" ? "on" : ""} onClick={() => setKind("hall")}>امانت روزانه (داخل سالن)</button>
+      </div>
+      {kind === "hall" ? (
+        <HallLoans findBorrower={(pick) => <FindBorrower pick={pick} hall />}
+          pickBook={(title, setTitle, pick) => <PickBook title={title} setTitle={setTitle} titles={[]} pick={pick} />} />
+      ) : <>
       <div className="desk-tasks">
         <button className={tab === "loans" ? "on" : ""} onClick={() => setTab("loans")}><Icon name="book" size={20} /> کتاب‌های بیرون</button>
         <button className={tab === "lend" ? "on" : ""} onClick={() => lendTo(null)}><Icon name="plus" size={20} /> امانت دادن</button>
         <button className={tab === "deposits" ? "on" : ""} onClick={() => setTab("deposits")}><Icon name="card" size={20} /> ضمانت‌ها</button>
         <button className={tab === "new-deposit" ? "on" : ""} onClick={() => setTab("new-deposit")}><Icon name="wallet" size={20} /> ضمانت جدید</button>
         <button className={tab === "catalog" ? "on" : ""} onClick={() => setTab("catalog")}><Icon name="tag" size={20} /> فهرست کتاب‌ها</button>
+        <button className={tab === "rules" ? "on" : ""} onClick={() => setTab("rules")}><Icon name="settings" size={20} /> فیس و جریمه</button>
       </div>
+      {tab === "rules" && <LendingRules />}
       {tab === "loans" && <LoansList key={tick} open={setReturning} />}
       {tab === "lend" && <Lend key={`${borrower?.id ?? "new"}-${lendBook?.id ?? ""}`} initial={borrower} initialBook={lendBook} done={() => { setTick((t) => t + 1); setTab("loans"); }} />}
       {tab === "deposits" && <Deposits lendTo={lendTo} />}
@@ -52,6 +67,7 @@ export function Books() {
           if (receipt) setBill(receipt);
         }} />
       )}
+      </>}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
     </div>
   );
@@ -60,7 +76,7 @@ export function Books() {
 // ---------------------------------------------------------------------------
 // Lending a book
 
-function FindBorrower({ pick }: { pick: (b: Borrower) => void }) {
+function FindBorrower({ pick, hall }: { pick: (b: Borrower) => void; hall?: boolean }) {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Borrower[] | null>(null);
   const [error, setError] = useState("");
@@ -77,7 +93,7 @@ function FindBorrower({ pick }: { pick: (b: Borrower) => void }) {
     <>
       <input className="search big" type="search" autoFocus placeholder="کارت امانت (p-105)، آیدی عضو، نام یا شماره تماس" aria-label="کارت امانت (p-105)، آیدی عضو، نام یا شماره تماس" value={q} onChange={(e) => setQ(e.target.value)} />
       {error && <p className="form-error">{error}</p>}
-      {rows && !rows.length && <p className="muted">کسی پیدا نشد. اگر عضو قرائت‌خانه نیست، اول «ضمانت جدید» بگیرید.</p>}
+      {rows && !rows.length && <p className="muted">{hall ? "کسی پیدا نشد." : "کسی پیدا نشد. اگر عضو قرائت‌خانه نیست، اول «ضمانت جدید» بگیرید."}</p>}
       {rows && rows.length > 0 && (
         <ul className="pick-list">
           {rows.map((b) => (
@@ -127,7 +143,7 @@ function Lend({ initial, initialBook, done }: { initial: Borrower | null; initia
       await api.lend({
         ...(who.kind === "deposit" ? { deposit_id: who.id } : { member_id: who.id }),
         ...(book ? { book_id: book.id } : { book_title: title }),
-        loaned_on: from, due_on: due, weekly_fee: amount(fee),
+        loaned_on: from, due_on: due, weekly_fee: amount(fee), scope: "home",
       });
       done();
     } catch (e) {
@@ -166,7 +182,9 @@ function Lend({ initial, initialBook, done }: { initial: Borrower | null; initia
               <Copies b={book} />
               <button className="btn small ghost" onClick={() => setBook(null)}>تغییر</button>
             </div>
-          ) : <PickBook title={title} setTitle={setTitle} titles={titles} pick={setBook} />}
+          ) : null}
+          {book && onShelf(book) <= 0 && <div className="inset"><BookWhere book={book} /></div>}
+          {book ? null : <PickBook title={title} setTitle={setTitle} titles={titles} pick={setBook} />}
           <div className="form-grid">
             <SolarDate label="تاریخ امانت" value={from} onChange={setFrom} />
             <SolarDate label="موعد برگشت" value={due} onChange={(d) => { setDueTouched(true); setDue(d); }} />
@@ -176,10 +194,10 @@ function Lend({ initial, initialBook, done }: { initial: Borrower | null; initia
               <small className="muted">صفر یعنی رایگان. فیس هنگام برگشت کتاب گرفته می‌شود.</small>
             </label>
           </div>
-          {rules && rules.fine_per_day > 0 && <p className="muted small">هر روز دیرکرد بعد از موعد {fa(rules.fine_per_day)} افغانی جریمه دارد.</p>}
+          {rules && rules.fine_per_week > 0 && <p className="muted small">هر هفتهٔ دیرکرد بعد از موعد {fa(rules.fine_per_week)} افغانی جریمه دارد.</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="actions">
-            <button className="btn big" disabled={!(book || title.trim()) || !from || !due || busy} onClick={() => void save()}>ثبت امانت</button>
+            <button className="btn big" disabled={!(book || title.trim()) || (!!book && onShelf(book) <= 0) || !from || !due || busy} onClick={() => void save()}>ثبت امانت</button>
           </div>
         </>
       )}
@@ -187,12 +205,6 @@ function Lend({ initial, initialBook, done }: { initial: Borrower | null; initia
   );
 }
 
-/** How many copies of a catalogue book are on the shelf. */
-function Copies({ b }: { b: CatalogBook }) {
-  const left = b.copies - b.on_loan;
-  if (left <= 0) return <span className="days late">همهٔ {fa(b.copies)} جلد امانت بیرون است</span>;
-  return <span className={b.on_loan ? "days due" : "days ok"}>{fa(left)} از {fa(b.copies)} جلد موجود</span>;
-}
 
 /**
  * The book: picked from the catalogue by title, author or code, or typed by name when it
@@ -238,11 +250,13 @@ function PickBook({ title, setTitle, titles, pick }: {
 // ---------------------------------------------------------------------------
 // A book coming back
 
-function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | null) => void }) {
+export function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | null) => void }) {
   const [on, setOn] = useState(iso(new Date()));
   const [loan, setLoan] = useState<Loan | null>(null);
   const [fee, setFee] = useState("");
   const [fine, setFine] = useState("");
+  // Taken now; any rest is written down as a debt («باقی») of this borrower.
+  const [paid, setPaid] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -262,7 +276,7 @@ function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | n
     setBusy(true);
     setError("");
     try {
-      const r = await api.returnLoan(id, { returned_on: on, fee: amount(fee), fine: amount(fine) });
+      const r = await api.returnLoan(id, { returned_on: on, fee: amount(fee), fine: amount(fine), paid: paid === null ? undefined : Math.min(amount(paid), total) });
       onClose(r.receipt_id);
     } catch (e) {
       setError(errorText(e));
@@ -274,6 +288,8 @@ function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | n
   }
 
   const total = amount(fee) + amount(fine);
+  const now = paid === null ? total : Math.min(amount(paid), total);
+  const rest = total - now;
   const c = loan?.charge;
   return (
     <Modal label="برگشت کتاب" onClose={() => onClose(null)}>
@@ -294,10 +310,19 @@ function ReturnBook({ id, onClose }: { id: string; onClose: (receipt: string | n
             <label className="field wide">
               <span>جریمه (افغانی)</span>
               <input dir="ltr" inputMode="numeric" value={fine} onChange={(e) => setFine(digits(e.target.value))} />
-              {c && <small className={c.days_late ? "form-error inline" : "muted"}>{c.days_late ? `${fa(c.days_late)} روز دیرکرد` : "به وقتش برگشت"}</small>}
+              {c && <small className={c.days_late ? "form-error inline" : "muted"}>{c.days_late ? `${fa(c.days_late)} روز دیرکرد (${fa(Math.ceil(c.days_late / 7))} هفته)` : "به وقتش برگشت"}</small>}
             </label>
           </div>
-          <p className="period-sum">{total > 0 ? <>پرداخت: <strong>{fa(total)} افغانی</strong> (بل چاپ می‌شود)</> : "پولی گرفته نمی‌شود؛ بل صادر نمی‌شود."}</p>
+          {total > 0 && (
+            <div className="form-grid">
+              <label className="field wide">
+                <span>پرداخت حالا (افغانی)</span>
+                <input dir="ltr" inputMode="numeric" value={paid ?? String(total)} onChange={(e) => setPaid(digits(e.target.value))} />
+                {rest > 0 && <small className="owed">{fa(rest)} افغانی به «باقی‌ها» می‌رود.</small>}
+              </label>
+            </div>
+          )}
+          <p className="period-sum">{total > 0 ? <>مجموع: <strong>{fa(total)} افغانی</strong>{now > 0 ? " (بل چاپ می‌شود)" : ""}</> : "پولی گرفته نمی‌شود؛ بل صادر نمی‌شود."}</p>
           {error && <p className="form-error">{error}</p>}
           <div className="actions">
             <button className="btn" disabled={!on || busy} onClick={() => void save()}>{total > 0 ? "ثبت برگشت و بل" : "ثبت برگشت"}</button>

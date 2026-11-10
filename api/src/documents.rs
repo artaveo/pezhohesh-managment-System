@@ -9,7 +9,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgConnection};
 use uuid::Uuid;
@@ -38,12 +38,15 @@ pub struct Document {
     mime_type: String,
     size_bytes: i32,
     created_at: chrono::DateTime<chrono::Utc>,
+    /// Its name on the file server (`<sha256>.<ext>`): the app reads it from there when the
+    /// file is not on this computer.
+    remote_name: String,
 }
 
 /// A member's current files, photo first.
 pub async fn of_member(tx: &mut PgConnection, member: Uuid) -> Result<Vec<Document>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, kind::text AS kind, mime_type, size_bytes, created_at FROM member_documents \
+        "SELECT id, kind::text AS kind, mime_type, size_bytes, created_at, regexp_replace(file_path, '^.*/', '') AS remote_name FROM member_documents \
          WHERE member_id = $1 AND deleted_at IS NULL ORDER BY member_documents.kind, created_at",
     )
     .bind(member)
@@ -210,7 +213,11 @@ pub async fn file(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
             if crate::sync::online_device().is_none() {
                 tracing::error!("reading {rel} failed: {e}");
             }
-            return Err(ApiError(StatusCode::NOT_FOUND, "file_missing"));
+            // The app then fetches it from the file server by this name.
+            let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+            let mut res = (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "file_missing", "name": name }))).into_response();
+            res.extensions_mut().insert(crate::auth::ErrorCode("file_missing"));
+            return Ok(res);
         }
     };
     let mut headers = HeaderMap::new();
@@ -218,6 +225,95 @@ pub async fn file(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
     // A document id always means the same bytes.
     headers.insert(header::CACHE_CONTROL, "private, max-age=31536000, immutable".parse().map_err(|_| NOT_FOUND)?);
     Ok((headers, bytes).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// The file server: photos and scans live apart from the database (Supabase Storage, behind
+// a small gateway that wants the key). The app's window does the sending and the fetching;
+// the API says what is still to send, notes what was sent, and keeps a copy fetched here.
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct FilesStore {
+    url: String,
+    key: String,
+}
+
+/// GET /api/v1/files-store: where the file server is, and its key (the app talks to it).
+pub async fn files_store(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Option<FilesStore>>, ApiError> {
+    hall_only(&user)?;
+    let v: Option<serde_json::Value> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'files_store'").fetch_optional(&s.db).await?;
+    Ok(Json(v.and_then(|v| serde_json::from_value(v).ok())))
+}
+
+/// PUT /api/v1/files-store (partners): set once; it reaches every computer with the settings.
+pub async fn set_files_store(State(s): State<AppState>, user: CurrentUser, Json(b): Json<FilesStore>) -> Result<StatusCode, ApiError> {
+    if !user.is_partner() {
+        return Err(ApiError::FORBIDDEN);
+    }
+    let url = b.url.trim().trim_end_matches('/').to_string();
+    let key = b.key.trim().to_string();
+    if !url.starts_with("https://") || key.len() < 32 {
+        return Err(ApiError::bad("bad_files_store"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('files_store', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+    )
+    .bind(serde_json::json!({ "url": url, "key": key }))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct Unsent {
+    id: Uuid,
+    name: String,
+}
+
+/// GET /api/v1/documents/unsent: files on this computer not on the file server yet.
+pub async fn unsent(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Unsent>>, ApiError> {
+    hall_only(&user)?;
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, file_path FROM member_documents WHERE remote_at IS NULL AND deleted_at IS NULL ORDER BY created_at LIMIT 500",
+    )
+    .fetch_all(&s.db)
+    .await?;
+    let dir = files_dir();
+    Ok(Json(
+        rows.into_iter()
+            .filter(|(_, rel)| dir.join(rel).is_file())
+            .map(|(id, rel)| Unsent { id, name: rel.rsplit('/').next().unwrap_or(&rel).to_string() })
+            .take(20)
+            .collect(),
+    ))
+}
+
+/// POST /api/v1/documents/:id/sent: the file server has it.
+pub async fn sent(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    sqlx::query("UPDATE member_documents SET remote_at = now() WHERE id = $1 AND remote_at IS NULL").bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT /api/v1/documents/:id/copy: a file the app fetched from the file server, kept on this
+/// computer too, when its bytes are the ones the record names.
+pub async fn keep_copy(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: Bytes) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let row: Option<(String, String)> = sqlx::query_as("SELECT file_path, sha256 FROM member_documents WHERE id = $1").bind(id).fetch_optional(&s.db).await?;
+    let (rel, sha) = row.ok_or(NOT_FOUND)?;
+    if hex(&Sha256::digest(&body)) != sha {
+        return Err(ApiError::bad("hash_mismatch"));
+    }
+    store(&rel, &body).await.map_err(|e| {
+        tracing::error!("keeping {rel} failed: {e}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "file_not_saved")
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// PUT /api/v1/documents/:id/thumb: the small copy of a photo (the app shrinks it), which

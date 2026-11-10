@@ -273,6 +273,7 @@ function Counts({ r }: { r: ImportReport }) {
     <ul className="import-counts">
       <li><strong>{fa(r.members)}</strong> عضو <span className="muted small">({fa(r.members_new)} جدید)</span></li>
       <li><strong>{fa(r.receipts)}</strong> پرداخت</li>
+      {r.committed && r.rows_kept !== undefined && <li>سطرهای پول: <strong>{fa(r.rows_added)}</strong> تازه، <strong>{fa(r.rows_removed)}</strong> برداشته (در اکسل نبود یا عوض شده)، {fa(r.rows_kept)} بی‌تغییر ماند</li>}
       {r.in_app > 0 && <li><strong>{fa(r.in_app)}</strong> پرداخت ({fa(r.in_app_amount)} ؋) بل برنامه هم داشت؛ دوباره شمرده نشد</li>}
       {r.fees_exact + r.fees_counted > 0 && <li><strong>{fa(r.fees_exact)}</strong> فیس با روز دقیق از تاریخ عضویت و <strong>{fa(r.fees_counted)}</strong> فیس با روز حساب‌شده (30 روز به عقب)</li>}
       {r.loans.deposits_new + r.loans.deposits_returned > 0 && <li><strong>{fa(r.loans.deposits_new)}</strong> کارت ضمانت تازه{r.loans.deposits_returned > 0 && <>، <strong>{fa(r.loans.deposits_returned)}</strong> ضمانت پس‌داده</>}</li>}

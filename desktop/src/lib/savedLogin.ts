@@ -34,3 +34,9 @@ export async function pickFolder(start?: string): Promise<string | null> {
 }
 
 export const canPickFolder = () => isTauri();
+
+/** Opens the folder of the app's logs in Explorer (desktop app only). */
+export async function openLogs() {
+  if (!isTauri()) return;
+  try { await invoke("open_logs"); } catch (e) { console.error("open_logs", e); }
+}

@@ -56,7 +56,11 @@ export function Money() {
   const { user } = useAuth();
   const partner = user?.role === "partner";
   const has = (s: Section) => partner || (user?.sections ?? []).includes(s);
-  const may = { expenses: has("expenses"), staff: has("salaries"), partners: partner || has("shares") };
+  // A manager with the expenses section writes down a partner's withdrawal too (the partner
+  // is often not at the desk); the shares stay with whoever was given them.
+  const may = { expenses: has("expenses"), staff: has("salaries"), partners: partner || has("shares") || has("expenses"), shares: partner || has("shares") };
+  const firstPart: PartnerPart = partner ? "menu" : may.shares ? "shares" : "new";
+  const okPart = (p: PartnerPart) => partner || (p === "shares" && may.shares) || (p === "new" && may.expenses);
   const key = viewKey(user?.id ?? "");
   const [view, setViewState] = useState<View>(() => remembered(key));
   const setView = (v: View) => {
@@ -67,8 +71,8 @@ export function Money() {
   const shown: View =
     view.tab === "expenses" && may.expenses ? view
       : view.tab === "staff" && may.staff ? view
-      : view.tab === "partners" && may.partners ? (partner || view.part === "shares" ? view : { tab: "partners", part: "shares" })
-      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" };
+      : view.tab === "partners" && may.partners ? (okPart(view.part) ? view : { tab: "partners", part: firstPart })
+      : may.expenses ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart };
   const top = shown.tab === "expenses" ? "expenses" : "withdrawals";
   const who = shown.tab === "partners" ? "partners" : "staff";
 
@@ -77,11 +81,16 @@ export function Money() {
       <div className="money-nav">
         <Tabs label="بخش" value={top}
           items={[...(may.expenses ? [{ id: "expenses" as const, label: "مصارف" }] : []), ...(may.staff || may.partners ? [{ id: "withdrawals" as const, label: "برداشت‌ها" }] : [])]}
-          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" })} />
+          onChange={(t) => setView(t === "expenses" ? { tab: "expenses" } : may.staff ? { tab: "staff" } : { tab: "partners", part: firstPart })} />
         {top === "withdrawals" && (
           <Tabs sub label="برداشت‌های چه کسانی" value={who}
             items={[...(may.staff ? [{ id: "staff" as const, label: "کارمندان" }] : []), ...(may.partners ? [{ id: "partners" as const, label: "شرکا" }] : [])]}
-            onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: partner ? "menu" : "shares" })} />
+            onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: firstPart })} />
+        )}
+        {shown.tab === "partners" && !partner && may.shares && may.expenses && (
+          <Tabs sub label="شرکا" value={shown.part === "new" ? "new" : "shares"}
+            items={[{ id: "new" as const, label: "برداشت جدید" }, { id: "shares" as const, label: "سهم شرکا" }]}
+            onChange={(part) => setView({ tab: "partners", part })} />
         )}
       </div>
       {shown.tab === "expenses" && <ExpensesView />}
@@ -109,7 +118,7 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
   const [people, setPeople] = useState<Person[] | null>(null);
   // One period for both partners' lists, so switching between them compares like with like.
   const period = usePeriod("month");
-  useEffect(() => { if (partner) api.staff().then(setPeople).catch(() => setPeople([])); }, [partner]);
+  useEffect(() => { api.staff().then(setPeople).catch(() => setPeople([])); }, []);
   // The partners as the statement names them (Rahimi first); their withdrawals are under these staff names.
   const partners = PARTNERS.map((p) => ({ ...p, id: people?.find((x) => x.full_name === p.name)?.id ?? null }))
     .sort((a, b) => Number(b.paysManager) - Number(a.paysManager));

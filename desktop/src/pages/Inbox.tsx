@@ -6,6 +6,7 @@ import { fa, formatDay, iso } from "../lib/solar";
 import { useAuth } from "../auth/AuthProvider";
 import { useToast } from "../components/Toast";
 import { Modal } from "../components/Modal";
+import { ImageViewer } from "../components/ImageViewer";
 import { Failed } from "../components/Stat";
 import { Icon } from "../components/Icon";
 import { useQr } from "../lib/qr";
@@ -188,9 +189,7 @@ function Preview({ row }: { row: Arrived }) {
         {pdf ? <span>PDF</span> : url ? <img src={url} alt="" /> : <span className="muted small">…</span>}
       </button>
       {open && url && (
-        <Modal label="فایل رسیده" onClose={() => setOpen(false)} className="doc-view">
-          {pdf ? <iframe src={url} title="PDF" /> : <img src={url} alt="" />}
-        </Modal>
+        <ImageViewer url={url} label="فایل رسیده" name={`file-${row.id.slice(0, 8)}`} pdf={pdf} onClose={() => setOpen(false)} />
       )}
     </>
   );

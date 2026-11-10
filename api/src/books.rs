@@ -40,14 +40,14 @@ fn removable(user: &CurrentUser, created: DateTime<Utc>) -> bool {
 pub struct Rules {
     pub(crate) loan_days: i32,
     pub(crate) weekly_fee: f64,
-    fine_per_day: f64,
+    pub(crate) fine_per_week: f64,
 }
 
 pub(crate) async fn rules_of(tx: &mut PgConnection) -> Result<Rules, ApiError> {
     Ok(sqlx::query_as(
         "SELECT COALESCE((SELECT (value #>> '{}')::int FROM settings WHERE key = 'book_loan_days'), 14) AS loan_days, \
                 COALESCE((SELECT (value #>> '{}')::float8 FROM settings WHERE key = 'book_weekly_fee'), 0) AS weekly_fee, \
-                COALESCE((SELECT (value #>> '{}')::float8 FROM settings WHERE key = 'book_fine_per_day'), 0) AS fine_per_day",
+                COALESCE((SELECT (value #>> '{}')::float8 FROM settings WHERE key = 'book_fine_per_week'), 10) AS fine_per_week",
     )
     .fetch_one(&mut *tx)
     .await?)
@@ -66,7 +66,7 @@ pub async fn set_rules(State(s): State<AppState>, user: CurrentUser, Json(r): Js
         return Err(ApiError::FORBIDDEN);
     }
     money_ok(r.weekly_fee)?;
-    money_ok(r.fine_per_day)?;
+    money_ok(r.fine_per_week)?;
     if !(1..=366).contains(&r.loan_days) {
         return Err(ApiError::bad("bad_days"));
     }
@@ -74,7 +74,7 @@ pub async fn set_rules(State(s): State<AppState>, user: CurrentUser, Json(r): Js
     for (key, value) in [
         ("book_loan_days", serde_json::json!(r.loan_days)),
         ("book_weekly_fee", serde_json::json!(r.weekly_fee)),
-        ("book_fine_per_day", serde_json::json!(r.fine_per_day)),
+        ("book_fine_per_week", serde_json::json!(r.fine_per_week)),
     ] {
         sqlx::query(
             "INSERT INTO settings (key, value) VALUES ($1, $2) \
@@ -369,7 +369,7 @@ pub async fn borrowers(State(s): State<AppState>, user: CurrentUser, Query(p): Q
     let mut tx = begin_as(&s.db, &user).await?;
     let rows = sqlx::query_as(
         "(SELECT 'deposit' AS kind, d.id, d.code AS card_no, d.name, d.father_name, d.phone, \
-                 CASE d.kind WHEN 'cash' THEN rtrim(rtrim(d.amount::text, '0'), '.') || ' افغانی' \
+                 CASE d.kind::text WHEN 'cash' THEN rtrim(rtrim(d.amount::text, '0'), '.') || ' افغانی' \
                              WHEN 'book' THEN d.deposit_book ELSE 'ضمانت ' || d.guarantor END AS guarantee, \
                  (SELECT count(*) FROM book_loans l WHERE l.deposit_id = d.id AND l.returned_on IS NULL AND l.deleted_at IS NULL) AS open_loans, \
                  true AS active \
@@ -427,6 +427,11 @@ pub struct LoanInput {
     /// Default: the weekly fee of the rules (0 lends for free).
     weekly_fee: Option<f64>,
     note: Option<String>,
+    /// home (default): taken away for a weekly fee. hall: read here today, free.
+    scope: Option<String>,
+    /// Someone with no card or member record, kept by name (an old loan from paper, a guest).
+    borrower_name: Option<String>,
+    borrower_phone: Option<String>,
 }
 
 pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<LoanInput>) -> Result<Json<Uuid>, ApiError> {
@@ -444,7 +449,13 @@ pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<Lo
     if title.is_empty() {
         return Err(ApiError::bad("title_required"));
     }
+    let scope = l.scope.as_deref().unwrap_or("home");
+    if !matches!(scope, "home" | "hall") {
+        return Err(ApiError::bad("bad_kind"));
+    }
+    let named = clean(&l.borrower_name);
     match (l.deposit_id, l.member_id) {
+        (None, None) if named.is_some() => {}
         (Some(d), None) => {
             let open: Option<bool> =
                 sqlx::query_scalar("SELECT returned_on IS NULL FROM loan_deposits WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
@@ -469,16 +480,17 @@ pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<Lo
         _ => return Err(ApiError::bad("borrower_required")),
     }
     let rules = rules_of(&mut tx).await?;
-    let due_on = l.due_on.unwrap_or(loaned_on + chrono::Days::new(rules.loan_days as u64));
+    let hall = scope == "hall";
+    let due_on = if hall { loaned_on } else { l.due_on.unwrap_or(loaned_on + chrono::Days::new(rules.loan_days as u64)) };
     if due_on < loaned_on {
         return Err(ApiError::bad("before_start"));
     }
-    let weekly_fee = l.weekly_fee.unwrap_or(rules.weekly_fee);
+    let weekly_fee = if hall { 0.0 } else { l.weekly_fee.unwrap_or(rules.weekly_fee) };
     money_ok(weekly_fee)?;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO book_loans (id, member_id, deposit_id, book_id, book_title, loaned_on, due_on, weekly_fee, note) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "INSERT INTO book_loans (id, member_id, deposit_id, book_id, book_title, loaned_on, due_on, weekly_fee, note, scope, borrower_name, borrower_phone) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(id)
     .bind(l.member_id)
@@ -489,6 +501,9 @@ pub async fn lend(State(s): State<AppState>, user: CurrentUser, Json(l): Json<Lo
     .bind(due_on)
     .bind(weekly_fee)
     .bind(clean(&l.note))
+    .bind(scope)
+    .bind(&named)
+    .bind(clean(&l.borrower_phone))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -521,19 +536,20 @@ pub struct Loan {
 
 #[derive(Serialize, Clone, Copy, PartialEq, Debug)]
 pub struct Charge {
-    weeks: i64,
-    days_late: i64,
-    fee: f64,
-    fine: f64,
+    pub(crate) weeks: i64,
+    pub(crate) days_late: i64,
+    pub(crate) fee: f64,
+    pub(crate) fine: f64,
 }
 
-/// Every started week costs the weekly fee (at least one week); every day past the due
-/// date costs the fine.
-fn charge(loaned_on: NaiveDate, due_on: NaiveDate, on: NaiveDate, weekly_fee: f64, fine_per_day: f64) -> Charge {
+/// Every started week costs the weekly fee (at least one week); every started week past the
+/// due date costs the fine.
+pub(crate) fn charge(loaned_on: NaiveDate, due_on: NaiveDate, on: NaiveDate, weekly_fee: f64, fine_per_week: f64) -> Charge {
     let days = (on - loaned_on).num_days().max(0);
     let weeks = ((days + 6) / 7).max(1);
     let days_late = (on - due_on).num_days().max(0);
-    Charge { weeks, days_late, fee: weeks as f64 * weekly_fee, fine: days_late as f64 * fine_per_day }
+    let weeks_late = (days_late + 6) / 7;
+    Charge { weeks, days_late, fee: weeks as f64 * weekly_fee, fine: weeks_late as f64 * fine_per_week }
 }
 
 #[derive(Deserialize)]
@@ -546,9 +562,9 @@ pub async fn loan(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
     let mut tx = begin_as(&s.db, &user).await?;
     let mut l: Loan = sqlx::query_as(
         "SELECT l.id, COALESCE(b.title, l.book_title, '—') AS book_title, \
-                COALESCE(d.code, m.member_no::text) AS card_no, \
-                COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, ''))) AS borrower, \
-                COALESCE(d.phone, m.phone) AS phone, l.loaned_on, l.due_on, l.returned_on, \
+                COALESCE(d.code, m.member_no::text, '—') AS card_no, \
+                COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), l.borrower_name, '—') AS borrower, \
+                COALESCE(d.phone, m.phone, l.borrower_phone) AS phone, l.loaned_on, l.due_on, l.returned_on, \
                 l.weekly_fee::float8 AS weekly_fee, l.fee_paid::float8 AS fee_paid, l.fine::float8 AS fine, l.note, l.created_at, \
                 (SELECT r.id FROM receipts r WHERE r.book_loan_id = l.id AND NOT r.voided AND r.deleted_at IS NULL LIMIT 1) AS receipt_id \
          FROM book_loans l LEFT JOIN members m ON m.id = l.member_id LEFT JOIN loan_deposits d ON d.id = l.deposit_id \
@@ -563,7 +579,7 @@ pub async fn loan(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
     tx.commit().await?;
     l.removable = l.returned_on.is_none() && removable(&user, l.created_at);
     if l.returned_on.is_none() {
-        l.charge = Some(charge(l.loaned_on, l.due_on, q.on.unwrap_or_else(today), l.weekly_fee, rules.fine_per_day));
+        l.charge = Some(charge(l.loaned_on, l.due_on, q.on.unwrap_or_else(today), l.weekly_fee, rules.fine_per_week));
     }
     Ok(Json(l))
 }
@@ -571,9 +587,11 @@ pub async fn loan(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
 #[derive(Deserialize)]
 pub struct ReturnLoan {
     returned_on: Option<NaiveDate>,
-    /// What was taken; the form fills in the computed charge and the desk may change it.
+    /// What was charged; the form fills in the computed charge and the desk may change it.
     fee: f64,
     fine: f64,
+    /// Paid now, when less than the charge: the rest becomes a debt. Default: all of it.
+    paid: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -589,6 +607,10 @@ struct OutLoan {
     book_title: Option<String>,
     weekly_fee: f64,
     who: String,
+    member_id: Option<Uuid>,
+    deposit_id: Option<Uuid>,
+    borrower_name: Option<String>,
+    borrower_phone: Option<String>,
 }
 
 /// The book is back: its fee and fine (when not zero) get one bill.
@@ -601,11 +623,18 @@ pub async fn return_loan(
     hall_only(&user)?;
     money_ok(r.fee)?;
     money_ok(r.fine)?;
+    let charged = r.fee + r.fine;
+    let paid = r.paid.unwrap_or(charged);
+    money_ok(paid)?;
+    if paid > charged + 0.001 {
+        return Err(ApiError::bad("bad_paid"));
+    }
     let on = past(r.returned_on)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let row: Option<OutLoan> = sqlx::query_as(
         "SELECT l.loaned_on, l.due_on, l.returned_on, COALESCE(b.title, l.book_title) AS book_title, l.weekly_fee::float8 AS weekly_fee, \
-                COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, ''))) AS who \
+                COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), l.borrower_name, '—') AS who, \
+                l.member_id, l.deposit_id, l.borrower_name, l.borrower_phone \
          FROM book_loans l LEFT JOIN members m ON m.id = l.member_id LEFT JOIN loan_deposits d ON d.id = l.deposit_id \
          LEFT JOIN books b ON b.id = l.book_id \
          WHERE l.id = $1 AND l.deleted_at IS NULL FOR UPDATE OF l",
@@ -613,7 +642,7 @@ pub async fn return_loan(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let OutLoan { loaned_on, due_on, returned_on, book_title: title, weekly_fee, who } = row.ok_or(NOT_FOUND)?;
+    let OutLoan { loaned_on, due_on, returned_on, book_title: title, weekly_fee, who, member_id, deposit_id, borrower_name, borrower_phone } = row.ok_or(NOT_FOUND)?;
     if returned_on.is_some() {
         return Err(ApiError::bad("already_returned"));
     }
@@ -628,7 +657,26 @@ pub async fn return_loan(
         .bind(r.fine)
         .execute(&mut *tx)
         .await?;
-    let total = r.fee + r.fine;
+    let total = paid;
+    // What was charged and not paid is owed, under the same line of income.
+    if charged - paid >= 0.01 {
+        sqlx::query(
+            "INSERT INTO member_debts (id, member_id, deposit_id, guest_name, phone, kind, title, owed_on, amount, income_category, book_loan_id, created_by) \
+             VALUES ($1, $2, $3, $4, $5, 'books', $6, $7, $8, 'books', $9, $10)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(member_id)
+        .bind(deposit_id)
+        .bind(&borrower_name)
+        .bind(&borrower_phone)
+        .bind(format!("فیس و جریمهٔ «{}»", title.as_deref().unwrap_or("—")))
+        .bind(on)
+        .bind(charged - paid)
+        .bind(id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    }
     let receipt_id = if total > 0.0 {
         let c = charge(loaned_on, due_on, on, weekly_fee, 0.0);
         let mut what = format!("«{}»", title.as_deref().unwrap_or("—"));
@@ -645,6 +693,83 @@ pub async fn return_loan(
     };
     tx.commit().await?;
     Ok(Json(Returned { receipt_id }))
+}
+
+#[derive(Deserialize)]
+pub struct BackInHall {
+    returned_on: Option<NaiveDate>,
+}
+
+/// POST /api/v1/book-loans/:id/back: a book read in the hall is back on the shelf. No money.
+pub async fn back_in_hall(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(b): Json<BackInHall>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let on = past(b.returned_on)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let row: Option<(String, NaiveDate, Option<NaiveDate>)> = sqlx::query_as("SELECT scope, loaned_on, returned_on FROM book_loans WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (scope, loaned_on, returned) = row.ok_or(NOT_FOUND)?;
+    if scope != "hall" {
+        return Err(ApiError::bad("bad_kind"));
+    }
+    if returned.is_some() {
+        return Err(ApiError::bad("already_returned"));
+    }
+    if on < loaned_on {
+        return Err(ApiError::bad("before_start"));
+    }
+    sqlx::query("UPDATE book_loans SET returned_on = $2, returned_by = $3 WHERE id = $1").bind(id).bind(on).bind(user.id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct HallQuery {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    q: Option<String>,
+    /// Only books not back yet, from any day.
+    #[serde(default)]
+    open: bool,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct HallLoan {
+    id: Uuid,
+    book_id: Option<Uuid>,
+    book_title: String,
+    card_no: Option<String>,
+    borrower: String,
+    phone: Option<String>,
+    loaned_on: NaiveDate,
+    returned_on: Option<NaiveDate>,
+    note: Option<String>,
+}
+
+/// GET /api/v1/hall-loans: books read in the hall, newest first.
+pub async fn hall_loans(State(s): State<AppState>, user: CurrentUser, Query(p): Query<HallQuery>) -> Result<Json<Vec<HallLoan>>, ApiError> {
+    hall_only(&user)?;
+    let q = pattern(&p.q);
+    let mut tx = begin_as(&s.db, &user).await?;
+    let rows = sqlx::query_as(
+        "SELECT * FROM (SELECT l.id, l.book_id, COALESCE(b.title, l.book_title, '—') AS book_title, COALESCE(d.code, m.member_no::text) AS card_no, \
+                COALESCE(d.name, trim(m.first_name || ' ' || COALESCE(m.last_name, '')), l.borrower_name, '—') AS borrower, \
+                COALESCE(d.phone, m.phone, l.borrower_phone) AS phone, l.loaned_on, l.returned_on, l.note, l.created_at \
+         FROM book_loans l LEFT JOIN members m ON m.id = l.member_id LEFT JOIN loan_deposits d ON d.id = l.deposit_id LEFT JOIN books b ON b.id = l.book_id \
+         WHERE l.deleted_at IS NULL AND l.scope = 'hall') t \
+         WHERE ($1 OR (($2::date IS NULL OR loaned_on >= $2) AND ($3::date IS NULL OR loaned_on <= $3))) AND (NOT $1 OR returned_on IS NULL) \
+           AND ($4::text IS NULL OR book_title ILIKE $4 OR borrower ILIKE $4 OR card_no ILIKE $4 OR phone ILIKE $4) \
+         ORDER BY returned_on IS NULL DESC, loaned_on DESC, created_at DESC LIMIT 500",
+    )
+    .bind(p.open)
+    .bind(p.from)
+    .bind(p.to)
+    .bind(&q)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(rows))
 }
 
 /// A loan typed in by mistake (the book is still out): partners any time, the manager the same day.
@@ -676,10 +801,12 @@ mod tests {
     fn charges() {
         let d = |m, dd| NaiveDate::from_ymd_opt(2026, m, dd).unwrap();
         // Same day: one week.
-        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 1), 20.0, 5.0), Charge { weeks: 1, days_late: 0, fee: 20.0, fine: 0.0 });
+        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 1), 20.0, 10.0), Charge { weeks: 1, days_late: 0, fee: 20.0, fine: 0.0 });
         // 14 days: two weeks, on time.
-        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 15), 20.0, 5.0), Charge { weeks: 2, days_late: 0, fee: 40.0, fine: 0.0 });
-        // 15 days: a third week started, one day late.
-        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 16), 20.0, 5.0), Charge { weeks: 3, days_late: 1, fee: 60.0, fine: 5.0 });
+        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 15), 20.0, 10.0), Charge { weeks: 2, days_late: 0, fee: 40.0, fine: 0.0 });
+        // 15 days: a third week started, and one started week late.
+        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 16), 20.0, 10.0), Charge { weeks: 3, days_late: 1, fee: 60.0, fine: 10.0 });
+        // Eight days late: a second late week started.
+        assert_eq!(charge(d(10, 1), d(10, 15), d(10, 23), 20.0, 10.0), Charge { weeks: 4, days_late: 8, fee: 80.0, fine: 20.0 });
     }
 }

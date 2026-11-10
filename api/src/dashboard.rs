@@ -159,10 +159,10 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
             (SELECT count(*) FROM v_registrations, w
               WHERE (kind = 'daily' OR (kind = 'monthly' AND first)) AND day >= w.ps AND day < w.pe) AS new_members_prev,
             (SELECT COALESCE(sum(amount), 0)::float8 FROM receipts, w
-              WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
+              WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN' AND income_category <> 'carryover'
                 AND issued_on >= w.cs AND issued_on < w.ce) AS income,
             (SELECT COALESCE(sum(amount), 0)::float8 FROM receipts, w
-              WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
+              WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN' AND income_category <> 'carryover'
                 AND issued_on >= w.ps AND issued_on < w.pe) AS income_prev,
             (SELECT COALESCE(sum(amount), 0)::float8 FROM expenses, w
               WHERE deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
@@ -170,10 +170,10 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
             (SELECT COALESCE(sum(amount), 0)::float8 FROM expenses, w
               WHERE deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
                 AND spent_on >= w.ps AND spent_on < w.pe) AS expenses_prev,
-            (SELECT count(DISTINCT (device_user_no, punched_at::date)) FROM attendance, w
-              WHERE punched_at >= w.cs AND punched_at < w.ce) AS attendance,
-            (SELECT count(DISTINCT (device_user_no, punched_at::date)) FROM attendance, w
-              WHERE punched_at >= w.ps AND punched_at < w.pe) AS attendance_prev
+            (SELECT count(DISTINCT (device_user_no, (punched_at AT TIME ZONE 'Asia/Kabul')::date)) FROM attendance, w
+              WHERE punched_at >= (w.cs::timestamp AT TIME ZONE 'Asia/Kabul') AND punched_at < (w.ce::timestamp AT TIME ZONE 'Asia/Kabul')) AS attendance,
+            (SELECT count(DISTINCT (device_user_no, (punched_at AT TIME ZONE 'Asia/Kabul')::date)) FROM attendance, w
+              WHERE punched_at >= (w.ps::timestamp AT TIME ZONE 'Asia/Kabul') AND punched_at < (w.pe::timestamp AT TIME ZONE 'Asia/Kabul')) AS attendance_prev
         FROM w
         "#,
     )
@@ -188,7 +188,7 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
         r#"
         SELECT d::date AS day,
             COALESCE((SELECT sum(amount) FROM receipts r WHERE r.issued_on = d::date AND NOT r.voided
-                      AND r.deleted_at IS NULL AND r.department = 'hall' AND r.currency = 'AFN'), 0)::float8 AS income,
+                      AND r.deleted_at IS NULL AND r.department = 'hall' AND r.currency = 'AFN' AND r.income_category <> 'carryover'), 0)::float8 AS income,
             COALESCE((SELECT sum(amount) FROM expenses e WHERE e.spent_on = d::date
                       AND e.deleted_at IS NULL AND e.department = 'hall' AND e.currency = 'AFN'), 0)::float8 AS expenses
         FROM generate_series(current_date - 29, current_date, interval '1 day') AS d
@@ -202,7 +202,7 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
         r#"
         SELECT income_category AS category, sum(amount)::float8 AS amount
         FROM receipts
-        WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN'
+        WHERE NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN' AND income_category <> 'carryover'
           AND issued_on >= $1 AND issued_on < $2
         GROUP BY income_category
         ORDER BY amount DESC

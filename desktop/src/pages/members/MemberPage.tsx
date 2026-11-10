@@ -7,6 +7,7 @@ import { PeriodForm } from "../../components/PeriodForm";
 import { BillPreview } from "../../components/BillSheet";
 import { DeleteDialog } from "../../components/DeleteDialog";
 import { Modal } from "../../components/Modal";
+import { ImageViewer } from "../../components/ImageViewer";
 import { SolarDate } from "../../components/SolarDate";
 import { Icon } from "../../components/Icon";
 import { useToast } from "../../components/Toast";
@@ -14,6 +15,7 @@ import { useAuth } from "../../auth/AuthProvider";
 import { MemberCardPreview } from "../../components/MemberCard";
 import { useDocumentUrl } from "../../lib/images";
 import { Documents } from "./Documents";
+import { DebtItems } from "../Debts";
 import { Enroll, Fingerprint } from "./Fingerprint";
 
 import { MemberFields } from "./MemberFields";
@@ -22,7 +24,12 @@ import { NumberHelp } from "./NumberHelp";
 const TIMELINE_LABEL: Record<Timeline["kind"], string> = { monthly: "عضویت سالن", internet: "انترنت" };
 
 /** One member: details, every paid period, and renewing (which prints the bill). */
-export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onBack?: () => void; onRemoved?: () => void; openBill?: string | null; fresh?: boolean }) {
+export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }: {
+  id: string; onBack?: () => void; onRemoved?: () => void; openBill?: string | null; fresh?: boolean;
+  /** Only the member's head and their debts («باقی‌ها»), each payable on its own. */
+  debts?: boolean;
+  openDebts?: () => void;
+}) {
   const toast = useToast();
   const partner = useAuth().user?.role === "partner";
   const [removing, setRemoving] = useState<"member" | Period | null>(null);
@@ -43,6 +50,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   const [fingerDone, setFingerDone] = useState(0);
   // Right after registering: the next steps at the desk, until the person closes them.
   const [steps, setSteps] = useState(!!fresh);
+  const [photoOpen, setPhotoOpen] = useState(false);
   const photoId = d?.documents.find((x) => x.kind === "photo")?.id ?? null;
   const { url: photo } = useDocumentUrl(photoId);
 
@@ -53,14 +61,19 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
   const m = d.member;
   const name = `${m.first_name} ${m.last_name ?? ""}`.trim();
   const owing = d.periods.filter((p) => p.owed > 0);
-  const owed = owing.reduce((t, p) => t + p.owed, 0);
+  const owed = owing.reduce((t, p) => t + p.owed, 0) + (d.other_owed ?? 0);
 
 
   return (
     <div className="page">
       <section className="panel wide member-head">
         <div className="member-title">
-          {photo && <img className="member-photo" src={photo} alt="" />}
+          {photo && !debts && (
+            <button type="button" className="member-photo-btn" onClick={() => setPhotoOpen(true)} aria-label="بزرگ دیدن عکس">
+              <img className="member-photo" src={photo} alt="" />
+            </button>
+          )}
+          {photoOpen && photo && <ImageViewer url={photo} label={name} name={`member-${m.member_no}`} onClose={() => setPhotoOpen(false)} />}
           <div>
             <h2>{name}</h2>
             <p className="muted">
@@ -81,15 +94,17 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
             {owed > 0 && (
               <div>
                 <span className="muted small">پول</span>
-                <span className="owed-badge">باقی {fa(owed)}</span>
+                {openDebts && !debts
+                  ? <button className="owed-badge as-button" onClick={openDebts}>باقی {fa(owed)}</button>
+                  : <span className="owed-badge">باقی {fa(owed)}</span>}
               </div>
             )}
           </div>
         </div>
-        {mode === "view" && (
+        {mode === "view" && !debts && (
           <div className="actions">
             <button className="btn big" onClick={() => setMode("renew")}>تمدید عضویت</button>
-            {owing.length > 0 && <button className="btn" onClick={() => setPaying(owing[owing.length - 1])}>پرداخت باقی</button>}
+            {owed > 0 && <button className="btn" onClick={() => (openDebts ? openDebts() : setPaying(owing[owing.length - 1]))}>پرداخت باقی</button>}
             {k50?.configured && (
               <button className="btn ghost" disabled={!k50.enabled} onClick={() => setEnrolling(true)}
                 title={k50.enabled ? undefined : "اول عضویت سالن را ثبت یا تمدید کنید"}><Icon name="fingerprint" /> ثبت انگشت</button>
@@ -104,6 +119,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
 
       {error && <p className="form-error" role="alert">{error}</p>}
 
+      {debts ? <DebtItems groupKey={`m:${id}`} person={{ member_id: id, name, phone: m.phone }} onChanged={() => void load()} /> : <>
       {steps && mode === "view" && (
         <section className="glass next-steps" aria-label="قدم‌های بعدی">
           <div className="next-steps-head">
@@ -200,6 +216,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved }: { id: string; onB
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
+      </>}
     </div>
   );
 }

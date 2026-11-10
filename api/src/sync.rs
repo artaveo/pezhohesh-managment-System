@@ -379,7 +379,7 @@ async fn chores(hub: &PgPool) {
         }
     }
     if prune_due {
-        match sqlx::query_scalar::<_, i64>("SELECT sync_prune(180)").fetch_one(hub).await {
+        match sqlx::query_scalar::<_, i64>("SELECT sync_prune(30)").fetch_one(hub).await {
             Ok(n) if n > 0 => tracing::info!("sync: {n} old states tidied on the server"),
             Ok(_) => {}
             Err(e) => tracing::warn!("sync: tidy: {e}"),

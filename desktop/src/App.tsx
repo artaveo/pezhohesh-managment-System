@@ -14,6 +14,8 @@ import { Desk } from "./pages/members/Desk";
 import { MemberPage } from "./pages/members/MemberPage";
 import { NewMember } from "./pages/members/NewMember";
 import { Bills } from "./pages/Bills";
+import { OtherIncome } from "./pages/OtherIncome";
+import { Attendance } from "./pages/Attendance";
 import { DeviceUsers } from "./pages/DeviceUsers";
 import { Money } from "./pages/Money";
 import { Prices } from "./pages/Prices";
@@ -23,11 +25,12 @@ import { Offline } from "./pages/Offline";
 import { Icon } from "./components/Icon";
 import { useAuth } from "./auth/AuthProvider";
 import { useTheme } from "./theme/ThemeProvider";
-import { api, ROLE_LABEL, type Section, type User } from "./lib/api";
+import { api, ROLE_LABEL, type DebtGroup, type Section, type User } from "./lib/api";
+import { DebtPage } from "./pages/Debts";
 import { Inbox } from "./pages/Inbox";
 import { SyncChip } from "./components/SyncChip";
 import { Reports } from "./pages/Reports";
-import { usePhotoCopies } from "./lib/images";
+import { useFileSending } from "./lib/images";
 
 /**
  * The menu. A section with `section` is shown to the roles a partner gave it to on the users
@@ -41,10 +44,12 @@ export const NAV = [
   { id: "memberships", icon: "card", label: "پذیرش و تمدید", section: "memberships", group: "کار روزانه" },
   { id: "members", icon: "users", label: "اعضا", section: "members", group: "کار روزانه" },
   { id: "registrations", icon: "userPlus", label: "ثبت‌نام‌ها", section: "registrations", group: "کار روزانه" },
+  { id: "attendance", icon: "calendar", label: "حاضری روزانه", section: "members", group: "کار روزانه" },
   { id: "inbox", icon: "phone", label: "رسیده از موبایل", section: "inbox", group: "کار روزانه" },
   { id: "books", icon: "book", label: "امانت کتاب", section: "books", group: "کار روزانه" },
   { id: "hotspot", icon: "wifi", label: "کارت هاتسپات", section: "hotspot", group: "کار روزانه" },
   { id: "receipts", icon: "receipt", label: "بل‌ها", section: "receipts", group: "حساب و پول" },
+  { id: "otherIncome", icon: "money", label: "عواید متفرقه", section: "receipts", group: "حساب و پول" },
   // Staff salaries and the partners' shares live inside it, under «برداشت‌ها».
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
@@ -68,7 +73,7 @@ function sees(user: User, n: NavItem) {
 
 type PageId = (typeof NAV)[number]["id"];
 /** Where the app is: a page, and inside "members" one member or the new-member form. */
-type View = { page: PageId; member: { id: string | null; bill?: string | null; fresh?: boolean } | null; reg?: RegFilter };
+type View = { page: PageId; member: { id: string | null; bill?: string | null; fresh?: boolean; debts?: boolean } | null; reg?: RegFilter; debt?: DebtGroup };
 
 export default function App() {
   const { status, user, retry } = useAuth();
@@ -84,7 +89,7 @@ function Shell() {
   const { dark, setMode } = useTheme();
   const nav = useMemo(() => NAV.filter((n) => sees(user!, n)), [user]);
   const arrived = useInboxCount(nav.some((n) => n.id === "inbox"));
-  usePhotoCopies(nav.some((n) => n.id === "members"));
+  useFileSending(nav.some((n) => n.id === "members"));
   const [view, setView] = useState<View>({ page: "dashboard", member: null });
   // Earlier views, for «برگشت» (and Alt+←), like a browser's history.
   const [history, setHistory] = useState<View[]>([]);
@@ -100,7 +105,7 @@ function Shell() {
     setView(prev);
   };
   const { page, member, reg } = view;
-  const setPage = (id: PageId) => { if (id !== page || member) go({ page: id, member: null }); };
+  const setPage = (id: PageId) => { if (id !== page || member || view.debt) go({ page: id, member: null }); };
   const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) =>
     go({ page: id, member: null, reg: id === "registrations" ? { span: "today", kind } : undefined });
   const openMember = (id: string, bill: string | null = null, fresh = false) => go({ page: "members", member: { id, bill, fresh } });
@@ -179,22 +184,27 @@ function Shell() {
           user!.role === "partner" || user!.sections?.includes("dashboard") ? <Dashboard go={goFromDashboard} /> : <Home />
         ) : (
           <>
-            <h1>{member?.id === null ? "عضو جدید" : current.label}</h1>
+            <h1>{member?.id === null ? "عضو جدید" : member?.debts || view.debt ? "باقی‌ها" : current.label}</h1>
             {page === "settings" ? <Settings />
               : page === "users" ? <Users />
               : page === "members" ? (
                 <>
-                  {member?.id && <MemberPage key={member.id} id={member.id} openBill={member.bill} fresh={member.fresh} onBack={back} onRemoved={() => { setListKey((k) => k + 1); back(); }} />}
+                  {member?.id && <MemberPage key={`${member.id}-${member.debts ? "d" : ""}`} id={member.id} openBill={member.bill} fresh={member.fresh} debts={member.debts}
+                    openDebts={() => go({ page: "members", member: { id: member.id, debts: true } })} onBack={back} onRemoved={() => { setListKey((k) => k + 1); back(); }} />}
+                  {!member && view.debt && <DebtPage key={view.debt.key} group={view.debt} />}
                   {member && member.id === null && <NewMember onSaved={(id, bill) => openMember(id, bill, true)} onCancel={back} />}
                   {/* The list stays mounted under a member's page, so its search and place are kept. */}
-                  <div hidden={!!member}>
-                    <MembersList key={listKey} open={(id) => openMember(id)} add={() => go({ page: "members", member: { id: null } })} />
+                  <div hidden={!!member || !!view.debt}>
+                    <MembersList key={listKey} open={(id) => openMember(id)} add={() => go({ page: "members", member: { id: null } })}
+                      openDebts={(g) => go(g.member_id ? { page: "members", member: { id: g.member_id, debts: true } } : { page: "members", member: null, debt: g })} />
                   </div>
                 </>
               )
               : page === "memberships" ? <Desk openMember={(id) => openMember(id)} newMember={() => go({ page: "members", member: { id: null } })} />
               : page === "registrations" ? <Registrations key={JSON.stringify(reg ?? {})} initial={reg} openMember={(id) => openMember(id)} />
               : page === "receipts" ? <Bills />
+              : page === "otherIncome" ? <OtherIncome />
+              : page === "attendance" ? <Attendance openMember={(id) => openMember(id)} />
               : page === "reports" ? <Reports />
               : page === "expenses" ? <Money />
               : page === "prices" ? <Prices />

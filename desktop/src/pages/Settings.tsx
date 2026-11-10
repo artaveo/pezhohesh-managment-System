@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errorText, type ThemeMode } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { PasswordInput } from "../components/PasswordInput";
-import { forgetLogin, savedLogin, updateSavedPassword } from "../lib/savedLogin";
+import { canPickFolder, forgetLogin, openLogs, savedLogin, updateSavedPassword } from "../lib/savedLogin";
 import { ColorWheel } from "../components/ColorWheel";
 import { useTheme } from "../theme/ThemeProvider";
 import { hexToRgb, OFFICIAL_GREEN } from "../theme/color";
@@ -13,6 +13,7 @@ export function Settings() {
       <MyMode />
       <MyColor />
       <MyPassword />
+      <Logs />
     </>
   );
 }
@@ -143,5 +144,17 @@ function MyPassword() {
         )}
       </div>
     </form>
+  );
+}
+
+/** Where the app writes what happened (api.log): to send when something goes wrong. */
+function Logs() {
+  if (!canPickFolder()) return null;
+  return (
+    <section className="panel">
+      <h2>گزارش برنامه</h2>
+      <p className="muted">هر کار مهم و هر خطا با ساعتش در فایل api.log نوشته می‌شود. وقتی مشکلی پیش آمد، این فایل را بفرستید.</p>
+      <div className="actions"><button className="btn ghost" onClick={() => void openLogs()}>پوشهٔ گزارش‌ها</button></div>
+    </section>
   );
 }

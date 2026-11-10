@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, ApiError, type FilesStore } from "./api";
 
 /**
  * A smaller picture, at most `side` pixels on its longer side: WebP, which is about a third
@@ -35,7 +35,7 @@ function fetchUrl(id: string) {
   if (p) {
     urls.delete(id); // most recently used goes last
   } else {
-    p = api.documentFile(id).then((b) => URL.createObjectURL(b));
+    p = load(id).then((b) => URL.createObjectURL(b));
     p.catch(() => urls.delete(id));
   }
   urls.set(id, p);
@@ -45,6 +45,33 @@ function fetchUrl(id: string) {
     void u.then(URL.revokeObjectURL, () => {});
   }
   return p;
+}
+
+/** From this computer, else from the file server (and then kept here too). */
+async function load(id: string): Promise<Blob> {
+  try {
+    return await api.documentFile(id);
+  } catch (e) {
+    const name = e instanceof ApiError && e.code === "file_missing" ? (e.body.name as string | undefined) : undefined;
+    if (!name) throw e;
+    const b = await fromStore(name);
+    void api.keepFileCopy(id, b).catch(() => {});
+    return b;
+  }
+}
+
+let storeP: Promise<FilesStore | null> | null = null;
+function store() {
+  storeP ??= api.filesStore().catch(() => { storeP = null; return null; });
+  return storeP;
+}
+
+async function fromStore(name: string): Promise<Blob> {
+  const s = await store();
+  if (!s) throw new ApiError(404, "file_missing");
+  const res = await fetch(`${s.url}/${name}`, { headers: { "x-pz-key": s.key } });
+  if (!res.ok) throw new ApiError(404, "file_missing");
+  return res.blob();
 }
 
 /**
@@ -64,25 +91,30 @@ export function useDocumentUrl(id: string | null | undefined): { url: string | n
 }
 
 /**
- * On the hall computer while it shares the server: makes the small copy (about 20 KB) of
- * each member photo that goes to the server, so the partners' laptops see photos too.
- * Tazkira scans never go. Runs now and then in the background.
+ * Photos and scans go to the file server, not to the main server: each computer sends the
+ * files it has that are not there yet, now and then in the background. Any other computer
+ * then fetches a file from there when it is opened.
  */
-export function usePhotoCopies(on: boolean) {
+export function useFileSending(on: boolean) {
   useEffect(() => {
     if (!on) return;
     let live = true;
     async function round() {
       try {
-        if ((await api.sync()).mode !== "node") return;
-        for (let ids = await api.thumbless(); live && ids.length; ids = await api.thumbless()) {
-          for (const id of ids) {
+        const s = await store();
+        if (!s) return;
+        for (let rows = await api.unsentFiles(); live && rows.length; rows = await api.unsentFiles()) {
+          for (const r of rows) {
             if (!live) return;
-            await api.setThumb(id, await shrink(await api.documentFile(id), 320, 0.75));
+            const b = await api.documentFile(r.id);
+            const res = await fetch(`${s.url}/${r.name}`, { method: "PUT", headers: { "x-pz-key": s.key, "content-type": b.type || "application/octet-stream" }, body: b });
+            // 409: it is there already (the same bytes, by name).
+            if (!res.ok && res.status !== 409) throw new Error(`files ${res.status}`);
+            await api.fileSent(r.id);
           }
         }
-      } catch {
-        // Tried again at the next round.
+      } catch (e) {
+        void api.clientLog({ level: "warn", place: "file-sending", message: String(e) });
       }
     }
     const first = window.setTimeout(() => void round(), 20_000);
@@ -90,3 +122,6 @@ export function usePhotoCopies(on: boolean) {
     return () => { live = false; window.clearTimeout(first); window.clearInterval(every); };
   }, [on]);
 }
+
+/** After the file server is set, the next fetch reads the new address. */
+export function forgetFilesStore() { storeP = null; }

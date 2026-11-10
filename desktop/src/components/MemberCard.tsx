@@ -22,7 +22,7 @@ export function MemberCardFace({ member, photo }: { member: Member; photo: strin
         <dl>
           <div className="name"><dt>نام</dt><dd>{name}</dd></div>
           {member.father_name && <div><dt>فرزند</dt><dd>{member.father_name}</dd></div>}
-          {member.field_of_study && <div><dt>رشته</dt><dd>{member.field_of_study}</dd></div>}
+          {member.field_of_study && <div><dt>وضعیت</dt><dd>{member.field_of_study}</dd></div>}
           {/* Imported members have no real join date, so the card shows when it was printed. */}
           <div><dt>صدور</dt><dd>{formatDay(new Date())}</dd></div>
         </dl>
