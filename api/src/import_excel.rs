@@ -885,6 +885,14 @@ pub struct Report {
     /// Fee cells that got a day from the member's period, or one counted back from it.
     fees_exact: usize,
     fees_counted: usize,
+    /// Days of the meals cell split into breakfast, lunch and dinner, and days left whole
+    /// (their parts did not add up to the cell, or it had other things in it).
+    food_split: usize,
+    food_whole: usize,
+    /// Expense and withdrawal lines the app already has (typed there): left out of the book's.
+    expenses_in_app: usize,
+    expenses_in_app_amount: f64,
+    withdrawals_in_app: usize,
     loans: LoanReport,
     expenses: usize,
     withdrawals: usize,
@@ -1426,7 +1434,7 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     for (i, l) in LINES.iter().filter(|l| l.kind == Kind::Expense).enumerate() {
         let id: Uuid = sqlx::query_scalar(
             "INSERT INTO expense_categories (id, department, name, sort_order) VALUES (gen_random_uuid(), 'hall', $1, $2) \
-             ON CONFLICT (department, name) DO UPDATE SET sort_order = EXCLUDED.sort_order RETURNING id",
+             ON CONFLICT (department, name) DO UPDATE SET sort_order = EXCLUDED.sort_order, deleted_at = NULL RETURNING id",
         )
         .bind(l.key)
         .bind(i as i32 + 1)
@@ -1434,7 +1442,69 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .await?;
         category_ids.insert(l.key, id);
     }
-    let spent: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Expense).collect();
+    // Meals: the book writes a day's food in one cell («20صبحانه+چاشت60+شام80»). When the app
+    // has the three lines and the parts add up to the cell, each part goes to its own line.
+    let food = food_categories(db, &mut warnings).await?;
+    let (mut food_split, mut food_whole) = (0usize, 0usize);
+    let mut spent: Vec<(Uuid, NaiveDate, Option<String>, f64)> = Vec::new();
+    for (e, d) in dated.iter().filter(|(e, _)| e.kind == Kind::Expense) {
+        if e.key == "ماکولات" {
+            if let Some(ids) = food {
+                match e.note.as_deref().and_then(|t| meals(t, e.amount)) {
+                    Some(parts) => {
+                        food_split += 1;
+                        for (i, v) in parts.into_iter().enumerate() {
+                            if v > 0.0 {
+                                spent.push((ids[i], *d, note(e), v));
+                            }
+                        }
+                        continue;
+                    }
+                    None => food_whole += 1,
+                }
+            }
+        }
+        spent.push((category_ids[e.key], *d, note(e), e.amount));
+    }
+    // Typed in the app as well: the app's line stands and the book's is left out. A line of
+    // the same kind, day and amount is the same line; for meals, a day with any meal typed in
+    // the app keeps the app's meals.
+    let (lo, hi) = (
+        dated.iter().map(|(_, d)| *d).min().unwrap_or(NaiveDate::MIN),
+        dated.iter().map(|(_, d)| *d).max().unwrap_or(NaiveDate::MIN),
+    );
+    let typed: Vec<(Uuid, NaiveDate, f64)> = sqlx::query_as(
+        "SELECT category_id, spent_on, amount::float8 FROM expenses \
+         WHERE import_batch_id IS NULL AND deleted_at IS NULL AND department = 'hall' AND spent_on BETWEEN $1 AND $2",
+    )
+    .bind(lo)
+    .bind(hi)
+    .fetch_all(&mut *db)
+    .await?;
+    let food_days: std::collections::HashSet<NaiveDate> =
+        typed.iter().filter(|(c, _, _)| food.is_some_and(|f| f.contains(c))).map(|(_, d, _)| *d).collect();
+    let mut pool: HashMap<(Uuid, NaiveDate, i64), usize> = HashMap::new();
+    for (c, d, a) in &typed {
+        *pool.entry((*c, *d, cents(*a))).or_default() += 1;
+    }
+    let (mut expenses_in_app, mut expenses_in_app_amount) = (0usize, 0.0f64);
+    spent.retain(|(c, d, _, a)| {
+        // The book's meals of the day, split or whole, when the app has that day's meals.
+        let meal = food.is_some_and(|f| f.contains(c)) || *c == category_ids["ماکولات"];
+        let left_out = if meal && food_days.contains(d) {
+            true
+        } else if let Some(n) = pool.get_mut(&(*c, *d, cents(*a))).filter(|n| **n > 0) {
+            *n -= 1;
+            true
+        } else {
+            false
+        };
+        if left_out {
+            expenses_in_app += 1;
+            expenses_in_app_amount += a;
+        }
+        !left_out
+    });
     let ex: (i64, i64, i64) = sqlx::query_as(
         r#"
         WITH n AS (SELECT x.*, row_number() OVER (PARTITION BY x.category, x.day, x.note, x.amount) AS k
@@ -1454,10 +1524,10 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         SELECT (SELECT count(*) FROM o), (SELECT count(*) FROM gone), (SELECT count(*) FROM added)
         "#,
     )
-    .bind(spent.iter().map(|(e, _)| category_ids[e.key]).collect::<Vec<_>>())
-    .bind(spent.iter().map(|(_, d)| *d).collect::<Vec<_>>())
-    .bind(spent.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
-    .bind(spent.iter().map(|(e, _)| e.amount).collect::<Vec<f64>>())
+    .bind(spent.iter().map(|x| x.0).collect::<Vec<_>>())
+    .bind(spent.iter().map(|x| x.1).collect::<Vec<_>>())
+    .bind(spent.iter().map(|x| x.2.clone()).collect::<Vec<_>>())
+    .bind(spent.iter().map(|x| x.3).collect::<Vec<f64>>())
     .bind(batch)
     .fetch_one(&mut *db)
     .await?;
@@ -1488,7 +1558,31 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         };
         partner_ids.insert(key, id);
     }
-    let taken: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Withdrawal).collect();
+    let typed: Vec<(Uuid, NaiveDate, f64)> = sqlx::query_as(
+        "SELECT staff_id, taken_on, amount::float8 FROM withdrawals \
+         WHERE import_batch_id IS NULL AND deleted_at IS NULL AND taken_on BETWEEN $1 AND $2",
+    )
+    .bind(lo)
+    .bind(hi)
+    .fetch_all(&mut *db)
+    .await?;
+    let mut pool: HashMap<(Uuid, NaiveDate, i64), usize> = HashMap::new();
+    for (s, d, a) in &typed {
+        *pool.entry((*s, *d, cents(*a))).or_default() += 1;
+    }
+    let mut withdrawals_in_app = 0usize;
+    let taken: Vec<_> = dated
+        .iter()
+        .filter(|(e, _)| e.kind == Kind::Withdrawal)
+        .filter(|(e, d)| match pool.get_mut(&(partner_ids[e.key], *d, cents(e.amount))).filter(|n| **n > 0) {
+            Some(n) => {
+                *n -= 1;
+                withdrawals_in_app += 1;
+                false
+            }
+            None => true,
+        })
+        .collect();
     let wd: (i64, i64, i64) = sqlx::query_as(
         r#"
         WITH n AS (SELECT w.*, row_number() OVER (PARTITION BY w.staff, w.day, w.amount, w.note) AS k
@@ -1570,6 +1664,11 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         in_app_amount,
         fees_exact,
         fees_counted,
+        food_split,
+        food_whole,
+        expenses_in_app,
+        expenses_in_app_amount,
+        withdrawals_in_app,
         loans,
         expenses: spent.len(),
         withdrawals: taken.len(),
@@ -1604,6 +1703,65 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
 /// The guarantees and the books out, from the book's two loan sheets. Run again with a newer
 /// book it adds what is new and marks what came back; what the app already has stays. The
 /// fees are not income here: the statement's «امانت دهی کتاب» line already counts them.
+/// Money compared to the cent, as a key.
+fn cents(a: f64) -> i64 {
+    (a * 100.0).round() as i64
+}
+
+/// The app's breakfast, lunch and dinner lines, when it has all three.
+async fn food_categories(db: &mut PgConnection, warnings: &mut Vec<String>) -> Result<Option<[Uuid; 3]>, ApiError> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' AND deleted_at IS NULL").fetch_all(&mut *db).await?;
+    let find = |names: &[&str]| rows.iter().find(|(_, n)| names.contains(&n.trim())).map(|(id, _)| *id);
+    let found = [find(&["صبحانه", "صبح"]), find(&["چاشت"]), find(&["شام", "شب"])];
+    match found {
+        [Some(a), Some(b), Some(c)] => Ok(Some([a, b, c])),
+        [None, None, None] => Ok(None),
+        _ => {
+            warnings.push("برای جدا کردن ماکولات، سه سطر مصرف «صبحانه»، «چاشت» و «شام» (یا «شب») لازم است؛ ماکولات یک‌جا ماند.".into());
+            Ok(None)
+        }
+    }
+}
+
+/// A day's meals cell split into breakfast, lunch and dinner: «20صبحانه+چاشت60+ 40شام»,
+/// each part one meal and its amount (before or after the word, any digits). None when a part
+/// is not a meal or has two numbers, or when the parts do not add up to the cell's amount.
+fn meals(text: &str, amount: f64) -> Option<[f64; 3]> {
+    let text: String = text
+        .chars()
+        .map(|c| match c {
+            '۰'..='۹' => char::from_digit(c as u32 - '۰' as u32, 10).unwrap_or(c),
+            '٠'..='٩' => char::from_digit(c as u32 - '٠' as u32, 10).unwrap_or(c),
+            _ => c,
+        })
+        .collect();
+    let mut out = [0.0; 3];
+    let mut any = false;
+    for part in text.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        let k = if part.contains("صب") || part.contains("صیح") {
+            0
+        } else if part.contains("چاش") {
+            1
+        } else if part.contains("شام") || part.contains("شب") || part.contains("شا") {
+            2
+        } else {
+            return None;
+        };
+        let numbers: Vec<f64> = part
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|n| !n.is_empty())
+            .map(|n| n.parse::<f64>())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        if numbers.len() > 1 {
+            return None;
+        }
+        out[k] += numbers.first().copied().unwrap_or(0.0);
+        any = true;
+    }
+    (any && (out.iter().sum::<f64>() - amount).abs() < 0.005).then_some(out)
+}
+
 async fn store_loans(db: &mut PgConnection, deposits: &[DepositRow], loans: &[LoanRow], warnings: &mut Vec<String>) -> Result<LoanReport, ApiError> {
     let mut out = LoanReport::default();
     for d in deposits {
@@ -2122,6 +2280,20 @@ async fn store_hotspot(
 mod tests {
     use super::*;
 
+    #[test]
+    fn meals_split() {
+        assert_eq!(meals("20صبحانه+چاشت80+ 10شام", 110.0), Some([20.0, 80.0, 10.0]));
+        assert_eq!(meals("صبحانه30+چاشت180+شب", 210.0), Some([30.0, 180.0, 0.0]));
+        assert_eq!(meals("30صبحانه+ چاشت120", 150.0), Some([30.0, 120.0, 0.0]));
+        assert_eq!(meals("صبجانه30+چاشت60+شب50", 140.0), Some([30.0, 60.0, 50.0]));
+        assert_eq!(meals("20صبحانه+چاشت200+ شا170", 390.0), Some([20.0, 200.0, 170.0]));
+        assert_eq!(meals("۲۰صبحانه+چاشت۶۰", 80.0), Some([20.0, 60.0, 0.0]));
+        // Does not add up, or has other things in it: left whole.
+        assert_eq!(meals("صبحانه80+چاشت60+شام", 130.0), None);
+        assert_eq!(meals("تانکر آب+ کرایه موتر60+چاشت 80", 310.0), None);
+        assert_eq!(meals("50صبحانه+چاشت 120+80انرژی", 250.0), None);
+    }
+
     fn person(no: i32, name: Option<&str>, row: usize) -> Member {
         Member {
             no,
@@ -2345,6 +2517,7 @@ mod tests {
         let r = store(&mut tx, &user, &p, "real", book).await.ok().expect("store");
         println!("loans: new cards {} back {}; new loans {} out {} back {}; no card {:?}", r.loans.deposits_new, r.loans.deposits_returned, r.loans.loans_new, r.loans.loans_out, r.loans.loans_returned, r.loans.no_card);
         println!("fees: exact {} counted {}; receipts {}", r.fees_exact, r.fees_counted, r.receipts);
+        println!("food: split {} whole {}; in app: expenses {} ({}), withdrawals {}", r.food_split, r.food_whole, r.expenses_in_app, r.expenses_in_app_amount, r.withdrawals_in_app);
         let rows: Vec<(String, Option<String>, Option<f64>, Option<String>, Option<String>, chrono::NaiveDate, Option<chrono::NaiveDate>)> = sqlx::query_as(
             "SELECT code, kind::text, amount::float8, deposit_book, guarantor, received_on, returned_on FROM loan_deposits WHERE deleted_at IS NULL ORDER BY returned_on IS NULL DESC, code",
         )

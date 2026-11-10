@@ -4,6 +4,7 @@ import { fa, formatDay, iso } from "../lib/solar";
 import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
 import { SolarDate } from "../components/SolarDate";
 import { BookWhere, Copies, onShelf } from "./BookStatus";
+import { RemoveButton } from "../components/RemoveButton";
 
 /**
  * Books read inside the hall for the day: the manager writes who took which book, and ticks
@@ -36,6 +37,10 @@ export function HallLoans({ findBorrower, pickBook }: {
   async function back(l: HallLoan) {
     try { await api.backInHall(l.id); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); }
   }
+  // Written by mistake: removed (the API allows it on the day; partners any day).
+  async function remove(l: HallLoan) {
+    try { await api.deleteLoan(l.id); setTick((t) => t + 1); } catch (e) { setError(errorText(e)); }
+  }
   const out = rows?.filter((r) => !r.returned_on).length ?? 0;
 
   return (
@@ -62,9 +67,14 @@ export function HallLoans({ findBorrower, pickBook }: {
                 <td className="num"><bdi dir="ltr">{l.card_no ?? "—"}</bdi></td>
                 <td><bdi dir="ltr">{l.phone ?? "—"}</bdi></td>
                 <td>
-                  {l.returned_on
-                    ? <span className="days ok">✓ {l.returned_on === l.loaned_on ? "همان روز" : formatDay(l.returned_on)}</span>
-                    : <button className="btn small" onClick={() => void back(l)}>برگشت</button>}
+                  <div className="row-actions">
+                    {l.returned_on
+                      ? <span className="days ok">✓ {l.returned_on === l.loaned_on ? "همان روز" : formatDay(l.returned_on)}</span>
+                      : <>
+                        <button className="btn small" onClick={() => void back(l)}>برگشت</button>
+                        <RemoveButton onConfirm={() => void remove(l)} />
+                      </>}
+                  </div>
                 </td>
               </tr>
             ))}

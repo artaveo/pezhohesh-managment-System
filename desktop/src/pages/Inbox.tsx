@@ -189,7 +189,8 @@ function Preview({ row }: { row: Arrived }) {
         {pdf ? <span>PDF</span> : url ? <img src={url} alt="" /> : <span className="muted small">…</span>}
       </button>
       {open && url && (
-        <ImageViewer url={url} label="فایل رسیده" name={`file-${row.id.slice(0, 8)}`} pdf={pdf} onClose={() => setOpen(false)} />
+        <ImageViewer url={url} label="فایل رسیده" name={`file-${row.id.slice(0, 8)}`} pdf={pdf} onClose={() => setOpen(false)}
+          onCrop={async (b) => { await api.replaceInboxFile(row.id, b); setUrl(URL.createObjectURL(b)); setOpen(false); }} />
       )}
     </>
   );

@@ -73,7 +73,8 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
               <img className="member-photo" src={photo} alt="" />
             </button>
           )}
-          {photoOpen && photo && <ImageViewer url={photo} label={name} name={`member-${m.member_no}`} onClose={() => setPhotoOpen(false)} />}
+          {photoOpen && photo && <ImageViewer url={photo} label={name} name={`member-${m.member_no}`} onClose={() => setPhotoOpen(false)}
+            onCrop={async (b) => { await api.addDocument(id, "photo", b); setPhotoOpen(false); void load(); }} />}
           <div>
             <h2>{name}</h2>
             <p className="muted">

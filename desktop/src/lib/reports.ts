@@ -6,7 +6,7 @@ export type Sum = {
   /** Hand-made balance estimates of months whose detail was lost (1404). */
   estimated: number;
   income_by_category: Record<string, number>;
-  /** «موجودی از ماه قبل» typed for the months in range: cash carried in, not income. */
+  /** The till when the range starts (what the months before left), worked out by the API. */
   carried: number;
   /** Book guarantees held at the end of the range (money held for borrowers, not income). */
   deposits: { cash: number; books: number; people: number };
@@ -28,8 +28,10 @@ export async function loadRanges(ranges: Range[], categories: boolean, signal?: 
 export function total(rows: PeriodRow[]): Sum {
   const s: Sum = { income: 0, expenses: 0, estimated: 0, new_members: 0, carried: 0, deposits: { cash: 0, books: 0, people: 0 }, income_by_category: {}, expenses_by_category: {}, withdrawals_by_person: {} };
   let end = "";
+  let start = "";
   for (const p of rows) {
-    s.carried += p.carried ?? 0;
+    // The opening till is a stock, not a flow: the one at the first piece's start.
+    if (!start || p.from < start) { start = p.from; s.carried = p.carried ?? 0; }
     // Guarantees are a stock, not a flow: what was held when the last piece ended.
     if (p.to > end) { end = p.to; s.deposits = { cash: p.deposits_cash ?? 0, books: p.deposits_books ?? 0, people: p.deposits_people ?? 0 }; }
     s.income += p.income;

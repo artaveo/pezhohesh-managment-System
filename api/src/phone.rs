@@ -239,6 +239,29 @@ pub async fn file(State(s): State<AppState>, user: CurrentUser, Path(id): Path<U
     Ok((headers, bytes).into_response())
 }
 
+/// PUT /api/v1/inbox/:id/file: the desk cut the picture (cropped it) before putting it on the
+/// member's record; the cut one takes the place of what the phone sent.
+pub async fn replace_file(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, body: axum::body::Bytes) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind::text FROM document_inbox WHERE id = $1 AND status = 'pending' FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let kind = kind.ok_or(ApiError(StatusCode::NOT_FOUND, "not_found"))?;
+    let f = documents::store_upload(&kind, &body).await?;
+    sqlx::query("UPDATE document_inbox SET file_path = $2, sha256 = $3, mime_type = $4, size_bytes = $5 WHERE id = $1")
+        .bind(id)
+        .bind(&f.rel)
+        .bind(&f.sha)
+        .bind(f.mime)
+        .bind(f.size)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 pub struct Accept {
     member_id: Uuid,

@@ -198,6 +198,46 @@ pub async fn next_code(State(s): State<AppState>, user: CurrentUser, Query(k): Q
 }
 
 #[derive(Deserialize)]
+pub struct DepositEdit {
+    name: String,
+    father_name: Option<String>,
+    phone: Option<String>,
+    deposit_book: Option<String>,
+    guarantor: Option<String>,
+    note: Option<String>,
+}
+
+/// PUT /api/v1/deposits/:id: corrects who a guarantee card is for (a misspelt name, a new
+/// phone). The money and the card number stay as they were given.
+pub async fn update_deposit(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(d): Json<DepositEdit>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let name = d.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("name_required"));
+    }
+    let tidy = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query(
+        "UPDATE loan_deposits SET name = $2, father_name = $3, phone = $4, deposit_book = $5, guarantor = $6, note = $7 \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(tidy(&d.father_name))
+    .bind(tidy(&d.phone))
+    .bind(tidy(&d.deposit_book))
+    .bind(tidy(&d.guarantor))
+    .bind(tidy(&d.note))
+    .execute(&mut *tx)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
 pub struct DepositInput {
     kind: String,
     /// Default: the next card number of its kind. Typed when an old paper card is entered.

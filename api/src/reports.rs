@@ -26,7 +26,8 @@ pub struct Period {
     from: chrono::NaiveDate,
     to: chrono::NaiveDate,
     income: f64,
-    /// «موجودی از ماه قبل»: cash carried in from the month before; never income.
+    /// The till when the range starts (what earlier months left), worked out from the books;
+    /// never income.
     carried: f64,
     expenses: f64,
     /// Hand-made balance estimates of months whose detail was lost (counted as balance).
@@ -54,6 +55,13 @@ pub struct Periods {
     /// Expense categories in the statement's order (rent first, as in the Excel book).
     expense_order: Vec<String>,
 }
+
+/// The first day of the books the till is counted from (1 Hamal 1405), with nothing in it:
+/// there are no figures from before (1404 is only hand-made estimates).
+const TILL_START: chrono::NaiveDate = match chrono::NaiveDate::from_ymd_opt(2026, 3, 21) {
+    Some(d) => d,
+    None => panic!(),
+};
 
 #[derive(FromRow)]
 struct Totals {
@@ -99,8 +107,17 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         SELECT (b.n - 1)::int AS i,
             COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.income_category <> 'carryover'
                 AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS income,
-            COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.income_category = 'carryover'
-                AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= b.lo AND r.issued_on < b.hi), 0)::float8 AS carried,
+            -- The till at the range's start: everything from the first day of the books on,
+            -- income less expenses less the partners' withdrawals. Worked out every time, so
+            -- a corrected bill or a new import changes every later month too.
+            (COALESCE((SELECT sum(amount) FROM receipts r WHERE NOT r.voided AND r.deleted_at IS NULL AND r.income_category <> 'carryover'
+                AND r.department = 'hall' AND r.currency = 'AFN' AND r.issued_on >= $3 AND r.issued_on < b.lo), 0)
+             - COALESCE((SELECT sum(amount) FROM expenses e WHERE e.deleted_at IS NULL
+                AND e.department = 'hall' AND e.currency = 'AFN' AND e.spent_on >= $3 AND e.spent_on < b.lo), 0)
+             + COALESCE((SELECT sum(net_balance) FROM month_summaries ms WHERE ms.deleted_at IS NULL
+                AND ms.department = 'hall' AND ms.starts_on >= $3 AND ms.starts_on < b.lo), 0)
+             - COALESCE((SELECT sum(w.amount) FROM withdrawals w JOIN staff p ON p.id = w.staff_id WHERE w.deleted_at IS NULL
+                AND w.department = 'hall' AND w.currency = 'AFN' AND w.taken_on >= $3 AND w.taken_on < b.lo AND (p.title = 'شریک' OR EXISTS (SELECT 1 FROM app_users u WHERE u.staff_id = p.id AND u.role = 'partner'))), 0))::float8 AS carried,
             COALESCE((SELECT sum(amount) FROM expenses e WHERE e.deleted_at IS NULL
                 AND e.department = 'hall' AND e.currency = 'AFN' AND e.spent_on >= b.lo AND e.spent_on < b.hi), 0)::float8 AS expenses,
             COALESCE((SELECT sum(net_balance) FROM month_summaries ms WHERE ms.deleted_at IS NULL
@@ -115,6 +132,7 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     )
     .bind(&lo)
     .bind(&hi)
+    .bind(TILL_START)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -173,7 +191,7 @@ pub async fn periods(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         }
     }
     let expense_order: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM expense_categories WHERE department = 'hall' ORDER BY sort_order, name")
+        sqlx::query_scalar("SELECT name FROM expense_categories WHERE department = 'hall' AND deleted_at IS NULL ORDER BY sort_order, name")
             .fetch_all(&mut *tx)
             .await?;
 

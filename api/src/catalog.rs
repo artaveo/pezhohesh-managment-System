@@ -601,6 +601,20 @@ pub async fn update_section(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// DELETE /api/v1/catalog/sections/:id: a section made by mistake. Its books stay, with no
+/// section.
+pub async fn delete_section(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    sqlx::query("UPDATE books SET section_id = NULL WHERE section_id = $1").bind(id).execute(&mut *tx).await?;
+    let done = sqlx::query("UPDATE book_sections SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL").bind(id).execute(&mut *tx).await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Importing the book list
 

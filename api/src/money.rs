@@ -9,6 +9,8 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::auth::{begin_as, ApiError, CurrentUser};
+
+const NOT_FOUND: ApiError = ApiError(StatusCode::NOT_FOUND, "not_found");
 use crate::hall::typed_today;
 use crate::AppState;
 
@@ -185,7 +187,7 @@ pub struct Category {
 pub async fn categories(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Vec<Category>>, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
-    let rows = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' ORDER BY sort_order, name")
+    let rows = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' AND deleted_at IS NULL ORDER BY sort_order, name")
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -207,13 +209,78 @@ pub async fn create_category(State(s): State<AppState>, user: CurrentUser, Json(
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO expense_categories (id, department, name, sort_order) \
          VALUES (gen_random_uuid(), 'hall', $1, (SELECT COALESCE(max(sort_order), 0) + 1 FROM expense_categories WHERE department = 'hall')) \
-         ON CONFLICT (department, name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+         ON CONFLICT (department, name) DO UPDATE SET name = EXCLUDED.name, deleted_at = NULL RETURNING id",
     )
     .bind(name)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(Json(id))
+}
+
+/// PUT /api/v1/expense-categories/:id: a line's new name.
+pub async fn update_category(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(c): Json<CategoryInput>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let name = c.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("name_required"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM expense_categories WHERE department = 'hall' AND name = $1 AND id <> $2)")
+        .bind(name)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if taken {
+        return Err(ApiError(StatusCode::CONFLICT, "name_taken"));
+    }
+    let done = sqlx::query("UPDATE expense_categories SET name = $2 WHERE id = $1 AND deleted_at IS NULL").bind(id).bind(name).execute(&mut *tx).await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct RemoveCategory {
+    /// Where its expenses (and a salary charged to it) go; needed when it has any.
+    into: Option<Uuid>,
+}
+
+/// DELETE /api/v1/expense-categories/:id?into=: takes a line away. Its expenses move to
+/// `into` first, so no money disappears from the reports; a line with none just goes.
+pub async fn delete_category(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Query(q): Query<RemoveCategory>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let used: i64 = sqlx::query_scalar("SELECT count(*) FROM expenses WHERE category_id = $1 AND deleted_at IS NULL").bind(id).fetch_one(&mut *tx).await?;
+    if let Some(into) = q.into.filter(|i| *i != id) {
+        let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM expense_categories WHERE id = $1 AND department = 'hall' AND deleted_at IS NULL)")
+            .bind(into)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !ok {
+            return Err(NOT_FOUND);
+        }
+        sqlx::query("UPDATE expenses SET category_id = $2 WHERE category_id = $1").bind(id).bind(into).execute(&mut *tx).await?;
+        sqlx::query("UPDATE staff SET salary_category_id = $2 WHERE salary_category_id = $1").bind(id).bind(into).execute(&mut *tx).await?;
+    } else if used > 0 {
+        return Err(ApiError(StatusCode::CONFLICT, "category_in_use"));
+    } else {
+        sqlx::query("UPDATE staff SET salary_category_id = NULL WHERE salary_category_id = $1").bind(id).execute(&mut *tx).await?;
+    }
+    // The name is freed for a new line of that name.
+    let done = sqlx::query(
+        "UPDATE expense_categories SET deleted_at = now(), name = name || ' · حذف ' || left(id::text, 8) WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize, FromRow)]

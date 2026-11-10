@@ -6,18 +6,21 @@ import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
 import { SolarDate } from "../components/SolarDate";
 import { AmountInput } from "../components/AmountInput";
 
-/** The lines of «عواید متفرقه», as the monthly statement has them. */
+/**
+ * The lines of «عواید متفرقه», as the monthly statement has them: «misc» is the Excel book's
+ * «عواید متفرقه (انترنت خدمات)», so a month typed here and one imported land on one row.
+ * The month before's cash is not typed: the report works it out.
+ */
 const LINES = [
-  { id: "carryover", hint: "پول نقدی که از ماه قبل در صندوق ماند. عاید نیست؛ در گزارش «موجودی اول ماه» حساب می‌شود." },
-  { id: "net_services", hint: "پول انترنتی که برای خدمات (مثل فرستادن فورم یا ایمیل) گرفته شد." },
-  { id: "services", hint: "پول خدماتی مثل پرینت، کاپی و تایپ." },
+  { id: "misc", label: "عواید متفرقه (انترنت خدمات)", hint: "پول انترنتی که برای خدمات (مثل فرستادن فورم یا ایمیل) گرفته شد." },
+  { id: "services", label: "طلبات (عواید خدمات)", hint: "پول خدماتی مثل پرینت، کاپی و تایپ." },
 ] as const;
 type Line = (typeof LINES)[number]["id"];
-const CATEGORIES = LINES.map((l) => l.id).join(",");
+// net_services: a few days of v1.2.5 used its own line for internet services.
+const CATEGORIES = [...LINES.map((l) => l.id), "net_services"].join(",");
 
 /**
- * Money that is neither membership nor a card: the carry-over from last month, internet
- * services and other services. A day of this month or an earlier one can be given, so a
+ * Money that is neither membership nor a card: internet services and other services. A day of this month or an earlier one can be given, so a
  * past month is filled in too; the bill counts on that day.
  */
 export function OtherIncome() {
@@ -59,7 +62,7 @@ export function OtherIncome() {
   }
 
   const live = page?.rows.filter((b) => !b.voided) ?? [];
-  const sum = (c: Line) => live.filter((b) => b.income_category === c).reduce((t, b) => t + b.amount, 0);
+  const sum = (c: Line) => live.filter((b) => b.income_category === c || (c === "misc" && b.income_category === "net_services")).reduce((t, b) => t + b.amount, 0);
   const hint = LINES.find((l) => l.id === line)!.hint;
 
   return (
@@ -69,7 +72,7 @@ export function OtherIncome() {
         <div className="segmented sub" role="radiogroup" aria-label="بابت">
           {LINES.map((l) => (
             <button key={l.id} role="radio" aria-checked={line === l.id} className={line === l.id ? "on" : ""} onClick={() => setLine(l.id)}>
-              {CATEGORY_LABEL[l.id]}
+              {l.label}
             </button>
           ))}
         </div>
@@ -94,7 +97,7 @@ export function OtherIncome() {
         </div>
         <dl className="sum-line">
           {LINES.map((l) => (
-            <div key={l.id}><dt>{CATEGORY_LABEL[l.id]}</dt><dd className="num">{fa(sum(l.id))}</dd></div>
+            <div key={l.id}><dt>{l.label}</dt><dd className="num">{fa(sum(l.id))}</dd></div>
           ))}
         </dl>
         {page && !page.rows.length ? <p className="muted">در این مدت چیزی ثبت نشده.</p> : (

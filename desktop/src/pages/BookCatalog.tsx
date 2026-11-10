@@ -253,6 +253,12 @@ function Sections({ sections, onClose }: { sections: BookSection[]; onClose: (ch
     try { await api.updateBookSection(r.id, { code: r.code, name: r.name }); setChanged(true); } catch (err) { setError(errorText(err)); }
   }
 
+  // Its books stay in the list, with no section.
+  async function removeSection(id: string) {
+    setError("");
+    try { await api.deleteBookSection(id); setRows((r) => r.filter((x) => x.id !== id)); setChanged(true); } catch (err) { setError(errorText(err)); }
+  }
+
   const set = (i: number, k: "code" | "name", v: string) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
 
   return (
@@ -261,7 +267,7 @@ function Sections({ sections, onClose }: { sections: BookSection[]; onClose: (ch
       <p className="muted small">شمارهٔ بخش اول کد هر کتاب است (553-001). نام یا شماره را عوض کنید و از خانه بیرون بروید تا ذخیره شود.</p>
       <div className="table-wrap">
         <table className="table prices">
-          <thead><tr><th>شماره</th><th>نام بخش</th><th>کتاب‌ها</th></tr></thead>
+          <thead><tr><th>شماره</th><th>نام بخش</th><th>کتاب‌ها</th><th><span className="sr-only">کارها</span></th></tr></thead>
           <tbody>
             {rows.map((r, i) => {
               const s = sections.find((x) => x.id === r.id);
@@ -273,6 +279,7 @@ function Sections({ sections, onClose }: { sections: BookSection[]; onClose: (ch
                     {(shared.get(r.code) ?? 0) > 1 && <div className="muted small">شمارهٔ {r.code} برای بخش دیگری هم هست</div>}
                   </td>
                   <td className="num nowrap">{s ? `${fa(s.titles)} عنوان · ${fa(s.copies)} جلد` : "تازه"}</td>
+                  <td><RemoveButton onConfirm={() => void removeSection(r.id)} /></td>
                 </tr>
               );
             })}

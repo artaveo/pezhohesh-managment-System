@@ -68,7 +68,7 @@ export function MonthView() {
         <Kpi hero icon="wallet" label={`درآمد ماه ${name}`} value={cur.income} unit="؋" compare={[{ prev: prev.income, vs: vsPrev }, { prev: last.income, vs: vsLast }]} />
         <Kpi icon="receipt" label={`مصارف ماه ${name}`} value={cur.expenses} unit="؋" upIsGood={false} compare={[{ prev: prev.expenses, vs: vsPrev }, { prev: last.expenses, vs: vsLast }]} />
         <Kpi icon="chart" label={`سود خالص ماه ${name}`} value={net(cur)} unit="؋" compare={[{ prev: net(prev), vs: vsPrev }, { prev: net(last), vs: vsLast }]} />
-        {canShares && <Kpi icon="banknote" label={`موجودی ماه ${name}`} value={inTill(cur)} unit="؋" note="سود خالص منهای برداشت ناصری و رحیمی" />}
+        {canShares && <Kpi icon="banknote" label={`موجودی ماه ${name}`} value={inTill(cur)} unit="؋" note="از ماه قبل + سود خالص − برداشت شرکا" />}
         <Kpi icon="plus" label={`ثبت‌نام جدید ${name}`} value={cur.new_members} unit="نفر" compare={[{ prev: prev.new_members, vs: vsPrev }, { prev: last.new_members, vs: vsLast }]} />
       </section>
 

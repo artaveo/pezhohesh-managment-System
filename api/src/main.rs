@@ -314,6 +314,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/plans", get(money::plans).post(money::create_plan))
         .route("/api/v1/plans/:id", put(money::update_plan))
         .route("/api/v1/expense-categories", get(money::categories).post(money::create_category))
+        .route("/api/v1/expense-categories/:id", put(money::update_category).delete(money::delete_category))
         .route("/api/v1/expenses", get(money::expenses).post(money::create_expense))
         .route("/api/v1/expenses/:id", put(money::update_expense).delete(money::delete_expense))
         .route("/api/v1/expenses/:id/restore", post(money::restore_expense))
@@ -328,7 +329,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/catalog/books", post(catalog::create_book))
         .route("/api/v1/catalog/books/:id", put(catalog::update_book).delete(catalog::delete_book))
         .route("/api/v1/catalog/sections", post(catalog::create_section))
-        .route("/api/v1/catalog/sections/:id", put(catalog::update_section))
+        .route("/api/v1/catalog/sections/:id", put(catalog::update_section).delete(catalog::delete_section))
         .route(
             "/api/v1/catalog/import",
             post(catalog::import).layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024)),
@@ -338,7 +339,7 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/borrowers", get(books::borrowers))
         .route("/api/v1/deposits", get(books::deposits).post(books::create_deposit))
         .route("/api/v1/deposits/next-code", get(books::next_code))
-        .route("/api/v1/deposits/:id", delete(books::delete_deposit))
+        .route("/api/v1/deposits/:id", put(books::update_deposit).delete(books::delete_deposit))
         .route("/api/v1/deposits/:id/return", post(books::return_deposit))
         .route("/api/v1/book-loans", post(books::lend))
         .route("/api/v1/book-loans/:id", get(books::loan).delete(books::delete_loan))
@@ -363,7 +364,10 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/loans", get(lists::loans))
         .route("/api/v1/inbox", get(phone::inbox))
         .route("/api/v1/inbox/count", get(phone::count))
-        .route("/api/v1/inbox/:id/file", get(phone::file))
+        .route(
+            "/api/v1/inbox/:id/file",
+            get(phone::file).put(phone::replace_file).layer(axum::extract::DefaultBodyLimit::max(documents::MAX_BYTES + 1024)),
+        )
         .route("/api/v1/inbox/:id/accept", post(phone::accept))
         .route("/api/v1/inbox/:id/reject", post(phone::reject))
         .route("/api/v1/phone-upload", get(phone::status).put(phone::set_status))

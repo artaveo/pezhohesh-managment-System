@@ -18,9 +18,9 @@ export const PARTNERS = [
 export const partnersTaken = (s: Sum) => PARTNERS.reduce((t, p) => t + (s.withdrawals_by_person[p.name] ?? 0), 0);
 
 /**
- * موجودی: what should be in the till: the cash carried in from the month before, plus the
- * balance, less the partners' withdrawals. (The carry-over is not income, so it is added
- * here and nowhere else.)
+ * موجودی: what should be in the till at the end: what the months before left (worked out
+ * from the books since 1 Hamal 1405), plus this period's balance, less the partners'
+ * withdrawals. The carry-over is not income, so it is added here and nowhere else.
  */
 export const inTill = (s: Sum) => s.carried + balance(s) - partnersTaken(s);
 

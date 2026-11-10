@@ -203,7 +203,7 @@ export type Dashboard = {
 export type PeriodRow = {
   from: string; to: string;
   income: number; expenses: number; estimated: number; new_members: number;
-  /** «موجودی از ماه قبل»: cash carried in, never income. */
+  /** The till when the range starts (what the months before left); never income. */
   carried: number;
   /** Book guarantees held at the range's end (money held, not income). */
   deposits_cash: number; deposits_books: number; deposits_people: number;
@@ -224,6 +224,10 @@ export type ImportReport = {
   in_app: number; in_app_amount: number;
   /** Money lines (bills, expenses, withdrawals): only what changed is written. */
   rows_kept: number; rows_removed: number; rows_added: number;
+  /** Meals cells split into breakfast/lunch/dinner, and those left whole. */
+  food_split: number; food_whole: number;
+  /** Expense and withdrawal lines the app already had (typed there): the book's left out. */
+  expenses_in_app: number; expenses_in_app_amount: number; withdrawals_in_app: number;
   /** Fee cells that got a day from a period (the device's dates), or one counted back from it. */
   fees_exact: number; fees_counted: number;
   /** What the book's two loan sheets added. */
@@ -642,6 +646,7 @@ export const api = {
   addDocument: (member: string, kind: DocKind, file: Blob) =>
     request<{ id: string }>(`/members/${member}/documents/${kind}`, { method: "POST", file }),
   /** The file itself (a photo or a scan); the page shows it through an object URL. */
+  replaceInboxFile: (id: string, file: Blob) => request<void>(`/inbox/${id}/file`, { method: "PUT", file }),
   documentFile: (id: string) => request<Blob>(`/documents/${id}`, { blob: true }),
   deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: "DELETE" }),
   /** The small copy of a photo that goes to the server. */
@@ -708,6 +713,10 @@ export const api = {
   updatePlan: (id: string, p: Omit<Plan, "id">) => request<void>(`/plans/${id}`, { method: "PUT", body: p }),
   categories: () => request<Category[]>("/expense-categories"),
   createCategory: (name: string) => request<string>("/expense-categories", { method: "POST", body: { name } }),
+  renameCategory: (id: string, name: string) => request<void>(`/expense-categories/${id}`, { method: "PUT", body: { name } }),
+  /** `into`: where its expenses move; needed when it has any. */
+  deleteCategory: (id: string, into?: string) => request<void>(`/expense-categories/${id}?${query({ into })}`, { method: "DELETE" }),
+  deleteBookSection: (id: string) => request<void>(`/catalog/sections/${id}`, { method: "DELETE" }),
   expenses: (r: Range & { offset?: number }, signal?: AbortSignal) => request<Lines<Expense>>(`/expenses?${query(r)}`, { signal }),
   createExpense: (e: ExpenseInput) => request<string>("/expenses", { method: "POST", body: e }),
   updateExpense: (id: string, e: ExpenseInput) => request<void>(`/expenses/${id}`, { method: "PUT", body: e }),
@@ -756,6 +765,8 @@ export const api = {
   createDeposit: (d: DepositInput) => request<{ id: string; code: string }>("/deposits", { method: "POST", body: d }),
   returnDeposit: (id: string, returned_on?: string) => request<void>(`/deposits/${id}/return`, { method: "POST", body: { returned_on } }),
   deleteDeposit: (id: string) => request<void>(`/deposits/${id}`, { method: "DELETE" }),
+  updateDeposit: (id: string, d: { name: string; father_name: string | null; phone: string | null; deposit_book: string | null; guarantor: string | null; note: string | null }) =>
+    request<void>(`/deposits/${id}`, { method: "PUT", body: d }),
   lend: (l: LoanInput) => request<string>("/book-loans", { method: "POST", body: l }),
   loan: (id: string, on?: string, signal?: AbortSignal) => request<Loan>(`/book-loans/${id}?${query({ on })}`, { signal }),
   returnLoan: (id: string, b: { returned_on?: string; fee: number; fine: number; paid?: number }) =>
@@ -878,6 +889,8 @@ export function errorText(e: unknown): string {
     case "remove_today_only": return "مدیر فقط چیزی را که امروز ثبت شده می‌تواند پاک کند.";
     case "void_the_bill": return "این دوره بل دارد؛ اول بل آن را باطل کنید.";
     case "member_has_open_loans": return "این عضو هنوز کتاب یا ضمانتی نزد کتابخانه دارد؛ اول آن را برگشت بزنید، بعد عضو را حذف کنید.";
+    case "name_taken": return "سطری به همین نام هست.";
+    case "category_in_use": return "این سطر مصرف دارد؛ اول بگویید مصرف‌هایش به کدام سطر برود.";
     case "has_account": return "این شخص حساب ورود به برنامه دارد؛ اول حسابش را در «کاربران» بردارید.";
     case "not_enough_copies": return "این تعداد جلد روی قفسه نیست.";
     case "void_the_bill": return "برای این باقی پول گرفته شده؛ اول بل آن را باطل کنید.";

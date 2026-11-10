@@ -61,7 +61,8 @@ export function Documents({ memberId, docs, onChange }: { memberId: string; docs
         <CameraCapture portrait={camera === "photo"} onClose={() => setCamera(null)}
           onTaken={(b) => { const k = camera; setCamera(null); void add(k, b); }} />
       )}
-      {view && <Viewer doc={view} label={SLOTS.find((s) => s.kind === view.kind)?.label ?? "عکس"} onClose={() => setView(null)} />}
+      {view && <Viewer doc={view} label={SLOTS.find((s) => s.kind === view.kind)?.label ?? "عکس"} onClose={() => setView(null)}
+        onCrop={async (b) => { await api.addDocument(memberId, view.kind, b); setView(null); onChange(); }} />}
     </section>
   );
 }
@@ -94,10 +95,10 @@ function Slot({ label, doc, busy, pdf, onFile, onCamera, onView, onRemove }: {
   );
 }
 
-function Viewer({ doc, label, onClose }: { doc: MemberDocument; label: string; onClose: () => void }) {
+function Viewer({ doc, label, onClose, onCrop }: { doc: MemberDocument; label: string; onClose: () => void; onCrop: (b: Blob) => Promise<void> }) {
   const { url, failed } = useDocumentUrl(doc.id);
   return (
     <ImageViewer url={url} label={label} name={`${doc.kind}-${doc.created_at.slice(0, 10)}`} pdf={doc.mime_type === "application/pdf"}
-      failed={failed ? errorText(new ApiError(404, "file_missing")) : undefined} onClose={onClose} />
+      failed={failed ? errorText(new ApiError(404, "file_missing")) : undefined} onClose={onClose} onCrop={onCrop} />
   );
 }

@@ -106,7 +106,7 @@ function MonthReport({ ms, canShares, printing, onPrinted }: { ms: Date; canShar
         <Kpi hero icon="wallet" label={`درآمد ${title}`} value={data.cur.income} unit="؋" compare={ahead ? undefined : vs(data.prev.income, `نسبت به ${monthName(pm)}`)} />
         <Kpi icon="receipt" label="مصارف" value={data.cur.expenses} unit="؋" upIsGood={false} compare={ahead ? undefined : vs(data.prev.expenses, `نسبت به ${monthName(pm)}`)} />
         <Kpi icon="chart" label="سود خالص" value={balance(data.cur)} unit="؋" compare={ahead ? undefined : vs(balance(data.prev), `نسبت به ${monthName(pm)}`)} />
-        {canShares && <Kpi icon="banknote" label="موجودی" value={inTill(data.cur)} unit="؋" note={data.cur.carried ? "از ماه قبل + سود خالص − برداشت شرکا" : "سود خالص منهای برداشت ناصری و رحیمی"} />}
+        {canShares && <Kpi icon="banknote" label="موجودی" value={inTill(data.cur)} unit="؋" note={`از ماه قبل ${fa(data.cur.carried)} + سود خالص − برداشت شرکا`} />}
         {data.owed
           ? <Kpi icon="card" label="باقی‌ها (امروز)" value={data.owed.sum} unit="؋" note={`${fa(data.owed.n)} قلم از ${fa(data.owed.people)} نفر`} />
           : <Kpi icon="card" label="باقی‌ها (امروز)" value={NaN} unit="" note={<button className="link" onClick={retry}>خوانده نشد؛ دوباره</button>} />}
@@ -164,8 +164,8 @@ function MonthSheet({ title, current, cur, prev, last, prevLabel, lastLabel, exp
             {canShares && section("سهم شرکا")}
             {canShares && PARTNERS.map((p) => row(`سهمیه ${p.short}`, (s) => shares(s).find((x) => x.name === p.name)!.share))}
             {canShares && PARTNERS.map((p) => row(`برداشت ${p.short}`, (s) => s.withdrawals_by_person[p.name] ?? 0))}
-            {canShares && sums.some((s) => s.carried) && row("افزوده موجودی از ماه قبل", (s) => s.carried)}
-            {canShares && row(sums.some((s) => s.carried) ? "موجودی (از ماه قبل + سود خالص − برداشت‌ها)" : "موجودی (سود خالص منهای برداشت‌ها)", inTill, "net")}
+            {canShares && row("موجودی از ماه قبل", (s) => s.carried)}
+            {canShares && row("موجودی آخر ماه (از ماه قبل + سود خالص − برداشت‌ها)", inTill, "net")}
           </tbody>
         </table>
       </div>

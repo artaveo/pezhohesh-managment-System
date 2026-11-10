@@ -146,7 +146,7 @@ pub async fn list(State(s): State<AppState>, user: CurrentUser, Query(p): Query<
     // Paid: the lines of the person's statement line (from the Excel book or typed since),
     // and any withdrawal written under their name, from their first salary month on.
     let paid: Vec<Payment> = sqlx::query_as(PAID).bind(&ids).fetch_all(&mut *tx).await?;
-    let categories = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' ORDER BY sort_order, name")
+    let categories = sqlx::query_as("SELECT id, name FROM expense_categories WHERE department = 'hall' AND deleted_at IS NULL ORDER BY sort_order, name")
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;

@@ -837,7 +837,8 @@ pub async fn issue_on(
 
 /// Income lines a desk bill may be for (the same names as the year statement).
 /// Hotspot cards are not here: their count moves stock (hotspot.rs).
-const OTHER_INCOME: [&str; 5] = ["misc", "services", "books", "carryover", "net_services"];
+// «carryover» (the month before's cash) is no longer typed: reports work it out (reports.rs).
+const OTHER_INCOME: [&str; 4] = ["misc", "services", "books", "net_services"];
 
 #[derive(Deserialize)]
 pub struct OtherBill {

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type Category, type Expense, type Lines, type Person, type Section, type Withdrawal } from "../lib/api";
+import { api, ApiError, errorText, type Category, type Expense, type Lines, type Person, type Section, type Withdrawal } from "../lib/api";
 import { fa, formatDay, iso } from "../lib/solar";
 import { SolarDate } from "../components/SolarDate";
 import { AmountInput } from "../components/AmountInput";
 import { DeleteDialog } from "../components/DeleteDialog";
+import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { Icon } from "../components/Icon";
 import { PeriodPicker, initialPeriod, rangeOf, usePeriod, type Range } from "../components/PeriodPicker";
@@ -255,6 +256,7 @@ function Expenses({ period }: { period: Period }) {
     setNewCat("");
     setDay(iso(new Date()));
   }
+  const [managing, setManaging] = useState(false);
   function edit(e: Expense) {
     setEditing(e);
     setCat(e.category_id);
@@ -299,6 +301,8 @@ function Expenses({ period }: { period: Period }) {
             </select>
           </label>
           {cat === "new" && <label className="field wide"><span>نام سطر تازه</span><input value={newCat} onChange={(e) => setNewCat(e.target.value)} /></label>}
+          <div className="field-aside"><button type="button" className="link" onClick={() => setManaging(true)}>اصلاح یا حذف سطرها</button></div>
+          {managing && <ExpenseLines cats={cats} onClose={(changed) => { setManaging(false); if (changed) reload(); }} />}
           <SolarDate label="تاریخ" value={day} onChange={setDay} />
           <AmountInput label="مبلغ (افغانی)" required value={amount} onChange={setAmount} />
           <label className="field wide span-2"><span>شرح</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: خرید چای و بوره" /></label>
@@ -493,5 +497,69 @@ function Withdrawals({ period, people, staffId, form, title }: { period: Period;
         </DeleteDialog>
       )}
     </>
+  );
+}
+
+/**
+ * The statement's expense lines: rename one typed wrong, or take one away. A line that has
+ * expenses gives them to another line first, so no money leaves the reports.
+ */
+function ExpenseLines({ cats, onClose }: { cats: { id: string; name: string }[]; onClose: (changed: boolean) => void }) {
+  const [rows, setRows] = useState(cats);
+  const [changed, setChanged] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [into, setInto] = useState("");
+  const [inUse, setInUse] = useState(false);
+  const [error, setError] = useState("");
+  async function rename(id: string, name: string) {
+    const was = cats.find((c) => c.id === id)?.name;
+    if (!name.trim() || name.trim() === was) return;
+    setError("");
+    try { await api.renameCategory(id, name.trim()); setChanged(true); } catch (e) { setError(errorText(e)); }
+  }
+  async function remove(id: string) {
+    setError("");
+    try {
+      await api.deleteCategory(id, into || undefined);
+      setRows((r) => r.filter((c) => c.id !== id));
+      setRemoving(null);
+      setInto("");
+      setInUse(false);
+      setChanged(true);
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "category_in_use") setInUse(true);
+      else setError(errorText(e));
+    }
+  }
+  return (
+    <Modal label="سطرهای مصرف" onClose={() => onClose(changed)}>
+      <h2>سطرهای مصرف</h2>
+      <p className="muted small">نام را عوض کنید و از خانه بیرون بروید تا ذخیره شود.</p>
+      <ul className="line-list">
+        {rows.map((c) => (
+          <li key={c.id}>
+            <input aria-label="نام سطر" value={c.name} onChange={(e) => setRows((r) => r.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)))}
+              onBlur={(e) => void rename(c.id, e.target.value)} />
+            {removing === c.id ? (
+              <div className="line-remove">
+                {inUse && (
+                  <label className="field">
+                    <span>مصرف‌هایش برود به</span>
+                    <select value={into} onChange={(e) => setInto(e.target.value)}>
+                      <option value="">انتخاب سطر…</option>
+                      {rows.filter((x) => x.id !== c.id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                    </select>
+                  </label>
+                )}
+                <button className="btn small danger" disabled={inUse && !into} onClick={() => void remove(c.id)}>حذف شود</button>
+                <button className="btn small ghost" onClick={() => { setRemoving(null); setInUse(false); setInto(""); }}>نه</button>
+              </div>
+            ) : <button className="btn small ghost" onClick={() => { setRemoving(c.id); setInUse(false); setInto(""); }}><Icon name="trash" /> حذف</button>}
+          </li>
+        ))}
+      </ul>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions"><button className="btn ghost" onClick={() => onClose(changed)}>بستن</button></div>
+    </Modal>
   );
 }

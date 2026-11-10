@@ -350,6 +350,7 @@ function Deposits({ lendTo }: { lendTo: (b: Borrower) => void }) {
   const [page, setPage] = useState<DepositPage | null>(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
+  const [editing, setEditing] = useState<Deposit | null>(null);
   useEffect(() => {
     const ctl = new AbortController();
     const t = window.setTimeout(() => {
@@ -397,6 +398,7 @@ function Deposits({ lendTo }: { lendTo: (b: Borrower) => void }) {
                     })}>امانت دادن</button>
                   )}
                   {!d.returned_on && d.open_loans === 0 && <GiveBack onConfirm={() => void act(() => api.returnDeposit(d.id))} />}
+                  <button className="btn small ghost" onClick={() => setEditing(d)}><Icon name="edit" /> اصلاح</button>
                   {d.removable && d.open_loans === 0 && !d.returned_on && <RemoveButton onConfirm={() => void act(() => api.deleteDeposit(d.id))} />}
                 </div></td>
               </tr>
@@ -406,7 +408,46 @@ function Deposits({ lendTo }: { lendTo: (b: Borrower) => void }) {
         {page && !page.rows.length && <p className="muted empty">{q ? "چیزی پیدا نشد." : "ضمانتی نزد ما نیست."}</p>}
         {!page && !error && <p className="muted empty">در حال بارگذاری…</p>}
       </div>
+      {editing && <EditDeposit d={editing} onClose={(saved) => { setEditing(null); if (saved) setTick((t) => t + 1); }} />}
     </>
+  );
+}
+
+/** Corrects who a card is for: name, father, phone, what was left. The card number and money stay. */
+function EditDeposit({ d, onClose }: { d: Deposit; onClose: (saved: boolean) => void }) {
+  const [f, setF] = useState({ name: d.name, father_name: d.father_name ?? "", phone: d.phone ?? "", deposit_book: d.deposit_book ?? "", guarantor: d.guarantor ?? "", note: d.note ?? "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+  const orNull = (v: string) => v.trim() || null;
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.updateDeposit(d.id, { name: f.name, father_name: orNull(f.father_name), phone: orNull(f.phone), deposit_book: orNull(f.deposit_book), guarantor: orNull(f.guarantor), note: orNull(f.note) });
+      onClose(true);
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal label={`اصلاح کارت ${d.code}`} onClose={() => onClose(false)}>
+      <h2>اصلاح کارت <bdi dir="ltr">{d.code}</bdi></h2>
+      <div className="form-grid">
+        <label className="field wide"><span>نام *</span><input value={f.name} onChange={set("name")} autoFocus /></label>
+        <label className="field wide"><span>نام پدر</span><input value={f.father_name} onChange={set("father_name")} /></label>
+        <label className="field wide"><span>شماره تماس</span><input dir="ltr" inputMode="tel" value={f.phone} onChange={set("phone")} /></label>
+        {d.kind === "book" && <label className="field wide"><span>کتاب ضمانت</span><input value={f.deposit_book} onChange={set("deposit_book")} /></label>}
+        {d.kind === "person" && <label className="field wide"><span>ضامن</span><input value={f.guarantor} onChange={set("guarantor")} /></label>}
+        <label className="field wide span-2"><span>یادداشت</span><input value={f.note} onChange={set("note")} /></label>
+      </div>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" disabled={!f.name.trim() || busy} onClick={() => void save()}>ذخیره</button>
+        <button className="btn ghost" onClick={() => onClose(false)}>انصراف</button>
+      </div>
+    </Modal>
   );
 }
 

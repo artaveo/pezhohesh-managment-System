@@ -995,3 +995,31 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 /* A bill drawn off screen at its real size while it is made into a PDF. */
 .pdf-stage { position: fixed; left: -10000px; top: 0; width: 148mm; background: #fff; pointer-events: none; }
 .pdf-stage .bill-sheet { box-shadow: none; border-radius: 0; }
+
+/* Expense lines: rename in place, remove with a destination for their expenses. */
+.field-aside { display: flex; align-items: end; padding-bottom: 8px; }
+.line-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow: auto; }
+.line-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.line-list li > input { flex: 1; min-width: 160px; }
+.line-remove { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+
+/* Cropping a picture: the box keeps its part bright and dims the rest. */
+.cropper { flex: 1; min-height: 0; display: flex; flex-direction: column; touch-action: none; user-select: none; }
+.cropper-stage { flex: 1; min-height: 0; position: relative; }
+.cropper-frame { position: absolute; inset: 0 16px 8px; margin: auto; width: fit-content; height: fit-content; max-width: calc(100% - 32px); max-height: calc(100% - 8px); }
+.cropper-frame img { display: block; max-width: calc(100vw - 32px); max-height: calc(100vh - 150px); object-fit: contain; }
+.crop-box { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); outline: 2px solid #fff; cursor: move; touch-action: none; }
+.crop-box::before, .crop-box::after { content: ""; position: absolute; inset: 33.3% 0; border-block: 1px solid rgba(255,255,255,.35); pointer-events: none; }
+.crop-box::after { inset: 0 33.3%; border-block: 0; border-inline: 1px solid rgba(255,255,255,.35); }
+.crop-grip { position: absolute; width: 22px; height: 22px; background: #fff; border-radius: 4px; touch-action: none; }
+.crop-grip.g-nw { left: -11px; top: -11px; cursor: nwse-resize; }
+.crop-grip.g-ne { right: -11px; top: -11px; cursor: nesw-resize; }
+.crop-grip.g-sw { left: -11px; bottom: -11px; cursor: nesw-resize; }
+.crop-grip.g-se { right: -11px; bottom: -11px; cursor: nwse-resize; }
+.crop-grip.g-n, .crop-grip.g-s { left: calc(50% - 14px); width: 28px; height: 8px; cursor: ns-resize; }
+.crop-grip.g-n { top: -4px; } .crop-grip.g-s { bottom: -4px; }
+.crop-grip.g-e, .crop-grip.g-w { top: calc(50% - 14px); width: 8px; height: 28px; cursor: ew-resize; }
+.crop-grip.g-e { right: -4px; } .crop-grip.g-w { left: -4px; }
+.cropper-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; color: #f2f4f0; }
+.cropper-bar .muted { color: #c9d0c3; }
+.lightbox-tools .btn:not(.ghost) { color: #fff; }

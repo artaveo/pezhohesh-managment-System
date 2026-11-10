@@ -36,6 +36,20 @@
   .error { color: var(--bad); font-weight: 600; margin-top: 10px; }
   .done { text-align: center; padding: 30px 10px; }
   .done .big { font-size: 3rem; color: var(--accent); }
+  .slot .thumb { cursor: pointer; }
+  /* Cropping: the picture fills the screen, the box keeps its part bright. */
+  .crop { position: fixed; inset: 0; z-index: 10; background: #0b0e09; display: flex; flex-direction: column; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .crop .stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 18px; }
+  .crop .frame { position: relative; line-height: 0; }
+  .crop .frame img { max-width: calc(100vw - 36px); max-height: calc(100vh - 160px); display: block; }
+  .crop .box { position: absolute; box-shadow: 0 0 0 9999px rgba(0,0,0,.6); outline: 2px solid #fff; touch-action: none; }
+  .crop .g { position: absolute; width: 28px; height: 28px; background: #fff; border-radius: 6px; touch-action: none; }
+  .crop .nw { left: -14px; top: -14px; } .crop .ne { right: -14px; top: -14px; }
+  .crop .sw { left: -14px; bottom: -14px; } .crop .se { right: -14px; bottom: -14px; }
+  .crop .bar { display: flex; gap: 8px; padding: 12px 16px 18px; color: #eef2ea; align-items: center; flex-wrap: wrap; }
+  .crop .bar p { width: 100%; margin: 0 0 4px; font-size: .9rem; color: #c3cbbd; }
+  .crop .bar button { flex: 1; font: inherit; font-weight: 700; padding: 12px; border-radius: 10px; border: 1px solid #5d6b52; background: transparent; color: #eef2ea; }
+  .crop .bar button.ok { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -133,6 +147,72 @@
       });
     }).catch(function () { return file; });
   }
+  // Cutting the picture down to what matters: drag the box or its corners. «چرخاندن» turns it
+  // a quarter; «همه» keeps the whole picture. Resolves with the picture to send.
+  function crop(file) {
+    if (file.type.indexOf("image/") !== 0) return Promise.resolve(file);
+    return new Promise(function (resolve) {
+      var src = file, url = null, rect = null, drag = null;
+      var o = document.createElement("div");
+      o.className = "crop";
+      o.innerHTML = '<div class="stage"><div class="frame"><img alt=""><div class="box"><span class="g nw"></span><span class="g ne"></span><span class="g sw"></span><span class="g se"></span></div></div></div>' +
+        '<div class="bar"><p>گوشه‌های کادر را بکشید تا فقط همان قسمت بماند.</p><button type="button" data-a="rot">چرخاندن</button><button type="button" data-a="all">همه</button><button type="button" class="ok" data-a="ok">تأیید</button></div>';
+      document.body.appendChild(o);
+      var img = o.querySelector("img"), box = o.querySelector(".box");
+      function place() { box.style.left = rect.x + "px"; box.style.top = rect.y + "px"; box.style.width = rect.w + "px"; box.style.height = rect.h + "px"; }
+      function load(b) {
+        if (url) URL.revokeObjectURL(url);
+        url = URL.createObjectURL(b);
+        img.onload = function () { rect = { x: 0, y: 0, w: img.clientWidth, h: img.clientHeight }; place(); };
+        img.src = url;
+      }
+      load(src);
+      box.addEventListener("pointerdown", function (e) {
+        if (!rect) return;
+        e.preventDefault(); e.stopPropagation();
+        var t = e.target;
+        drag = { g: t.classList.contains("g") ? t.classList[1] : "move", x: e.clientX, y: e.clientY, r: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } };
+      });
+      o.addEventListener("pointermove", function (e) {
+        if (!drag) return;
+        var W = img.clientWidth, H = img.clientHeight, dx = e.clientX - drag.x, dy = e.clientY - drag.y, s0 = drag.r;
+        var x = s0.x, y = s0.y, w = s0.w, h = s0.h, MIN = 40;
+        if (drag.g === "move") { x = Math.min(Math.max(0, x + dx), W - w); y = Math.min(Math.max(0, y + dy), H - h); }
+        else {
+          if (drag.g.indexOf("w") >= 0) { var nx = Math.min(Math.max(0, x + dx), x + w - MIN); w += x - nx; x = nx; }
+          if (drag.g.indexOf("e") >= 0) w = Math.min(Math.max(MIN, w + dx), W - x);
+          if (drag.g.indexOf("n") >= 0) { var ny = Math.min(Math.max(0, y + dy), y + h - MIN); h += y - ny; y = ny; }
+          if (drag.g.indexOf("s") >= 0) h = Math.min(Math.max(MIN, h + dy), H - y);
+        }
+        rect = { x: x, y: y, w: w, h: h }; place();
+      });
+      o.addEventListener("pointerup", function () { drag = null; });
+      o.addEventListener("pointercancel", function () { drag = null; });
+      function finish(b) { if (url) URL.revokeObjectURL(url); o.remove(); resolve(b); }
+      o.querySelector(".bar").addEventListener("click", function (e) {
+        var a = e.target.getAttribute && e.target.getAttribute("data-a");
+        if (a === "all") return finish(src);
+        if (a === "rot") {
+          var c = document.createElement("canvas"); c.width = img.naturalHeight; c.height = img.naturalWidth;
+          var ctx = c.getContext("2d"); ctx.translate(c.width, 0); ctx.rotate(Math.PI / 2); ctx.drawImage(img, 0, 0);
+          c.toBlob(function (b) { if (b) { src = b; load(b); } }, "image/jpeg", 0.9);
+          return;
+        }
+        if (a === "ok" && rect) {
+          var k = img.naturalWidth / img.clientWidth, cv = document.createElement("canvas");
+          cv.width = Math.max(1, Math.round(rect.w * k)); cv.height = Math.max(1, Math.round(rect.h * k));
+          var g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height);
+          g.drawImage(img, rect.x * k, rect.y * k, rect.w * k, rect.h * k, 0, 0, cv.width, cv.height);
+          cv.toBlob(function (b) {
+            if (b && b.type === "image/webp") return finish(b);
+            cv.toBlob(function (j) { finish(j || src); }, "image/jpeg", 0.85);
+          }, "image/webp", 0.82);
+        }
+      });
+    });
+  }
+  // The picture as chosen (before any cut), so tapping the thumbnail can cut it again.
+  var originals = {};
   // The phone's browser can drop this page while the camera app is open and load it fresh
   // on return. What was typed and picked is kept here so nothing has to be done twice.
   var KEEP = "pz-phone", keep = {};
@@ -156,7 +236,7 @@
     if (b.type.indexOf("image/") === 0) { thumb.innerHTML = ""; var im = document.createElement("img"); im.onload = function () { URL.revokeObjectURL(im.src); }; im.src = URL.createObjectURL(b); thumb.appendChild(im); }
     else thumb.textContent = "PDF";
     var state = slot.querySelector(".state");
-    state.className = "state ok"; state.textContent = "آماده · " + Math.max(1, Math.round(b.size / 1024)) + " KB";
+    state.className = "state ok"; state.textContent = "آماده · " + Math.max(1, Math.round(b.size / 1024)) + " KB" + (b.type === "application/pdf" ? "" : " · برای برش دوباره روی عکس بزنید");
   }
   Array.prototype.forEach.call(document.querySelectorAll(".slot"), function (slot) {
     var kind = slot.dataset.kind, state = slot.querySelector(".state");
@@ -165,6 +245,17 @@
       state.className = "state bad";
       state.textContent = "عکس دوربین نرسید. با دوربین خود گوشی عکس بگیرید و از «گالری» انتخاب کنید.";
     }
+    // Tapping the picture cuts it again (from the whole picture while it is still here).
+    slot.querySelector(".thumb").addEventListener("click", function () {
+      var b = originals[kind] || chosen[kind];
+      if (!b || b.type.indexOf("image/") !== 0) return;
+      crop(b).then(function (c) {
+        show(slot, c);
+        var rd = new FileReader();
+        rd.onload = function () { keep.files[kind] = rd.result; if (!remember()) { delete keep.files[kind]; remember(); } };
+        if (c.size < 2000000) rd.readAsDataURL(c);
+      });
+    });
     Array.prototype.forEach.call(slot.querySelectorAll("input"), function (input) {
       // Marked before the camera opens: if the page comes back empty, the slot says what happened.
       if (input.hasAttribute("data-camera")) {
@@ -177,6 +268,9 @@
         if (!f) return;
         state.className = "state muted"; state.textContent = "در حال آماده کردن…";
         shrink(f, Number(slot.dataset.side)).then(function (b) {
+          originals[kind] = b;
+          return crop(b);
+        }).then(function (b) {
           show(slot, b);
           input.value = "";
           var r = new FileReader();

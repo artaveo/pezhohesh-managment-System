@@ -50,12 +50,18 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - A bill counts on the day it was paid (`paid_on`, default today), not the period's start; only
   the later months of a multi-month payment count on their own start day.
 - The import skips a member's month cell when the app has a bill for that member, line and month.
-  Expenses, withdrawals and other income typed in both are still counted twice.
+  An expense or withdrawal typed in the app skips the book's line of the same kind, day and
+  amount; a day with meals typed in the app skips that day's book meals (split or whole).
+  Other income typed in both is still counted twice.
+- The book's meals cell («20صبحانه+چاشت60+شام80») is split into the expense lines «صبحانه»,
+  «چاشت», «شام»/«شب» (`meals()`), only when all three lines exist and the parts add up to the cell.
 - A re-import writes only what changed: one batch per year is reused, and money rows are compared
   by their content (`xl_rx` etc. in `import_excel.rs`); bulk work sets `pezhohesh.bulk` so
   `write_audit` skips it and writes one summary line. The audit log keeps only changed fields.
-- Category `carryover` («افزوده موجودی از ماه قبل») is cash carried in, never income or profit;
-  it is added only to «موجودی» (`inTill`). Book guarantees are shown apart, never as income.
+- «موجودی از ماه قبل» is never typed: `reports.rs` works out the till at a range's start from
+  `TILL_START` (1 Hamal 1405, empty): income − expenses + estimates − partners' withdrawals.
+  It is added only to «موجودی» (`inTill`). The old manual category `carryover` stays excluded from
+  income. Book guarantees are shown apart, never as income.
 - A debt («باقی», `debts.rs`) paid late gets a bill dated today (`billed_on`), but its money counts
   on the day it was owed (`issued_on`). Overdue home loans are debts too, settled by returning the book.
 
