@@ -1027,3 +1027,8 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 /* The finance report's «از تاریخ تا تاریخ»: two dates side by side in the toolbar. */
 .range-pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 .range-pick .field { min-width: 240px; margin: 0; }
+
+/* Hotspot card lists: one piece per card kind, so numbers and «GB» keep their order. */
+.card-list { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.card-piece { white-space: nowrap; unicode-bidi: isolate; }
+.bill-no { white-space: nowrap; }

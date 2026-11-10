@@ -52,7 +52,10 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - The import skips a member's month cell when the app has a bill for that member, line and month.
   An expense or withdrawal typed in the app skips the book's line of the same kind, day and
   amount; a day with meals typed in the app skips that day's book meals (split or whole).
-  Other income typed in both is still counted twice.
+  Other income: a dated cell skips an app bill of the same line, day and amount; a statement
+  month figure (books, «طلبات») loses the app's bills of that line in that month. Hotspot: the
+  sheet's day count loses the cards the app counted that day (per card size, profit with them);
+  a supplier bill is skipped when the app has the same bill number (or same day and cards).
 - The book's meals cell («20صبحانه+چاشت60+شام80») is split into the expense lines «صبحانه»,
   «چاشت», «شام»/«شب» (`meals()`), only when all three lines exist and the parts add up to the cell.
 - A re-import writes only what changed: one batch per year is reused, and money rows are compared

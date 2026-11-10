@@ -859,12 +859,19 @@ struct HotMonth {
     /// What went into the income: the statement's figure or the sheet's profit.
     income: f64,
     from_sheet: bool,
+    /// Of the sheet's counts, cards the app had counted itself, and their profit (not counted twice).
+    cards_in_app: i64,
+    profit_in_app: f64,
 }
 
 #[derive(Serialize, Default)]
 struct HotReport {
     buys: usize,
     counts: usize,
+    /// Supplier bills already typed in the app (same bill number, or same day and cards): left out.
+    buys_in_app: usize,
+    /// Days whose count had cards the app had counted already.
+    counts_in_app: usize,
     months: [HotMonth; 12],
 }
 
@@ -895,6 +902,9 @@ pub struct Report {
     expenses_in_app: usize,
     expenses_in_app_amount: f64,
     withdrawals_in_app: usize,
+    /// Other income (daily seats, «طلبات», book fees) the app has bills for: left out of the book's.
+    income_in_app: usize,
+    income_in_app_amount: f64,
     loans: LoanReport,
     expenses: usize,
     withdrawals: usize,
@@ -1386,8 +1396,60 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     let in_app = |e: &Entry| of_a_member(e).is_some_and(|m| has_bill.contains(&(m, e.key.to_string(), year, e.month)));
     let (in_app_count, in_app_amount) = entries.iter().filter(|e| in_app(e)).fold((0usize, 0.0f64), |(n, s), e| (n + 1, s + e.amount));
 
+    // Other income typed in the app as well (a desk bill, a daily seat, «طلبات», a book fee):
+    // the app's bill stands. A dated cell of the same line, day and amount is the same bill; a
+    // statement month figure (books, services) loses what the app has of that line in that month.
+    let (year_lo, year_hi) = (
+        solar::to_gregorian(year, 1, 1).expect("valid Solar date"),
+        solar::to_gregorian(year + 1, 1, 1).expect("valid Solar date"),
+    );
+    let app_rx: Vec<(String, NaiveDate, f64)> = sqlx::query_as(
+        "SELECT income_category::text, issued_on, amount::float8 FROM receipts \
+         WHERE import_batch_id IS NULL AND NOT voided AND deleted_at IS NULL AND department = 'hall' AND currency = 'AFN' \
+           AND income_category::text NOT IN ('monthly', 'internet', 'hotspot') AND issued_on >= $1 AND issued_on < $2",
+    )
+    .bind(year_lo)
+    .bind(year_hi)
+    .fetch_all(&mut *db)
+    .await?;
+    let mut rx_pool: HashMap<(String, NaiveDate, i64), usize> = HashMap::new();
+    let mut rx_month: HashMap<(String, u32), f64> = HashMap::new();
+    for (c, d, a) in &app_rx {
+        *rx_pool.entry((c.clone(), *d, cents(*a))).or_default() += 1;
+        *rx_month.entry((c.clone(), solar::month_day(*d).0)).or_default() += a;
+    }
+    let (mut income_in_app, mut income_in_app_amount) = (0usize, 0.0f64);
+
     // Income: one receipt per Excel cell. Imported receipts were never printed.
-    let income: Vec<_> = dated.iter().filter(|(e, _)| e.kind == Kind::Income && !in_app(e)).collect();
+    let income: Vec<(&Entry, NaiveDate, f64)> = dated
+        .iter()
+        .filter(|(e, _)| e.kind == Kind::Income && !in_app(e))
+        .filter_map(|&(e, d)| {
+            if matches!(e.key, "monthly" | "internet" | "hotspot") {
+                return Some((e, d, e.amount));
+            }
+            if LINES.iter().any(|l| l.key == e.key && l.from_statement) {
+                let Some(typed) = rx_month.get_mut(&(e.key.to_string(), e.month)).filter(|t| **t > 0.0) else {
+                    return Some((e, d, e.amount));
+                };
+                let taken = typed.min(e.amount);
+                *typed -= taken;
+                income_in_app += 1;
+                income_in_app_amount += taken;
+                let left = ((e.amount - taken) * 100.0).round() / 100.0;
+                return (left > 0.0).then_some((e, d, left));
+            }
+            match rx_pool.get_mut(&(e.key.to_string(), d, cents(e.amount))).filter(|n| **n > 0) {
+                Some(n) => {
+                    *n -= 1;
+                    income_in_app += 1;
+                    income_in_app_amount += e.amount;
+                    None
+                }
+                None => Some((e, d, e.amount)),
+            }
+        })
+        .collect();
     let short_run = run.simple().to_string();
     let short = &short_run[..6];
     // Each monthly or internet cell belongs to the member of its row (v_excel_months), when
@@ -1399,11 +1461,11 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         "INSERT INTO xl_rx SELECT * FROM unnest($1::text[], $2::date[], $3::numeric[], $4::text[], $5::text[], $6::uuid[])",
     )
     .bind(income.iter().enumerate().map(|(i, _)| format!("XL{year}-{short}-{:05}", i + 1)).collect::<Vec<_>>())
-    .bind(income.iter().map(|(_, d)| *d).collect::<Vec<_>>())
-    .bind(income.iter().map(|(e, _)| e.amount).collect::<Vec<f64>>())
-    .bind(income.iter().map(|(e, _)| e.key.to_string()).collect::<Vec<_>>())
-    .bind(income.iter().map(|(e, _)| note(e)).collect::<Vec<_>>())
-    .bind(income.iter().map(|(e, _)| e.person.and_then(|i| member_of[i])).collect::<Vec<Option<Uuid>>>())
+    .bind(income.iter().map(|(_, d, _)| *d).collect::<Vec<_>>())
+    .bind(income.iter().map(|(_, _, a)| *a).collect::<Vec<f64>>())
+    .bind(income.iter().map(|(e, _, _)| e.key.to_string()).collect::<Vec<_>>())
+    .bind(income.iter().map(|(e, _, _)| note(e)).collect::<Vec<_>>())
+    .bind(income.iter().map(|(e, _, _)| e.person.and_then(|i| member_of[i])).collect::<Vec<Option<Uuid>>>())
     .execute(&mut *db)
     .await?;
     let rx: (i64, i64, i64) = sqlx::query_as(
@@ -1673,6 +1735,8 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         expenses_in_app,
         expenses_in_app_amount,
         withdrawals_in_app,
+        income_in_app,
+        income_in_app_amount,
         loans,
         expenses: spent.len(),
         withdrawals: taken.len(),
@@ -2139,12 +2203,37 @@ async fn store_hotspot(
     let day = |m: u32, on: Option<NaiveDate>| on.unwrap_or_else(|| solar::to_gregorian(year, m, 1).expect("valid Solar date"));
     let tag = format!("(اکسل {year})");
 
+    // Supplier bills typed in the app: the sheet's same bill is left out. The same bill is the
+    // same bill number, or (without a number) the same day and the same cards.
+    let typed_buys: Vec<(NaiveDate, Option<String>, String)> = sqlx::query_as(
+        "SELECT h.purchased_on, nullif(trim(h.supplier_bill_no), ''), \
+                string_agg(p.volume_gb::float8 || 'x' || p.quantity, ' ' ORDER BY p.volume_gb) \
+         FROM hotspot_buys h JOIN hotspot_purchases p ON p.buy_id = h.id AND p.deleted_at IS NULL \
+         WHERE h.import_batch_id IS NULL AND h.deleted_at IS NULL GROUP BY h.id",
+    )
+    .fetch_all(&mut *db)
+    .await?;
+    let cards_key = |cards: &[(f64, i32)]| {
+        let mut c: Vec<(f64, i32)> = cards.iter().copied().filter(|(_, n)| *n != 0).collect();
+        c.sort_by(|a, b| a.0.total_cmp(&b.0));
+        c.iter().map(|(v, n)| format!("{v}x{n}")).collect::<Vec<_>>().join(" ")
+    };
+
     for b in buys {
+        let on = day(b.month, b.on);
+        let no = b.bill_no.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let key = cards_key(&b.cards);
+        if typed_buys.iter().any(|(d, n, k)| match (no, n.as_deref()) {
+            (Some(a), Some(t)) => a == t,
+            _ => *d == on && *k == key,
+        }) {
+            report.buys_in_app += 1;
+            continue;
+        }
         let gb: f64 = b.cards.iter().map(|(v, n)| v * *n as f64).sum();
         // The sheet's amount is the cards' GB at the price per GB, plus the extra costs.
         let per_gb = if gb > 0.0 && b.total > b.extra_cost { (b.total - b.extra_cost) / gb } else { per_gb_setting };
         let id = Uuid::new_v4();
-        let on = day(b.month, b.on);
         sqlx::query(
             "INSERT INTO hotspot_buys (id, purchased_on, supplier_bill_no, bill_gb, extra_cost, note, import_batch_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -2184,15 +2273,26 @@ async fn store_hotspot(
         m.bought += b.total;
     }
 
+    // Cards the desk counted in the app, per day and card: the sheet's count of that day has
+    // them too, so only the rest of the sheet's cards is added.
+    let mut counted: HashMap<(NaiveDate, String), i64> = HashMap::new();
+    for (d, v, n) in sqlx::query_as::<_, (NaiveDate, f64, i64)>(
+        "SELECT sold_on, volume_gb::float8, sum(quantity)::int8 FROM hotspot_sales \
+         WHERE import_batch_id IS NULL AND deleted_at IS NULL GROUP BY sold_on, volume_gb",
+    )
+    .fetch_all(&mut *db)
+    .await?
+    {
+        counted.insert((d, v.to_string()), n);
+    }
+
     for (i, x) in sales.iter().enumerate() {
         let on = day(x.month, x.on);
         let mut priced = 0.0;
         let mut cost = 0.0;
-        let mut what = Vec::new();
         for &(v, n) in &x.cards {
             priced += prices.get(&v.to_string()).copied().unwrap_or(0.0) * n as f64;
             cost += v * per_gb_setting * n as f64;
-            what.push(format!("{n} کارت {v}GB"));
         }
         if (priced - x.amount).abs() > 0.5 {
             warn(format!(
@@ -2203,8 +2303,39 @@ async fn store_hotspot(
                 priced
             ));
         }
+        // The sheet's sales and profit stand; the cards' prices and costs are spread to match.
+        let scale_price = if priced > 0.0 { x.amount / priced } else { 1.0 };
+        let scale_cost = if cost > 0.0 { (x.amount - x.profit) / cost } else { 1.0 };
+        let price_of = |v: f64| prices.get(&v.to_string()).map(|p| (p * scale_price * 100.0).round() / 100.0);
+        let cost_of = |v: f64| (v * per_gb_setting * scale_cost * 100.0).round() / 100.0;
+        // What is left of the sheet's count once the app's own counts of the day are taken out.
+        let mut left: Vec<(f64, i32)> = Vec::new();
+        let (mut in_app_cards, mut in_app_profit) = (0i64, 0.0f64);
+        for &(v, n) in &x.cards {
+            let have = counted.entry((on, v.to_string())).or_default();
+            let same = (*have).min(i64::from(n)).max(0);
+            *have -= same;
+            if same > 0 {
+                in_app_cards += same;
+                in_app_profit += (price_of(v).unwrap_or(0.0) - cost_of(v)) * same as f64;
+            }
+            if i64::from(n) > same {
+                left.push((v, n - same as i32));
+            }
+        }
+        let profit_left = if left.is_empty() { 0.0 } else { ((x.profit - in_app_profit).max(0.0) * 100.0).round() / 100.0 };
+        {
+            let m = &mut report.months[x.month as usize - 1];
+            m.cards_in_app += in_app_cards;
+            m.profit_in_app += x.profit - profit_left;
+        }
+        if in_app_cards > 0 {
+            report.counts_in_app += 1;
+        }
+        let what: Vec<String> = left.iter().map(|(v, n)| format!("{n} کارت {v}GB")).collect();
+        let sold_left: f64 = left.iter().map(|&(v, n)| price_of(v).unwrap_or(0.0) * n as f64).sum();
         let from_sheet = sheet_month(x.month);
-        let receipt: Option<Uuid> = if from_sheet && x.profit > 0.0 {
+        let receipt: Option<Uuid> = if from_sheet && profit_left > 0.0 {
             let id = Uuid::new_v4();
             sqlx::query(
                 "INSERT INTO receipts (id, receipt_no, department, issued_on, amount, income_category, description, import_batch_id) \
@@ -2213,8 +2344,8 @@ async fn store_hotspot(
             .bind(id)
             .bind(format!("XL{year}-{short}-H{:04}", i + 1))
             .bind(on)
-            .bind(x.profit)
-            .bind(format!("فروش کارت هاتسپات: {} · فروش {}، سود {} {tag}", what.join("، "), x.amount, x.profit))
+            .bind(profit_left)
+            .bind(format!("فروش کارت هاتسپات: {} · فروش {}، سود {profit_left} {tag}", what.join("، "), (sold_left * 100.0).round() / 100.0))
             .bind(batch)
             .execute(&mut *db)
             .await?;
@@ -2222,11 +2353,8 @@ async fn store_hotspot(
         } else {
             None
         };
-        // The sheet's sales and profit stand; the cards' prices and costs are spread to match.
-        let scale_price = if priced > 0.0 { x.amount / priced } else { 1.0 };
-        let scale_cost = if cost > 0.0 { (x.amount - x.profit) / cost } else { 1.0 };
-        for &(v, n) in &x.cards {
-            let Some(price) = prices.get(&v.to_string()) else { continue };
+        for &(v, n) in &left {
+            let Some(price) = price_of(v) else { continue };
             sqlx::query(
                 "INSERT INTO hotspot_sales (id, sold_on, volume_gb, quantity, unit_price, unit_cost, receipt_id, import_batch_id) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -2235,8 +2363,8 @@ async fn store_hotspot(
             .bind(on)
             .bind(v)
             .bind(n)
-            .bind((price * scale_price * 100.0).round() / 100.0)
-            .bind((v * per_gb_setting * scale_cost * 100.0).round() / 100.0)
+            .bind(price)
+            .bind(cost_of(v))
             .bind(receipt)
             .bind(batch)
             .execute(&mut *db)
@@ -2250,7 +2378,8 @@ async fn store_hotspot(
     }
     for (i, m) in report.months.iter_mut().enumerate() {
         m.from_sheet = sheet_month(i as u32 + 1);
-        m.income = if m.from_sheet { m.profit } else { m.statement.unwrap_or(0.0) };
+        // The app's own counts are already income through their bills.
+        m.income = if m.from_sheet { m.profit - m.profit_in_app } else { m.statement.unwrap_or(0.0) };
     }
 
     // The cards in hand at the end of each month, against the sheet's «کارت های موجود».
@@ -2528,10 +2657,11 @@ mod tests {
         .unwrap();
         let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
         let total = |t: &'static str| format!("SELECT COALESCE(sum(amount), 0)::float8 FROM receipts WHERE NOT voided AND deleted_at IS NULL AND {t}");
-        let r = store(&mut tx, &user, &p, "real", book).await.ok().expect("store");
+        let r = store(&mut tx, &user, &p, "real", book).await.unwrap_or_else(|e| panic!("store {} {}", e.0, e.1));
         println!("loans: new cards {} back {}; new loans {} out {} back {}; no card {:?}", r.loans.deposits_new, r.loans.deposits_returned, r.loans.loans_new, r.loans.loans_out, r.loans.loans_returned, r.loans.no_card);
         println!("fees: exact {} counted {}; receipts {}", r.fees_exact, r.fees_counted, r.receipts);
         println!("food: split {} whole {}; in app: expenses {} ({}), withdrawals {}", r.food_split, r.food_whole, r.expenses_in_app, r.expenses_in_app_amount, r.withdrawals_in_app);
+        println!("in app: income {} ({}), hotspot buys {} days {} cards {} profit {}", r.income_in_app, r.income_in_app_amount, r.hotspot.buys_in_app, r.hotspot.counts_in_app, r.hotspot.months.iter().map(|m| m.cards_in_app).sum::<i64>(), r.hotspot.months.iter().map(|m| m.profit_in_app).sum::<f64>());
         let rows: Vec<(String, Option<String>, Option<f64>, Option<String>, Option<String>, chrono::NaiveDate, Option<chrono::NaiveDate>)> = sqlx::query_as(
             "SELECT code, kind::text, amount::float8, deposit_book, guarantor, received_on, returned_on FROM loan_deposits WHERE deleted_at IS NULL ORDER BY returned_on IS NULL DESC, code",
         )

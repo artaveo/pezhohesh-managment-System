@@ -66,6 +66,23 @@ function Counts({ cards, values, set, stock }: {
   );
 }
 
+/**
+ * «24 کارت 1GB، 19 کارت 2GB» from the API, shown one card kind per piece. As one string the
+ * Latin «1GB» joins the next number into a left-to-right run and the order looks scrambled.
+ */
+function CardList({ text }: { text: string }) {
+  return (
+    <span className="card-list">
+      {text.split("، ").map((part, i) => {
+        const m = /^(\d+) کارت ([\d.]+)GB$/.exec(part.trim());
+        return m
+          ? <span key={i} className="card-piece"><strong>{fa(Number(m[1]))}</strong> کارت <bdi dir="ltr">{m[2]}GB</bdi></span>
+          : <bdi key={i} className="card-piece">{part}</bdi>;
+      })}
+    </span>
+  );
+}
+
 function lines(values: Record<number, string>) {
   return Object.entries(values).map(([v, q]) => ({ volume_gb: Number(v), quantity: Number(q || 0) })).filter((l) => l.quantity > 0);
 }
@@ -124,14 +141,16 @@ function Buy({ cards, done }: { cards: HotspotCards; done: () => void }) {
   const [day, setDay] = useState(iso(new Date()));
   const [billNo, setBillNo] = useState("");
   const [billGb, setBillGb] = useState("");
-  const [extra, setExtra] = useState("");
+  const [paid, setPaid] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const picked = lines(values);
   const total = picked.reduce((s, l) => s + l.quantity * l.volume_gb, 0);
-  const cost = total * cards.cost_per_gb + amount(extra);
+  // The bill's own amount when typed; else the price per GB from the settings.
+  const guess = total * cards.cost_per_gb;
+  const cost = paid ? amount(paid) : guess;
   const gap = billGb ? Math.round((amount(billGb) - total) * 100) / 100 : 0;
 
   async function save() {
@@ -139,12 +158,12 @@ function Buy({ cards, done }: { cards: HotspotCards; done: () => void }) {
     setError("");
     try {
       await api.createHotspotBuy({
-        purchased_on: day, supplier_bill_no: billNo, bill_gb: billGb ? amount(billGb) : null, extra_cost: amount(extra), note, lines: picked,
+        purchased_on: day, supplier_bill_no: billNo, bill_gb: billGb ? amount(billGb) : null, total: paid ? amount(paid) : null, note, lines: picked,
       });
       setValues({});
       setBillNo("");
       setBillGb("");
-      setExtra("");
+      setPaid("");
       setNote("");
       setSaved(`بل خرید ثبت شد: ${fa(total)} GB، ${fa(cost)} افغانی.`);
       done();
@@ -163,13 +182,14 @@ function Buy({ cards, done }: { cards: HotspotCards; done: () => void }) {
         <SolarDate label="تاریخ" value={day} onChange={setDay} />
         <label className="field wide"><span>شمارهٔ بل</span><input value={billNo} onChange={(e) => setBillNo(e.target.value)} /></label>
         <label className="field wide"><span>حجم عمومی بل (GB)</span><input dir="ltr" inputMode="numeric" value={billGb} onChange={(e) => setBillGb(decimal(e.target.value))} /></label>
-        <label className="field wide"><span>مصارف (افغانی)</span><input dir="ltr" inputMode="numeric" value={extra} onChange={(e) => setExtra(decimal(e.target.value))} /></label>
+        <label className="field wide"><span>مبلغ کل بل (افغانی)</span><input dir="ltr" inputMode="numeric" value={paid} placeholder={guess ? String(guess) : ""} onChange={(e) => setPaid(decimal(e.target.value))} /></label>
       </div>
       <Counts cards={cards.cards} values={values} set={(v, s) => { setSaved(""); setValues((x) => ({ ...x, [v]: s })); }} stock={false} />
       <label className="field wide"><span>ملاحظات</span><input value={note} onChange={(e) => setNote(e.target.value)} /></label>
       {picked.length > 0 && (
         <p className="period-sum">
           {fa(picked.reduce((s, l) => s + l.quantity, 0))} کارت · {fa2(total)} GB · مبلغ خرید <strong>{fa(cost)} افغانی</strong>
+          {!paid && <span className="muted"> (هر GB {fa(cards.cost_per_gb)}؛ اگر بل چیز دیگری می‌گوید، مبلغ کل را بنویسید)</span>}
           {billGb && (gap === 0 ? " · با بل می‌خواند" : <span className="form-error inline"> · تفاوت با بل: {fa2(gap)} GB</span>)}
         </p>
       )}
@@ -261,8 +281,8 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
             {sales?.rows.map((r) => (
               <tr key={r.receipt_id ?? `xl-${r.sold_on}`} className={r.voided ? "inactive" : ""}>
                 <td>{formatDay(r.sold_on)}</td>
-                <td>{r.receipt_no ? <bdi dir="ltr">{r.receipt_no}</bdi> : <span className="chip excel">اکسل</span>}</td>
-                <td dir="rtl">{r.cards}</td>
+                <td>{r.receipt_no ? <bdi dir="ltr" className="bill-no">{r.receipt_no}</bdi> : <span className="chip excel">اکسل</span>}</td>
+                <td><CardList text={r.cards} /></td>
                 <td className="num">{fa(r.sales)}</td>
                 <td className="num">{fa(r.profit)}</td>
                 <td className="muted">{r.created_by ?? "—"}</td>
@@ -289,7 +309,7 @@ function Stock({ cards, tick, changed }: { cards: HotspotCards; tick: number; ch
               <tr key={b.id}>
                 <td>{formatDay(b.purchased_on)}</td>
                 <td>{b.supplier_bill_no ?? "—"}</td>
-                <td dir="rtl">{b.cards}{b.note && <div className="muted small">{b.note}</div>}</td>
+                <td><CardList text={b.cards} />{b.note && <div className="muted small">{b.note}</div>}</td>
                 <td className="num">{fa2(b.gb)}{b.bill_gb !== null && Math.abs(b.bill_gb - b.gb) >= 0.005 && <div className="form-error inline small">بل: {fa2(b.bill_gb)}</div>}</td>
                 <td className="num">{fa(b.cost)}</td>
                 <td className="muted">{b.created_by ?? "—"}</td>

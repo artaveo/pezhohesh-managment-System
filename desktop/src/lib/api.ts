@@ -228,12 +228,13 @@ export type ImportReport = {
   food_split: number; food_whole: number;
   /** Expense and withdrawal lines the app already had (typed there): the book's left out. */
   expenses_in_app: number; expenses_in_app_amount: number; withdrawals_in_app: number;
+  income_in_app: number; income_in_app_amount: number;
   /** Fee cells that got a day from a period (the device's dates), or one counted back from it. */
   fees_exact: number; fees_counted: number;
   /** What the book's two loan sheets added. */
   loans: { deposits_new: number; deposits_returned: number; loans_new: number; loans_out: number; loans_returned: number; no_card: string[] };
   replaces: string | null; lines: ImportLine[]; warnings: string[];
-  hotspot: { buys: number; counts: number; months: ImportHotMonth[] };
+  hotspot: { buys: number; counts: number; buys_in_app: number; counts_in_app: number; months: ImportHotMonth[] };
   /** IDs given to two different people (the app and the book, or two rows of the book). */
   clashes: ImportClash[];
 };
@@ -251,6 +252,7 @@ export type ImportClash = {
 export type ImportHotMonth = {
   cards_bought: number; gb_bought: number; bought: number; cards_sold: number; gb_sold: number; sales: number;
   profit: number; statement: number | null; income: number; from_sheet: boolean;
+  cards_in_app: number; profit_in_app: number;
 };
 
 export type Page<T> = { total: number; rows: T[] };
@@ -836,7 +838,7 @@ export const api = {
   setHotspotCards: (p: { cost_per_gb: number; cards: { volume_gb: number; price: number; active: boolean }[] }) =>
     request<void>("/hotspot/cards", { method: "PUT", body: p }),
   hotspotBuys: (r: Range, signal?: AbortSignal) => request<HotspotBuy[]>(`/hotspot/buys?${query(r)}`, { signal }),
-  createHotspotBuy: (b: { purchased_on?: string; supplier_bill_no?: string; bill_gb?: number | null; extra_cost?: number; note?: string; lines: CardCount[] }) =>
+  createHotspotBuy: (b: { purchased_on?: string; supplier_bill_no?: string; bill_gb?: number | null; extra_cost?: number; total?: number | null; note?: string; lines: CardCount[] }) =>
     request<string>("/hotspot/buys", { method: "POST", body: b }),
   deleteHotspotBuy: (id: string) => request<void>(`/hotspot/buys/${id}`, { method: "DELETE" }),
   hotspotReport: (bounds: string[], signal?: AbortSignal) =>

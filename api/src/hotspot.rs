@@ -157,6 +157,9 @@ pub struct BuyInput {
     bill_gb: Option<f64>,
     #[serde(default)]
     extra_cost: f64,
+    /// What the supplier bill says was paid, all in. When given, the cards' cost is spread
+    /// from it by GB instead of the price per GB in the settings.
+    total: Option<f64>,
     note: Option<String>,
     lines: Vec<Count>,
 }
@@ -168,9 +171,10 @@ pub async fn create_buy(State(s): State<AppState>, user: CurrentUser, Json(b): J
     if on > today() {
         return Err(ApiError::bad("future_date"));
     }
-    if !b.extra_cost.is_finite() || b.extra_cost < 0.0 || b.bill_gb.is_some_and(|g| !g.is_finite() || g < 0.0) {
+    if !b.extra_cost.is_finite() || b.extra_cost < 0.0 || b.bill_gb.is_some_and(|g| !g.is_finite() || g < 0.0) || b.total.is_some_and(|t| !t.is_finite() || t <= 0.0) {
         return Err(ApiError::bad("bad_amount"));
     }
+    let gb_total: f64 = lines.iter().map(|c| c.volume_gb * f64::from(c.quantity)).sum();
     let mut tx = begin_as(&s.db, &user).await?;
     for c in &lines {
         let known: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM hotspot_cards WHERE volume_gb = $1::numeric)")
@@ -181,7 +185,11 @@ pub async fn create_buy(State(s): State<AppState>, user: CurrentUser, Json(b): J
             return Err(ApiError::bad("bad_card"));
         }
     }
-    let per_gb = cost_per_gb(&mut tx).await?;
+    // A typed bill amount is the whole cost: no extra cost on top of it (170 GB for 1,700 is 10 a GB).
+    let (per_gb, extra_cost) = match b.total {
+        Some(t) => (t / gb_total, 0.0),
+        None => (cost_per_gb(&mut tx).await?, b.extra_cost),
+    };
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO hotspot_buys (id, purchased_on, supplier_bill_no, bill_gb, extra_cost, note, created_by) \
@@ -191,7 +199,7 @@ pub async fn create_buy(State(s): State<AppState>, user: CurrentUser, Json(b): J
     .bind(on)
     .bind(clean(&b.supplier_bill_no))
     .bind(b.bill_gb)
-    .bind(b.extra_cost)
+    .bind(extra_cost)
     .bind(clean(&b.note))
     .bind(user.id)
     .execute(&mut *tx)

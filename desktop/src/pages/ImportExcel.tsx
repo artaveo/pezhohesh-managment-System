@@ -276,6 +276,9 @@ function Counts({ r }: { r: ImportReport }) {
       {r.committed && r.rows_kept !== undefined && <li>سطرهای پول: <strong>{fa(r.rows_added)}</strong> تازه، <strong>{fa(r.rows_removed)}</strong> برداشته (در اکسل نبود یا عوض شده)، {fa(r.rows_kept)} بی‌تغییر ماند</li>}
       {r.food_split + r.food_whole > 0 && <li>ماکولات: <strong>{fa(r.food_split)}</strong> روز به صبحانه، چاشت و شام جدا شد{r.food_whole > 0 && <>؛ {fa(r.food_whole)} روز یک‌جا ماند (جمع اجزا با مبلغ نمی‌خواند یا چیز دیگری هم داشت)</>}</li>}
       {r.expenses_in_app + r.withdrawals_in_app > 0 && <li><strong>{fa(r.expenses_in_app + r.withdrawals_in_app)}</strong> مصرف یا برداشت ({fa(r.expenses_in_app_amount)} ؋ مصرف) در برنامه هم ثبت شده بود؛ دوباره شمرده نشد</li>}
+      {r.income_in_app > 0 && <li><strong>{fa(r.income_in_app)}</strong> عاید دیگر ({fa(r.income_in_app_amount)} ؋، مثل طلبات یا عضویت روزانه) در برنامه هم بل داشت؛ دوباره شمرده نشد</li>}
+      {r.hotspot.counts_in_app > 0 && <li>در <strong>{fa(r.hotspot.counts_in_app)}</strong> روز، <strong>{fa(r.hotspot.months.reduce((s, m) => s + m.cards_in_app, 0))}</strong> کارت هاتسپات ({fa(r.hotspot.months.reduce((s, m) => s + m.profit_in_app, 0))} ؋ سود) در برنامه هم شمرده شده بود؛ دوباره شمرده نشد</li>}
+      {r.hotspot.buys_in_app > 0 && <li><strong>{fa(r.hotspot.buys_in_app)}</strong> بل خرید هاتسپات در برنامه هم ثبت شده بود؛ دوباره ثبت نشد</li>}
       {r.in_app > 0 && <li><strong>{fa(r.in_app)}</strong> پرداخت ({fa(r.in_app_amount)} ؋) بل برنامه هم داشت؛ دوباره شمرده نشد</li>}
       {r.fees_exact + r.fees_counted > 0 && <li><strong>{fa(r.fees_exact)}</strong> فیس با روز دقیق از تاریخ عضویت و <strong>{fa(r.fees_counted)}</strong> فیس با روز حساب‌شده (30 روز به عقب)</li>}
       {r.loans.deposits_new + r.loans.deposits_returned > 0 && <li><strong>{fa(r.loans.deposits_new)}</strong> کارت ضمانت تازه{r.loans.deposits_returned > 0 && <>، <strong>{fa(r.loans.deposits_returned)}</strong> ضمانت پس‌داده</>}</li>}
