@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, errorText, type BillPage } from "../lib/api";
+import { api, errorText, type Bill, type BillPage } from "../lib/api";
+import { useAuth } from "../auth/AuthProvider";
+import { VoidBill } from "./Bills";
 import { fa, formatDay, iso } from "../lib/solar";
 import { BillPreview, CATEGORY_LABEL } from "../components/BillSheet";
 import { PeriodPicker, usePeriod } from "../components/PeriodPicker";
@@ -35,6 +37,9 @@ export function OtherIncome() {
   const [page, setPage] = useState<BillPage | null>(null);
   const [show, setShow] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  // A bill made by mistake is voided: it stays marked «باطل» and leaves the income.
+  const [voiding, setVoiding] = useState<Bill | null>(null);
+  const partner = useAuth().user?.role === "partner";
   const today = iso(new Date());
 
   useEffect(() => {
@@ -112,7 +117,10 @@ export function OtherIncome() {
                     <td>{b.description ?? "—"}</td>
                     <td className="num">{fa(b.amount)}</td>
                     <td><bdi dir="ltr">{b.receipt_no}</bdi>{b.voided && <span className="status off"> باطل</span>}</td>
-                    <td><button className="btn small ghost" onClick={() => setShow(b.id)}>نمایش</button></td>
+                    <td><div className="row-actions">
+                      <button className="btn small ghost" onClick={() => setShow(b.id)}>نمایش</button>
+                      {!b.voided && (partner || b.issued_on === today) && <button className="btn small ghost danger" onClick={() => setVoiding(b)}>باطل کردن</button>}
+                    </div></td>
                   </tr>
                 ))}
               </tbody>
@@ -122,6 +130,7 @@ export function OtherIncome() {
       </section>
 
       {show && <BillPreview id={show} onClose={() => setShow(null)} />}
+      {voiding && <VoidBill bill={voiding} onClose={(done) => { setVoiding(null); if (done) setTick((t) => t + 1); }} />}
     </div>
   );
 }

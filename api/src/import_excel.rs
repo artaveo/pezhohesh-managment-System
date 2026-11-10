@@ -55,7 +55,9 @@ const LINES: &[Line] = &[
     Line { key: "internet", kind: Kind::Income, labels: &["عضویت ماهیانه انترنت", "عضویت ماهانه انترنت"], from_statement: false },
     Line { key: "hotspot", kind: Kind::Income, labels: &["انترنت هاتسپات"], from_statement: true },
     Line { key: "books", kind: Kind::Income, labels: &["امانت دهی کتاب"], from_statement: true },
-    Line { key: "misc", kind: Kind::Income, labels: &["عواید متفرقه (انترنت خدمات)", "عواید متفرقه"], from_statement: true },
+    // Not taken from the book: its figures there are notes outside the totals now; the app's own
+    // «عواید متفرقه» bills are the line (typed, and removable by voiding them).
+    Line { key: "misc", kind: Kind::Income, labels: &["عواید متفرقه (انترنت خدمات)", "عواید متفرقه"], from_statement: false },
     Line { key: "services", kind: Kind::Income, labels: &["طلبات (عواید خدمات)", "طلبات"], from_statement: true },
     Line { key: "کرایه سالن", kind: Kind::Expense, labels: &["کرایه سالن"], from_statement: true },
     Line { key: "پول صرفیه انترنت", kind: Kind::Expense, labels: &["پول صرفیه انترنت"], from_statement: true },
@@ -1616,6 +1618,8 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
     // Month-by-month totals next to the statement sheet.
     let mut lines: Vec<LineReport> = LINES
         .iter()
+        // «عواید متفرقه» is not read from the book (only notes there now).
+        .filter(|l| l.key != "misc")
         .map(|l| {
             let mut imported = [0.0; 12];
             for e in entries.iter().filter(|e| e.kind == l.kind && e.key == l.key) {
@@ -2279,6 +2283,16 @@ async fn store_hotspot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes the book without its password, for checking it by hand:
+    /// PZ_XL=<book> PZ_XL_PASS=<password> PZ_XL_OUT=<file> cargo test decrypt_book -- --ignored
+    #[test]
+    #[ignore]
+    fn decrypt_book() {
+        let raw = std::fs::read(std::env::var("PZ_XL").unwrap()).unwrap();
+        let plain = office_crypto::decrypt_from_bytes(raw, &std::env::var("PZ_XL_PASS").unwrap()).unwrap();
+        std::fs::write(std::env::var("PZ_XL_OUT").unwrap(), plain).unwrap();
+    }
 
     #[test]
     fn meals_split() {

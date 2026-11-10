@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  addDays, daysBetween, fa, formatDay, iso, lastAheadMonth, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
+  addDays, daysBetween, fa, formatDay, iso, parseIso, lastAheadMonth, monthName, monthStart, monthsOfYear, nextMonth, nextYear, prevMonth, prevYear,
   sameMonthLastYear, toSolar, yearNumber, yearStart,
 } from "../lib/solar";
 import { balance, loadRanges, total, type Range, type Sum } from "../lib/reports";
@@ -12,6 +12,7 @@ import { Failed, Kpi, Loading } from "../components/Stat";
 import { LABELS } from "../components/charts/CategoryBars";
 import { Icon } from "../components/Icon";
 import { PrintCopy } from "../components/PrintCopy";
+import { SolarDate } from "../components/SolarDate";
 
 const INCOME_ORDER = Object.keys(LABELS);
 const rankIncome = (c: string) => (INCOME_ORDER.includes(c) ? INCOME_ORDER.indexOf(c) : 99);
@@ -28,7 +29,10 @@ const blank = (s: Sum) => !s.income && !s.expenses && !s.estimated && !Object.ke
 export function Reports() {
   const user = useAuth().user!;
   const canShares = user.role === "partner" || (user.sections ?? []).includes("shares");
-  const [mode, setMode] = useState<"month" | "year" | "hotspot">("month");
+  const [mode, setMode] = useState<"month" | "year" | "range" | "hotspot">("month");
+  // «از تاریخ تا تاریخ»: any stretch of days, both ends included.
+  const [from, setFrom] = useState(() => iso(monthStart(new Date())));
+  const [to, setTo] = useState(() => iso(new Date()));
   const [ms, setMs] = useState(() => monthStart(new Date()));
   const [ys, setYs] = useState(() => yearStart(new Date()));
   const [printing, setPrinting] = useState(false);
@@ -42,19 +46,96 @@ export function Reports() {
         <div className="segmented" role="tablist" aria-label="گزارش">
           <button role="tab" aria-selected={mode === "month"} className={mode === "month" ? "on" : ""} onClick={() => setMode("month")}>ماهانه</button>
           <button role="tab" aria-selected={mode === "year"} className={mode === "year" ? "on" : ""} onClick={() => setMode("year")}>سالانه</button>
+          <button role="tab" aria-selected={mode === "range"} className={mode === "range" ? "on" : ""} onClick={() => setMode("range")}>از تاریخ تا تاریخ</button>
           <button role="tab" aria-selected={mode === "hotspot"} className={mode === "hotspot" ? "on" : ""} onClick={() => setMode("hotspot")}>هات‌اسپات</button>
         </div>
+        {mode === "range" ? (
+          <div className="range-pick">
+            <SolarDate label="از" value={from} onChange={setFrom} />
+            <SolarDate label="تا" value={to} onChange={setTo} />
+          </div>
+        ) : (
         <div className="period-step">
           <button className="btn ghost small" onClick={() => (mode === "month" ? setMs(prevMonth(ms)) : setYs(prevYear(ys)))}>‹ {mode === "month" ? "ماه قبل" : "سال قبل"}</button>
           <strong>{mode === "month" ? `${monthName(ms)} ${yearNumber(ms)}` : `سال ${yearNumber(ys)}`}</strong>
           <button className="btn ghost small" disabled={atLatest} onClick={() => (mode === "month" ? setMs(nextMonth(ms)) : setYs(nextYear(ys)))}>{mode === "month" ? "ماه بعد" : "سال بعد"} ›</button>
         </div>
+        )}
         <button className="btn" onClick={() => setPrinting(true)} disabled={printing}><Icon name="receipt" /> چاپ</button>
       </div>
       {mode === "month" && <MonthReport ms={ms} canShares={canShares} printing={printing} onPrinted={() => setPrinting(false)} />}
       {mode === "year" && <YearReport ys={ys} canShares={canShares} printing={printing} onPrinted={() => setPrinting(false)} />}
+      {mode === "range" && (from && to && from <= to
+        ? <RangeReport from={from} to={to} canShares={canShares} printing={printing} onPrinted={() => setPrinting(false)} />
+        : <p className="form-error">«از» باید پیش از «تا» یا همان روز باشد.</p>)}
       {mode === "hotspot" && <HotspotReport ys={ys} printing={printing} onPrinted={() => setPrinting(false)} />}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Any stretch of days
+
+function RangeReport({ from, to, canShares, printing, onPrinted }: { from: string; to: string; canShares: boolean; printing: boolean; onPrinted: () => void }) {
+  // The API takes the end as the day after.
+  const end = iso(addDays(parseIso(to), 1));
+  const { data, failed, retry } = useLoad(async (signal) => {
+    const range: Range = { from, to: end };
+    const a = await loadRanges([range], true, signal);
+    return { s: a.sum(range), expenseOrder: a.res.expense_order };
+  }, [from, end]);
+  if (failed) return <Failed retry={retry} />;
+  if (!data) return <Loading />;
+  const s = data.s;
+  const title = `${formatDay(from)} تا ${formatDay(to)}`;
+  const order = (c: string) => (data.expenseOrder.includes(c) ? data.expenseOrder.indexOf(c) : 999);
+  const incomeCats = Object.keys(s.income_by_category).sort((a, b) => rankIncome(a) - rankIncome(b));
+  const expenseCats = Object.keys(s.expenses_by_category).sort((a, b) => order(a) - order(b));
+  const row = (label: string, v: number, cls = "") => (
+    <tr key={label} className={cls}><th scope="row">{label}</th><td className="remarks">{fa(v)}</td></tr>
+  );
+  const section = (label: string) => <tr className="section"><th scope="row" colSpan={2}>{label}</th></tr>;
+  const sheet = (
+    <article className="report" dir="rtl">
+      <header className="report-head">
+        <div>
+          <h1>گزارش مالی {title}</h1>
+          <p>کتابخانه و سالن مطالعه پژوهش · {fa(daysBetween(parseIso(from), parseIso(end)))} روز</p>
+        </div>
+        <span className="muted small">{printedOn()}</span>
+      </header>
+      <div className="table-wrap flush">
+        <table className="table sheet">
+          <thead><tr><th>شرح</th><th className="remarks">مبلغ</th></tr></thead>
+          <tbody>
+            {section("درآمد")}
+            {incomeCats.map((c) => row(LABELS[c] ?? c, s.income_by_category[c] ?? 0))}
+            {row("مجموع درآمد", s.income, "sum")}
+            {section("مصارف")}
+            {expenseCats.map((c) => row(c, s.expenses_by_category[c] ?? 0))}
+            {row("مجموع مصارف", s.expenses, "sum")}
+            {s.estimated !== 0 && row("بیلانس برآوردی (دستی)", s.estimated)}
+            {row("بیلانس (سود خالص)", balance(s), "net")}
+            {canShares && section("شرکا")}
+            {canShares && PARTNERS.map((p) => row(`برداشت ${p.short}`, s.withdrawals_by_person[p.name] ?? 0))}
+            {canShares && row("موجودی اول این مدت", s.carried)}
+            {canShares && row("موجودی آخر این مدت (اول + سود خالص − برداشت‌ها)", inTill(s), "net")}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  );
+  return (
+    <>
+      <section className={`kpis ${canShares ? "four" : "three"}`}>
+        <Kpi hero icon="wallet" label="درآمد" value={s.income} unit="؋" />
+        <Kpi icon="receipt" label="مصارف" value={s.expenses} unit="؋" upIsGood={false} />
+        <Kpi icon="chart" label="سود خالص" value={balance(s)} unit="؋" />
+        {canShares && <Kpi icon="banknote" label="موجودی آخر" value={inTill(s)} unit="؋" note={`اول این مدت ${fa(s.carried)}`} />}
+      </section>
+      <div className="glass report-sheet">{sheet}</div>
+      <PrintCopy on={printing} onDone={onPrinted}>{sheet}</PrintCopy>
+    </>
   );
 }
 

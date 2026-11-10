@@ -1023,3 +1023,7 @@ label.check { display: inline-flex; align-items: center; gap: 6px; }
 .cropper-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; color: #f2f4f0; }
 .cropper-bar .muted { color: #c9d0c3; }
 .lightbox-tools .btn:not(.ghost) { color: #fff; }
+
+/* The finance report's «از تاریخ تا تاریخ»: two dates side by side in the toolbar. */
+.range-pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.range-pick .field { min-width: 240px; margin: 0; }
