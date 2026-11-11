@@ -2092,15 +2092,20 @@ pub(crate) async fn date_excel_fees(db: &mut PgConnection) -> Result<(usize, usi
     let (mut exact, mut counted) = (0, 0);
     let (mut ids, mut days): (Vec<Uuid>, Vec<NaiveDate>) = (Vec::new(), Vec::new());
     for (id, member, kind, from, to, now) in cells {
-        let found = starts.get(&(member, kind)).and_then(|s| fee_day(s, from, to));
+        // A day from a period that starts that day is known; a counted one is a guess. A guess
+        // is kept only for a day already over: on today it put book money nobody took today
+        // into «درآمد امروز» (two fees counted in 30-day steps from April and July both came
+        // out on the day of the import). The fee then stays on its month's first day.
+        let found = starts
+            .get(&(member, kind))
+            .and_then(|s| fee_day(s, from, to))
+            .filter(|&(d, known)| if known { d <= today } else { d < today });
         match found {
-            Some((d, true)) if d <= today => exact += 1,
-            Some((d, false)) if d <= today => counted += 1,
-            _ => {}
+            Some((_, true)) => exact += 1,
+            Some((_, false)) => counted += 1,
+            None => {}
         }
-        // A day counted past today is not known yet: the fee stays on its month's first day
-        // (moving it to today piled a month's fees on the day of the import).
-        let day = found.map(|(d, _)| d).filter(|d| *d <= today).unwrap_or(from).max(from);
+        let day = found.map(|(d, _)| d).unwrap_or(from).max(from);
         if day != now {
             ids.push(id);
             days.push(day);

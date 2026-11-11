@@ -44,7 +44,8 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - Excel member fees have no payment day. `date_excel_fees` dates each cell inside its own Solar
   month from the member's period starts (the device's dates): exact when a period starts in that
   month, else 30-day steps from the nearest one (the device keeps only the last dates), else the
-  1st. It runs on every import and after «تاریخ از دستگاه». Monthly totals never change.
+  1st. A counted (guessed) day is used only when it is already over: a guess on today would put
+  book money into «درآمد امروز» (two guesses once landed on the import day). It runs on every import and after «تاریخ از دستگاه». Monthly totals never change.
 - The book's two loan sheets are added by `store_loans`, not replaced: rows the app has stay, and
   their fees are not income (the statement's «امانت دهی کتاب» line counts them).
 - The dashboard's month view compares the same first N days; the finance report's other months are whole.
@@ -64,7 +65,8 @@ claude.ai Projects to this local checkout on 2026-11-03.
 - A re-import writes only what changed: one batch per year is reused, and money rows are compared
   by their content (`xl_rx` etc. in `import_excel.rs`); bulk work sets `pezhohesh.bulk` so
   `write_audit` skips it and writes one summary line. The audit log keeps only changed fields.
-- «یادداشت‌ها» (`notes`, `notes.rs`) are side reckonings: no report, total or import reads them.
+- «یادداشت‌ها» (`notes`, `notes.rs`) are the partners' only (not a section; 0036 revokes the
+  manager) and side reckonings: no report, total or import reads them.
 - The dashboard's month card «موجودی ماه» is that month alone (net − partners' withdrawals); the
   whole till (`inTill`) is on «امسال».
 - «موجودی از ماه قبل» is never typed: `reports.rs` works out the till at a range's start from

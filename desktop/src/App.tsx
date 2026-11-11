@@ -31,6 +31,7 @@ import { SyncChip } from "./components/SyncChip";
 import { Reports } from "./pages/Reports";
 import { Tabs } from "./components/Tabs";
 import { Notes } from "./pages/Notes";
+import { SearchPalette, type SearchPage } from "./components/SearchPalette";
 import { useFileSending } from "./lib/images";
 
 /**
@@ -56,7 +57,7 @@ export const NAV = [
   // متفرقه» and «طلبات» under «عواید».
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares", "receipts"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
-  { id: "notes", icon: "note", label: "یادداشت‌ها", section: "notes", group: "حساب و پول" },
+  { id: "notes", icon: "note", label: "یادداشت‌ها", partner: true, group: "حساب و پول" },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
   { id: "import", icon: "upload", label: "ورود از اکسل", section: "import", group: "مدیریت" },
   { id: "device", icon: "fingerprint", label: "وضعیت و تنظیم", section: "device", group: "مدیریت", hub: "device" },
@@ -74,6 +75,30 @@ const HUB: Record<Hub, { icon: string; label: string }> = {
   device: { icon: "fingerprint", label: "دستگاه انگشت" },
 };
 const hubOf = (n: object): Hub | undefined => ("hub" in n ? (n.hub as Hub) : undefined);
+
+/** Other words a section is looked for by in the search (what is inside it, common names). */
+const SEARCH_WORDS: Record<string, string> = {
+  dashboard: "خانه گزارش امروز درآمد امروز",
+  memberships: "تمدید پذیرش عضو جدید عضویت روزانه بل کارت اسکن",
+  members: "عضو شاگرد فهرست باقی بدهی",
+  registrations: "ثبت نام جدید",
+  attendance: "حاضری ورود خروج",
+  inbox: "عکس تذکره موبایل گوشی",
+  books: "کتاب امانت ضمانت فهرست کتاب‌ها",
+  hotspot: "انترنت کارت هاتسپات wifi",
+  receipts: "بل رسید باطل",
+  expenses: "مصرف خرج برداشت معاش کارمند شرکا سهم عواید متفرقه طلبات",
+  reports: "گزارش مالی ماهانه سالانه موجودی صندوق",
+  notes: "یادداشت حساب قرض",
+  import: "اکسل excel ورود",
+  device: "اثر انگشت k50 دستگاه zk",
+  deviceUsers: "کاربران دستگاه اثر انگشت",
+  backup: "پشتیبان بکاپ سرور فایل",
+  prices: "قیمت پلان تعرفه",
+  users: "کاربر رمز دسترسی مدیر",
+  audit: "تاریخچه لاگ چه کسی",
+  settings: "رنگ تم رمز من",
+};
 
 /** Whether this person sees a menu item. */
 function sees(user: User, n: NavItem) {
@@ -144,6 +169,19 @@ function Shell() {
   const main = nav.filter((n) => n.id !== "settings" && (!hubOf(n) || nav.find((x) => hubOf(x) === hubOf(n)) === n));
   const groups = [...new Set(main.map((n) => n.group))];
   const hubTabs = hub ? nav.filter((n) => hubOf(n) === hub) : [];
+  // The search window (Ctrl+K): every page this person may open, and the members.
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K" || e.code === "KeyK")) { e.preventDefault(); setSearching(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const searchPages: SearchPage[] = nav.filter((n) => !("soon" in n && n.soon)).map((n) => {
+    const h = hubOf(n);
+    return { id: n.id, label: n.label, where: h ? HUB[h].label : n.group || undefined, icon: n.icon, keywords: SEARCH_WORDS[n.id] };
+  });
 
   return (
     <div className="shell">
@@ -155,6 +193,11 @@ function Shell() {
             <span>سیستم مدیریت</span>
           </div>
         </div>
+        <button className="side-search" onClick={() => setSearching(true)} aria-keyshortcuts="Control+K">
+          <Icon name="search" size={17} />
+          <span>جستجو</span>
+          <kbd>Ctrl K</kbd>
+        </button>
         <nav aria-label="بخش‌ها">
           {groups.map((g) => (
             <div key={g || "top"} role="group" aria-label={g || "داشبورد"}>
@@ -200,6 +243,10 @@ function Shell() {
           </button>
         </div>
       </aside>
+      {searching && (
+        <SearchPalette pages={searchPages} members={nav.some((n) => n.id === "members")}
+          onPage={(id) => setPage(id as PageId)} onMember={(id) => openMember(id)} onClose={() => setSearching(false)} />
+      )}
       <main className="content">
         {page === "dashboard" && !history.length ? null : (
           <div className="back-row">

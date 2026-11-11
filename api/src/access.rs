@@ -16,12 +16,12 @@ use crate::AppState;
 /// «مصارف و برداشت‌ها» its three parts (expenses, staff, partners).
 pub const SECTIONS: &[&str] = &[
     "dashboard", "memberships", "members", "registrations", "books", "hotspot", "inbox", "receipts", "expenses",
-    "salaries", "shares", "reports", "notes", "pec", "audit", "users", "prices", "backup", "device", "import",
+    "salaries", "shares", "reports", "pec", "audit", "users", "prices", "backup", "device", "import",
 ];
 /// Study-hall sections: the manager's database rights cover these, not the education records.
 const HALL: &[&str] = &[
     "dashboard", "memberships", "members", "registrations", "books", "hotspot", "inbox", "receipts", "expenses",
-    "salaries", "shares", "reports", "notes", "audit", "users", "prices", "backup", "device", "import",
+    "salaries", "shares", "reports", "audit", "users", "prices", "backup", "device", "import",
 ];
 /// Sections of running the system. Someone given one acts there with a partner's database
 /// rights (its tables are the partners' only), but what only a partner may do stays so:

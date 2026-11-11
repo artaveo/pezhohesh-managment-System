@@ -20,12 +20,12 @@ export type User = {
 /** Sections a partner can give the manager or the education staff (see the users page). */
 export type Section =
   | "dashboard" | "memberships" | "members" | "registrations" | "books" | "hotspot" | "inbox"
-  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "notes" | "pec"
+  | "receipts" | "expenses" | "salaries" | "shares" | "reports" | "pec"
   | "audit" | "users" | "prices" | "backup" | "device" | "import";
 export const SECTION_LABEL: Record<Section, string> = {
   dashboard: "داشبورد (درآمد و مصرف)", memberships: "پذیرش و تمدید", members: "اعضا", registrations: "ثبت‌نام‌ها",
   books: "امانت کتاب", hotspot: "کارت هاتسپات", inbox: "رسیده از موبایل", receipts: "بل‌ها",
-  expenses: "مصارف", salaries: "برداشت‌های کارمندان و معاش", shares: "برداشت‌ها و سهم شرکا", reports: "گزارش مالی", notes: "یادداشت‌ها", pec: "خدمات تحصیلی",
+  expenses: "مصارف", salaries: "برداشت‌های کارمندان و معاش", shares: "برداشت‌ها و سهم شرکا", reports: "گزارش مالی", pec: "خدمات تحصیلی",
   audit: "چه کسی چه کرد", users: "کاربران", prices: "قیمت‌ها", backup: "پشتیبان", device: "دستگاه انگشت", import: "ورود از اکسل",
 };
 /**
@@ -39,7 +39,6 @@ export const SECTION_TREE: { group: string; items: { label?: string; id?: Sectio
     { id: "receipts" },
     { label: "مصارف و برداشت‌ها", parts: ["expenses", "salaries", "shares"] },
     { id: "reports" },
-    { id: "notes", note: "حساب‌های کنار دفتر. در هیچ درآمد، مصرف یا گزارشی شمرده نمی‌شود." },
   ] },
   { group: "خدمات تحصیلی", items: [{ id: "pec", note: "بخش‌های داخل خدمات تحصیلی وقتی آن بخش ساخته شد همین‌جا یکی‌یکی می‌آیند." }] },
   { group: "مدیریت", items: [
