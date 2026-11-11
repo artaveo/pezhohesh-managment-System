@@ -1789,13 +1789,8 @@ async fn store(db: &mut PgConnection, user: &CurrentUser, p: &Params, sha: &str,
         .await?;
     // The import's one line in «چه کسی چه کرد».
     sqlx::query("SELECT set_config('pezhohesh.bulk', 'off', true)").execute(&mut *db).await?;
-    sqlx::query(
-        "INSERT INTO audit_log (user_id, table_name, row_id, action, after) \
-         SELECT nullif(current_setting('app.user_id', true), '')::uuid, 'import_batches', $1, 'import', summary FROM import_batches WHERE id = $1",
-    )
-    .bind(batch)
-    .execute(&mut *db)
-    .await?;
+    // Through a function: the signed-in person's role may not write audit_log itself (0035).
+    sqlx::query("SELECT audit_import($1)").bind(batch).execute(&mut *db).await?;
     Ok(report)
 }
 
@@ -2695,6 +2690,13 @@ mod tests {
         .fetch_one(&mut *tx)
         .await
         .unwrap();
+        // As the app runs it: the partner's database role, not the owner (a write the role may
+        // not make, like audit_log, failed only in the app before).
+        sqlx::query("SELECT set_config('role', 'pz_partner', true), set_config('app.user_id', $1, true)")
+            .bind(user.id.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         let p = Params { year: 1405, commit: false, file_name: None, hotspot_income: None, take_excel: None };
         let total = |t: &'static str| format!("SELECT COALESCE(sum(amount), 0)::float8 FROM receipts WHERE NOT voided AND deleted_at IS NULL AND {t}");
         let r = store(&mut tx, &user, &p, "real", book).await.unwrap_or_else(|e| panic!("store {} {}", e.0, e.1));
