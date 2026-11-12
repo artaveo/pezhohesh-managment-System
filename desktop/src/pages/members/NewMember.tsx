@@ -33,11 +33,11 @@ export function NewMember({ onSaved, onCancel }: { onSaved: (memberId: string, b
     }
   }
 
-  const ready = member.first_name.trim() !== "" && (!withPeriod || period !== null);
+  const ready = member.first_name.trim() !== "" && (member.emergency_phone ?? "").trim() !== "" && (!withPeriod || period !== null);
   return (
     <form className="panel wide" onSubmit={save}>
       <h2>عضو جدید</h2>
-      <MemberFields value={member} onChange={setMember} />
+      <MemberFields value={member} onChange={setMember} isNew />
       <NumberHelp value={member.member_no ?? null} onPick={(no) => setMember((m) => ({ ...m, member_no: no }))} />
       <label className="check big">
         <input type="checkbox" checked={withPeriod} onChange={(e) => setWithPeriod(e.target.checked)} />

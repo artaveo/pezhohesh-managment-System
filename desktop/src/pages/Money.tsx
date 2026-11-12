@@ -50,8 +50,11 @@ export function Money() {
   // is often not at the desk); the shares stay with whoever was given them.
   // «عواید» (عواید متفرقه and طلبات) are bills: whoever may see the bills sees them here.
   const may = { expenses: has("expenses"), income: has("receipts"), staff: has("salaries"), partners: partner || has("shares") || has("expenses"), shares: partner || has("shares") };
-  const firstPart: PartnerPart = partner ? "menu" : may.shares ? "shares" : "new";
-  const okPart = (p: PartnerPart) => partner || (p === "shares" && may.shares) || (p === "new" && may.expenses);
+  // Everyone who may see the partners' withdrawals gets the same menu of them (a new one,
+  // the shares, each partner's list), with only the parts they were given.
+  const firstPart: PartnerPart = "menu";
+  const okPart = (p: PartnerPart) =>
+    partner || p === "menu" || typeof p !== "string" || (p === "shares" && may.shares) || (p === "new" && may.expenses);
   const key = viewKey(user?.id ?? "");
   const [view, setViewState] = useState<View>(() => remembered(key));
   const setView = (v: View) => {
@@ -83,16 +86,11 @@ export function Money() {
             items={[...(may.staff ? [{ id: "staff" as const, label: "کارمندان" }] : []), ...(may.partners ? [{ id: "partners" as const, label: "شرکا" }] : [])]}
             onChange={(w) => setView(w === "staff" ? { tab: "staff" } : { tab: "partners", part: firstPart })} />
         )}
-        {shown.tab === "partners" && !partner && may.shares && may.expenses && (
-          <Tabs sub label="شرکا" value={shown.part === "new" ? "new" : "shares"}
-            items={[{ id: "new" as const, label: "برداشت جدید" }, { id: "shares" as const, label: "سهم شرکا" }]}
-            onChange={(part) => setView({ tab: "partners", part })} />
-        )}
       </div>
       {shown.tab === "expenses" && <ExpensesView />}
       {shown.tab === "income" && <OtherIncome />}
       {shown.tab === "staff" && <StaffAccounts />}
-      {shown.tab === "partners" && <PartnersView part={shown.part} partner={partner} onPart={(part) => setView({ tab: "partners", part })} />}
+      {shown.tab === "partners" && <PartnersView part={shown.part} partner={partner} canNew={partner || may.expenses} canShares={may.shares} onPart={(part) => setView({ tab: "partners", part })} />}
     </div>
   );
 }
@@ -111,7 +109,9 @@ function ExpensesView() {
  * The partners: first the list of what there is (a new withdrawal, the shares of the
  * profit, each partner's withdrawals), then the one picked, with a way back to the list.
  */
-function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: boolean; onPart: (p: PartnerPart) => void }) {
+function PartnersView({ part, partner, canNew, canShares, onPart }: {
+  part: PartnerPart; partner: boolean; canNew: boolean; canShares: boolean; onPart: (p: PartnerPart) => void;
+}) {
   const [people, setPeople] = useState<Person[] | null>(null);
   // One period for both partners' lists, so switching between them compares like with like.
   const period = usePeriod("month");
@@ -129,7 +129,7 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
   const [taken, setTaken] = useState<Record<string, number>>({});
   const ids = partners.map((p) => p.id ?? "").join(",");
   useEffect(() => {
-    if (part !== "menu" || !partner) return;
+    if (part !== "menu") return;
     const ctl = new AbortController();
     const year = rangeOf(initialPeriod("year"));
     const ready = partners.filter((p): p is typeof p & { id: string } => !!p.id);
@@ -138,13 +138,13 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
       .catch(() => { /* the cards still work without the figure */ });
     return () => ctl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part, partner, ids]);
+  }, [part, ids]);
 
-  if (part === "menu" && partner) {
+  if (part === "menu") {
     const year = rangeOf(initialPeriod("year")).label;
     const items: { part: PartnerPart; icon: string; title: string; hint: string; figure?: number }[] = [
-      { part: "new", icon: "plus", title: "برداشت جدید", hint: "ثبت پولی که یکی از شرکا از صندوق می‌برد" },
-      { part: "shares", icon: "pie", title: "سهم شرکا", hint: "سهم هر شریک از سود، ماه به ماه، و تسویهٔ سال" },
+      ...(canNew ? [{ part: "new" as PartnerPart, icon: "plus", title: "برداشت جدید", hint: "ثبت پولی که یکی از شرکا از صندوق می‌برد" }] : []),
+      ...(canShares ? [{ part: "shares" as PartnerPart, icon: "pie", title: "سهم شرکا", hint: "سهم هر شریک از سود، ماه به ماه، و تسویهٔ سال" }] : []),
       ...partners.map((p) => ({ part: { person: p.name }, icon: "receipt", title: `ریز برداشت‌های ${p.short}`, hint: `امروز، ماه، سال یا هر بازه`, figure: taken[p.name] })),
     ];
     return (
@@ -167,14 +167,14 @@ function PartnersView({ part, partner, onPart }: { part: PartnerPart; partner: b
   const title = part === "new" ? "برداشت جدید" : part === "shares" ? "سهم شرکا" : person ? `ریز برداشت‌های ${person.short}` : "";
   return (
     <>
-      {partner && (
+      {(
         <div className="detail-head">
           <button className="btn ghost small" onClick={() => onPart("menu")}><Icon name="back" size={16} /> همهٔ بخش‌های شرکا</button>
           <h2>{title}</h2>
         </div>
       )}
-      {part === "shares" && <Shares />}
-      {part === "new" && people && (choices.length ? <NewWithdrawal people={choices} /> : unmatched)}
+      {part === "shares" && canShares && <Shares />}
+      {part === "new" && canNew && people && (choices.length ? <NewWithdrawal people={choices} /> : unmatched)}
       {person && people && (person.id ? (
         <>
           <div className="list-tools"><PeriodPicker value={period.value} onChange={period.setValue} /></div>

@@ -40,7 +40,7 @@ const KIND: Record<AuditLine["kind"], string> = {
 
 const FIELDS: Record<string, string> = {
   first_name: "نام", last_name: "تخلص", father_name: "نام پدر", phone: "شماره تماس", field_of_study: "وضعیت",
-  tazkira_no: "نمبر تذکره", notes: "یادداشت", note: "یادداشت", member_no: "شمارهٔ عضویت", joined_on: "تاریخ عضویت",
+  tazkira_no: "نمبر تذکره", emergency_phone: "شمارهٔ تماس اضطراری", notes: "یادداشت", note: "یادداشت", member_no: "شمارهٔ عضویت", joined_on: "تاریخ عضویت",
   start_date: "شروع", end_date: "ختم", fee: "مبلغ", discount: "تخفیف", amount: "مبلغ", spent_on: "تاریخ", taken_on: "تاریخ",
   description: "شرح", category_id: "سطر", staff_id: "شخص", plan_id: "نوع عضویت", name: "نام", full_name: "نام",
   price: "نرخ", duration_days: "روزها", active: "فعال", title: "کار", role: "نقش", username: "نام کاربری",

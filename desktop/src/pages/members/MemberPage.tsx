@@ -81,6 +81,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
               آیدی <bdi dir="ltr">{m.member_no}</bdi>
               {m.father_name && <> · فرزند {m.father_name}</>}
               {m.phone && <> · <bdi dir="ltr">{m.phone}</bdi></>}
+              {m.emergency_phone && <> · اضطراری <bdi dir="ltr">{m.emergency_phone}</bdi></>}
               {m.field_of_study && <> · {m.field_of_study}</>}
             </p>
           </div>

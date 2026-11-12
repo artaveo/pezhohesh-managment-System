@@ -308,7 +308,7 @@ export type LoanRow = {
 
 export type MemberInput = {
   member_no?: number | null; first_name: string; last_name?: string | null; father_name?: string | null;
-  phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
+  phone?: string | null; emergency_phone?: string | null; field_of_study?: string | null; tazkira_no?: string | null; notes?: string | null;
   /** Only an edit sends it; a new member joins today. */
   joined_on?: string | null;
 };
@@ -869,6 +869,7 @@ export function errorText(e: unknown): string {
     case "bad_username": return "نام کاربری 3 تا 32 حرف انگلیسی، عدد، نقطه یا خط تیره باشد.";
     case "username_taken": return "این نام کاربری قبلاً گرفته شده.";
     case "name_required": return "نام کامل را بنویسید.";
+    case "emergency_phone_required": return "شمارهٔ تماس اضطراری (یکی از اقارب) را بنویسید.";
     case "wrong_password": return "رمز فعلی درست نیست.";
     case "last_partner": return "دست‌کم یک شریک فعال باید بماند.";
     case "already_set_up": return "حساب اول قبلاً ساخته شده. وارد شوید.";

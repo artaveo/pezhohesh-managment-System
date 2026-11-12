@@ -41,6 +41,9 @@ pub struct MemberInput {
     last_name: Option<String>,
     father_name: Option<String>,
     phone: Option<String>,
+    /// A relative's number for emergencies; required for a new member.
+    #[serde(default)]
+    emergency_phone: Option<String>,
     field_of_study: Option<String>,
     tazkira_no: Option<String>,
     notes: Option<String>,
@@ -107,6 +110,7 @@ pub struct Member {
     last_name: Option<String>,
     father_name: Option<String>,
     phone: Option<String>,
+    emergency_phone: Option<String>,
     field_of_study: Option<String>,
     tazkira_no: Option<String>,
     joined_on: NaiveDate,
@@ -311,6 +315,10 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
     hall_only(&user)?;
     check_member(&b.member)?;
     let m = &b.member;
+    // Members from before have none; every new one gives a relative's number.
+    if clean(&m.emergency_phone).is_none() {
+        return Err(ApiError::bad("emergency_phone_required"));
+    }
     let mut tx = begin_as(&s.db, &user).await?;
     let no: i32 = match m.member_no {
         Some(n) => {
@@ -324,8 +332,8 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
     };
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO members (id, member_no, first_name, last_name, father_name, phone, field_of_study, tazkira_no, joined_on, notes) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "INSERT INTO members (id, member_no, first_name, last_name, father_name, phone, field_of_study, tazkira_no, joined_on, notes, emergency_phone) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(no)
@@ -337,6 +345,7 @@ pub async fn create_member(State(s): State<AppState>, user: CurrentUser, Json(b)
     .bind(clean(&m.tazkira_no))
     .bind(today())
     .bind(clean(&m.notes))
+    .bind(clean(&m.emergency_phone))
     .execute(&mut *tx)
     .await
     .map_err(member_no_taken)?;
@@ -379,7 +388,8 @@ pub async fn update_member(
     }
     let done = sqlx::query(
         "UPDATE members SET member_no = COALESCE($2, member_no), first_name = $3, last_name = $4, father_name = $5, \
-             phone = $6, field_of_study = $7, tazkira_no = $8, notes = $9, joined_on = COALESCE($10, joined_on) \
+             phone = $6, field_of_study = $7, tazkira_no = $8, notes = $9, joined_on = COALESCE($10, joined_on), \
+             emergency_phone = $11 \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -392,6 +402,7 @@ pub async fn update_member(
     .bind(clean(&m.tazkira_no))
     .bind(clean(&m.notes))
     .bind(m.joined_on)
+    .bind(clean(&m.emergency_phone))
     .execute(&mut *tx)
     .await
     .map_err(member_no_taken)?;
@@ -407,7 +418,7 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let member: Member = sqlx::query_as(
-        "SELECT id, member_no, first_name, last_name, father_name, phone, field_of_study, tazkira_no, joined_on, notes \
+        "SELECT id, member_no, first_name, last_name, father_name, phone, emergency_phone, field_of_study, tazkira_no, joined_on, notes \
          FROM members WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)

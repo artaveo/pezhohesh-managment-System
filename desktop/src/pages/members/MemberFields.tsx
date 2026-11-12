@@ -1,11 +1,11 @@
 import type { MemberInput } from "../../lib/api";
 
 export const EMPTY_MEMBER: MemberInput = {
-  member_no: null, first_name: "", last_name: "", father_name: "", phone: "", field_of_study: "", tazkira_no: "", notes: "",
+  member_no: null, first_name: "", last_name: "", father_name: "", phone: "", emergency_phone: "", field_of_study: "", tazkira_no: "", notes: "",
 };
 
 /** Name, father's name, phone… The member number is the one stored in the fingerprint device. */
-export function MemberFields({ value, onChange }: { value: MemberInput; onChange: (m: MemberInput) => void }) {
+export function MemberFields({ value, onChange, isNew = false }: { value: MemberInput; onChange: (m: MemberInput) => void; isNew?: boolean }) {
   const set = (k: keyof MemberInput) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const v = e.target.value;
     onChange({ ...value, [k]: k === "member_no" ? (v.replace(/\D/g, "") ? Number(v.replace(/\D/g, "")) : null) : v });
@@ -20,6 +20,11 @@ export function MemberFields({ value, onChange }: { value: MemberInput; onChange
       <label className="field wide"><span>تخلص</span><input value={value.last_name ?? ""} onChange={set("last_name")} /></label>
       <label className="field wide"><span>نام پدر</span><input value={value.father_name ?? ""} onChange={set("father_name")} /></label>
       <label className="field wide"><span>شماره تماس</span><input dir="ltr" inputMode="tel" value={value.phone ?? ""} onChange={set("phone")} /></label>
+      {/* Required for a new member; members from before may have it empty until it is filled. */}
+      <label className="field wide">
+        <span>شمارهٔ تماس اضطراری (اقارب){isNew ? " *" : ""}</span>
+        <input dir="ltr" inputMode="tel" value={value.emergency_phone ?? ""} onChange={set("emergency_phone")} required={isNew} />
+      </label>
       <label className="field wide">
         <span>وضعیت</span>
         <input list="member-status" value={value.field_of_study ?? ""} onChange={set("field_of_study")} placeholder="محصل، متعلم زبان…" />
