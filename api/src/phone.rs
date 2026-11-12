@@ -435,6 +435,24 @@ pub async fn qr(user: CurrentUser, Query(q): Query<QrText>) -> Result<Response, 
 mod tests {
     use super::virtual_network;
 
+    /// The website's QR on the back of the card (`desktop/public/site-qr.svg`). Highest error
+    /// correction, so the logo laid over its middle still leaves it readable. Run once when
+    /// the address changes:
+    /// PZ_QR_OUT=../desktop/public/site-qr.svg cargo test site_qr -- --ignored
+    #[test]
+    #[ignore]
+    fn site_qr() {
+        let code = qrcode::QrCode::with_error_correction_level(b"https://pezhoheshportal.vercel.app/", qrcode::EcLevel::H).unwrap();
+        let svg = code
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(400, 400)
+            .quiet_zone(false)
+            .dark_color(qrcode::render::svg::Color("#1f3d12"))
+            .light_color(qrcode::render::svg::Color("#ffffff"))
+            .build();
+        std::fs::write(std::env::var("PZ_QR_OUT").unwrap(), svg).unwrap();
+    }
+
     #[test]
     fn virtual_networks() {
         let ip = |s: &str| s.parse().unwrap();

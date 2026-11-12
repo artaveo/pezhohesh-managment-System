@@ -565,37 +565,79 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
   display: flex; flex-direction: column; font-family: var(--font); position: relative;
   -webkit-print-color-adjust: exact; print-color-adjust: exact;
 }
-.member-card header { display: flex; align-items: center; gap: 2mm; padding: 2.2mm 3.2mm; background: #76b82a; color: #111611; }
-.member-card header img { width: 8mm; height: 8mm; border-radius: 50%; background: #fff; }
-.member-card header div { display: flex; flex-direction: column; line-height: 1.25; }
-.member-card header strong { font-size: 7.6pt; font-weight: 800; }
-.member-card header span { font-size: 6.2pt; font-weight: 600; }
-.member-card-body { flex: 1; display: flex; gap: 3mm; padding: 2.4mm 3.2mm 0; min-height: 0; }
-.member-card dl { flex: 1; margin: 0; display: flex; flex-direction: column; gap: 1.1mm; min-width: 0; }
-.member-card dl div { display: flex; gap: 1.5mm; align-items: baseline; font-size: 7pt; }
-.member-card dt { color: #5d6b5d; flex: none; width: 10mm; }
-.member-card dd { margin: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.member-card dl .name dd { font-size: 9pt; font-weight: 800; }
-.member-card-photo { width: 21mm; height: 28mm; flex: none; border-radius: 1.5mm; overflow: hidden; background: #eef2ea; border: .3mm solid #dde3d9; display: grid; place-items: center; font-size: 7pt; color: #8a9886; }
-.member-card-photo img { width: 100%; height: 100%; object-fit: cover; }
-.member-card footer {
-  position: absolute; bottom: 2.6mm; inset-inline-start: 3.2mm; display: flex; align-items: baseline; gap: 2mm;
-}
-.member-card footer span { font-size: 6.5pt; color: #5d6b5d; }
-.member-card footer strong { font-size: 13pt; font-weight: 800; letter-spacing: .3mm; color: #3d6b12; }
+/* Front and back share: paper white with a faint pattern, the logo faded into the corner, and
+   a green edge on the right. Fixed colors: the card is printed. */
 .member-card-stage { gap: 18px; }
-.member-card.back { flex-direction: row; align-items: center; gap: 4mm; padding: 4mm 4.6mm 4mm 4.2mm; }
-.member-card.back::before { content: ""; position: absolute; inset: 0 0 0 auto; width: 1mm; background: linear-gradient(180deg, #76b82a, #3f6e1b); }
-.member-card.back .wm { position: absolute; right: -6mm; top: 50%; transform: translateY(-50%); width: 48mm; opacity: .05; pointer-events: none; }
-.member-card .back-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1mm; position: relative; }
-.member-card .back-info .scan { font-size: 8pt; font-weight: 800; color: #3f6e1b; line-height: 1.35; }
-.member-card .back-info small { font-size: 6pt; color: #6b766b; }
-.member-card .back-info ul { list-style: none; margin: 1mm 0 0; padding: 1.4mm 0 0; border-top: .2mm solid #e3e8df; display: flex; flex-direction: column; gap: .6mm; font-size: 6pt; color: #5d6b5d; }
-.member-card .back-info .rule { margin: .6mm 0 0; font-size: 6pt; font-weight: 700; color: #b4372b; }
-.member-card .back-qr { flex: none; display: flex; flex-direction: column; align-items: center; gap: 1.2mm; position: relative; }
-.member-card .back-qr .qr { width: 29mm; height: 29mm; padding: 1.4mm; box-sizing: border-box; background: #fff; border: .5mm solid #76b82a; border-radius: 2mm; }
-.member-card .back-qr .qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-.member-card .back-qr span { font-size: 9pt; font-weight: 800; letter-spacing: .4mm; color: #3f6e1b; }
+.member-card { background: #fbfcf8; }
+.member-card::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 1.4mm; background: linear-gradient(180deg, #8fd13a, #4d8a1e); }
+.member-card .mc-wm { position: absolute; left: -9mm; bottom: -10mm; width: 40mm; opacity: .06; pointer-events: none; filter: grayscale(.2); }
+.member-card .mc-logo { object-fit: contain; flex: none; }
+
+.mc-front { padding: 0 1.4mm 0 0; }
+.mc-front::before {
+  content: ""; position: absolute; left: 0; top: 13.5mm; width: 32mm; height: 40.5mm; pointer-events: none; opacity: .5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Cg fill='none' stroke='%23cfe3b8' stroke-width='1.6'%3E%3Cpath d='M20 4l5 6.5 8 1.5-1.5 8 6.5 5-6.5 5 1.5 8-8 1.5-5 6.5-5-6.5-8-1.5 1.5-8L2 25l6.5-5L7 12l8-1.5z' transform='scale(.8) translate(5 0)'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 9mm 9mm;
+  -webkit-mask-image: linear-gradient(90deg, #000 30%, transparent); mask-image: linear-gradient(90deg, #000 30%, transparent);
+}
+.mc-head { position: relative; display: flex; align-items: center; gap: 2.4mm; height: 13.5mm; padding: 0 3mm 0 3.4mm; border-bottom: .45mm solid #76b82a; }
+.mc-head .mc-logo { width: 11mm; height: 11mm; }
+.mc-title { flex: 1; display: flex; flex-direction: column; gap: .5mm; min-width: 0; }
+.mc-title strong { font-size: 8.1pt; font-weight: 800; color: #1f4a12; line-height: 1.2; white-space: nowrap; }
+.mc-title span { font-family: "Segoe UI", Arial, sans-serif; font-size: 4.6pt; letter-spacing: .55mm; color: #3c4a3a; direction: ltr; text-align: right; }
+.mc-pill { flex: none; padding: 1.1mm 2.8mm; border-radius: 99px; background: #2f5a1c; color: #fff; font-size: 6.2pt; font-weight: 800; white-space: nowrap; }
+.mc-body { position: relative; flex: 1; display: flex; align-items: center; gap: 3.4mm; padding: 0 3.6mm 0 4mm; min-height: 0; }
+.mc-photo {
+  flex: none; width: 20.5mm; height: 26mm; box-sizing: border-box; border-radius: 2mm; overflow: hidden;
+  border: .5mm solid #76b82a; box-shadow: inset 0 0 0 .7mm #fff, inset 0 0 0 .9mm #b9dc8f; background: #e6eddf;
+  display: grid; place-items: center;
+}
+.mc-photo img { width: 100%; height: 100%; object-fit: cover; }
+.mc-nophoto { display: flex; flex-direction: column; align-items: center; gap: 1mm; color: #8a9886; }
+.mc-nophoto svg { width: 11mm; height: 11mm; fill: #b8c6ae; }
+.mc-nophoto small { font-size: 5.4pt; }
+.mc-fields { flex: 1; min-width: 0; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 1mm; padding-inline-start: 3.2mm; border-inline-start: .35mm solid #76b82a; margin: 3mm 0; }
+.mc-field { display: flex; flex-direction: column; gap: .2mm; padding-bottom: 1mm; border-bottom: .2mm solid #b9dc8f; }
+.mc-field span, .mc-id span { font-size: 5.6pt; color: #6b7d66; }
+.mc-field strong { font-size: 8.8pt; font-weight: 800; color: #172713; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A long name gets smaller, and a very long one two lines, instead of being cut. */
+.mc-field strong.long { font-size: 7.8pt; }
+.mc-field strong.longer { font-size: 7pt; white-space: normal; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.mc-pair { display: flex; gap: 3mm; padding-bottom: 1mm; border-bottom: .2mm solid #b9dc8f; }
+.mc-pair div { display: flex; flex-direction: column; gap: .1mm; min-width: 0; }
+.mc-pair div:first-child:not(:last-child) { flex: 1; }
+.mc-pair span { font-size: 5.4pt; color: #6b7d66; }
+.mc-pair b { font-size: 6.8pt; font-weight: 800; color: #172713; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mc-id { display: flex; align-items: center; gap: 2mm; padding-top: .4mm; }
+.mc-id b { padding: .6mm 3mm; border-radius: 2mm; background: #e4efd8; color: #1f3d12; font-size: 9pt; font-weight: 800; letter-spacing: .3mm; }
+
+.mc-back { padding: 3.2mm 4.4mm 2.6mm 3.6mm; flex-direction: column; }
+.mc-back-top { position: relative; flex: 1; display: flex; gap: 3mm; min-height: 0; }
+.mc-hall { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: .8mm; }
+.mc-hall .mc-logo { width: 8mm; height: 8mm; }
+.mc-hall strong { font-size: 7.6pt; font-weight: 800; color: #1f4a12; margin-bottom: .4mm; }
+.mc-contact { margin: 0; align-self: stretch; display: flex; flex-direction: column; gap: .9mm; }
+.mc-contact div { display: flex; gap: 1.6mm; align-items: baseline; }
+.mc-contact dt { flex: none; width: 10.5mm; font-size: 5.2pt; color: #6b7d66; }
+.mc-contact dd { margin: 0; min-width: 0; font-size: 5.8pt; line-height: 1.45; color: #2b3828; font-weight: 600; }
+.mc-contact dd.ltr { font-family: "Segoe UI", Arial, sans-serif; font-weight: 700; text-align: right; unicode-bidi: isolate; }
+.owner-phone { margin-top: -4px; }
+.mc-hall p { margin: 0; font-size: 5.8pt; line-height: 1.5; color: #4d5c49; }
+.mc-site { flex: none; display: flex; flex-direction: column; align-items: center; gap: .8mm; }
+.mc-qr { position: relative; width: 23mm; height: 23mm; padding: 1.6mm; box-sizing: border-box; border-radius: 2.2mm; background: #fff; border: .25mm solid #dbe6cf; }
+.mc-qr::before, .mc-qr::after { content: ""; position: absolute; width: 4mm; height: 4mm; border: .6mm solid #76b82a; }
+.mc-qr::before { top: -.3mm; right: -.3mm; border-left: 0; border-bottom: 0; border-top-right-radius: 2.4mm; }
+.mc-qr::after { bottom: -.3mm; left: -.3mm; border-right: 0; border-top: 0; border-bottom-left-radius: 2.4mm; }
+.mc-qr > img { width: 100%; height: 100%; display: block; }
+.mc-qr-logo { position: absolute; left: 50%; top: 50%; width: 22%; height: 22%; transform: translate(-50%, -50%); background: #fff; border-radius: 1mm; padding: .5mm; display: grid; place-items: center; }
+.mc-qr-logo img { width: 100%; height: 100%; object-fit: contain; }
+.mc-site small { font-size: 5.6pt; color: #4d5c49; font-weight: 700; }
+.mc-back-foot { position: relative; display: flex; align-items: flex-end; justify-content: space-between; gap: 3mm; padding-top: 1.6mm; border-top: .25mm solid #cfe3b8; }
+.mc-back-foot p { margin: 0 0 .6mm; font-size: 5.8pt; font-weight: 700; color: #4d5c49; }
+.mc-code { display: flex; flex-direction: column; align-items: center; gap: .5mm; }
+.mc-barcode { width: 34mm; height: 7mm; }
+.mc-barcode svg { width: 100%; height: 100%; display: block; }
+.mc-code span { font-family: "Segoe UI", Arial, sans-serif; font-size: 6pt; font-weight: 700; letter-spacing: .4mm; color: #1f3d12; }
 @media print {
   .print-only.card-print .member-card { border-radius: 0; }
   .print-only.card-print.card.both .member-card + .member-card { break-before: page; }

@@ -35,10 +35,11 @@ export function Desk({ openMember, newMember }: { openMember: (id: string) => vo
 function FindMember({ openMember }: { openMember: (id: string) => void }) {
   const [q, setQ] = useState("");
   const [scan, setScan] = useState(false);
-  // The card's QR holds the member's ID: open that member straight away when exactly one has it.
+  // The card's barcode (or an older card's QR) holds the member's ID: open that member straight
+  // away when exactly one has it. The barcode writes it with leading zeros (051003).
   const read = useCallback((text: string) => {
     setScan(false);
-    const no = text.replace(/\D/g, "");
+    const no = text.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
     setQ(no || text);
     if (!no) return;
     api.members({ scope: "all", q: no, limit: 5 }).then((p) => {
@@ -60,7 +61,9 @@ function FindMember({ openMember }: { openMember: (id: string) => void }) {
   return (
     <section className="panel wide">
       <div className="find-row">
-      <input className="search big" type="search" autoFocus placeholder="آیدی، نام یا شماره تماس عضو را بنویسید" aria-label="آیدی، نام یا شماره تماس عضو را بنویسید" value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="search big" type="search" autoFocus placeholder="آیدی، نام یا شماره تماس عضو را بنویسید" aria-label="آیدی، نام یا شماره تماس عضو را بنویسید" value={q} onChange={(e) => setQ(e.target.value)}
+        // A barcode reader types the card's number and presses Enter: open that member.
+        onKeyDown={(e) => { if (e.key === "Enter" && /^\s*\d+\s*$/.test(q)) { e.preventDefault(); read(q); } }} />
         <button className="btn ghost" onClick={() => setScan(true)}><Icon name="card" size={18} /> اسکن کارت</button>
       </div>
       {scan && <ScanCard onRead={read} onClose={() => setScan(false)} />}
