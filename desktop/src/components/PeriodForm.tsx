@@ -99,7 +99,8 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
         <label className="field wide">
           <span>نوع عضویت</span>
           <select value={planId} onChange={(e) => setPlanId(e.target.value)}>
-            {choices.map((p) => <option key={p.id} value={p.id}>{p.name} — {fa(p.price)} افغانی</option>)}
+            {/* The name only: the money is what «مبلغ» below says (the plan's price only fills it in). */}
+            {choices.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
         {many && (
