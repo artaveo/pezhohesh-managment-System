@@ -14,9 +14,9 @@ use crate::AppState;
 
 const NOT_FOUND: ApiError = ApiError(StatusCode::NOT_FOUND, "not_found");
 
-/// The partners' own reckonings: no one else sees them, whatever sections they were given.
+/// The partners, and whoever they gave «یادداشت‌ها» on the users page (the manager by default).
 fn allowed(user: &CurrentUser) -> Result<(), ApiError> {
-    if user.is_partner() { Ok(()) } else { Err(ApiError::FORBIDDEN) }
+    if user.may("notes") { Ok(()) } else { Err(ApiError::FORBIDDEN) }
 }
 
 #[derive(Serialize, Deserialize, Clone)]

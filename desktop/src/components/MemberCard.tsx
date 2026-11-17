@@ -5,6 +5,7 @@ import type { Member } from "../lib/api";
 import { formatDay } from "../lib/solar";
 import { useDocumentUrl } from "../lib/images";
 import { Modal } from "./Modal";
+import { Tabs } from "./Tabs";
 
 /** The card's ID: six digits at least (051003), as the cards have always shown it. */
 export const cardNo = (no: number) => String(no).padStart(6, "0");
@@ -132,38 +133,61 @@ export function MemberCardPreview({ member, photoId, onClose }: { member: Member
     window.print();
   }
 
+  const name = `${member.first_name} ${member.last_name ?? ""}`.trim();
+  const steps = paper === "card"
+    ? [
+        "در پنجرهٔ چاپ، پرینتر کارت را انتخاب کنید.",
+        "در «More settings»: اندازهٔ کاغذ «CR80» یا «Card (86 × 54 mm)»، حاشیه «None»، مقیاس «Default» یا 100٪، و «Headers and footers» خاموش.",
+        side === "both"
+          ? "پرینتر دورو هر دو طرف را خودش چاپ می‌کند. با پرینتر یک‌رو اول «روی» را چاپ کنید، کارت را برگردانید و در سینی بگذارید، بعد «پشت» را چاپ کنید."
+          : "کارت سفید را در سینی بگذارید و «چاپ» را بزنید.",
+      ]
+    : [
+        "در پنجرهٔ چاپ، پرینتر معمولی و کاغذ «A4» را انتخاب کنید.",
+        "در «More settings»: حاشیه «None»، مقیاس «Default» یا 100٪، و «Headers and footers» خاموش. کارت به اندازهٔ واقعی در گوشهٔ بالای ورق چاپ می‌شود.",
+        side === "both"
+          ? "روی و پشت کنار هم چاپ می‌شوند. دور هر دو را از خط‌چین ببرید، از خط وسط تا کنید (پشت به پشت) و لمینیت کنید؛ لازم نیست کاغذ را برگردانید."
+          : "دور کارت را از خط‌چین ببرید و لمینیت کنید.",
+      ];
+
   return (
-    <Modal label="کارت عضویت" onClose={onClose} className="card-modal">
-      <div className="modal-tools no-print">
-        <button className="btn" onClick={print} disabled={waiting}>چاپ</button>
-        <button className="btn ghost" onClick={onClose}>بستن</button>
+    <Modal label="چاپ کارت عضویت" onClose={onClose} className="card-modal">
+      <header className="cp-head">
+        <div>
+          <h2>چاپ کارت عضویت</h2>
+          <span className="muted small">{name} · آیدی <bdi dir="ltr">{member.member_no}</bdi></span>
+        </div>
+        <button className="icon-btn" onClick={onClose} aria-label="بستن" title="بستن"><span aria-hidden="true">×</span></button>
+      </header>
+      <div className="cp-options">
+        <div className="cp-opt">
+          <span>چاپ روی</span>
+          <Tabs label="چاپ روی" value={paper} onChange={setPaper}
+            items={[{ id: "card", label: "کارت PVC" }, { id: "a4", label: "کاغذ A4" }]} />
+        </div>
+        <div className="cp-opt">
+          <span>کدام طرف</span>
+          <Tabs label="کدام طرف" value={side} onChange={setSide}
+            items={[{ id: "front", label: "روی کارت" }, { id: "back", label: "پشت کارت" }, { id: "both", label: "هر دو" }]} />
+        </div>
+        {member.phone && side !== "front" && (
+          <label className="check owner-phone">
+            <input type="checkbox" checked={ownerPhone} onChange={(e) => setOwnerPhone(e.target.checked)} />
+            <span>شمارهٔ خود عضو (<bdi dir="ltr">{member.phone}</bdi>) پشت کارت چاپ شود <small className="muted">— اول از خودش بپرسید</small></span>
+          </label>
+        )}
       </div>
-      <div className="paper-choice" role="radiogroup" aria-label="چاپ روی">
-        <label className="check"><input type="radio" checked={paper === "card"} onChange={() => setPaper("card")} /> کارت PVC (سینی کارت پرینتر)</label>
-        <label className="check"><input type="radio" checked={paper === "a4"} onChange={() => setPaper("a4")} /> کاغذ A4 (برای بریدن)</label>
-      </div>
-      <div className="paper-choice" role="radiogroup" aria-label="کدام طرف">
-        <label className="check"><input type="radio" checked={side === "front"} onChange={() => setSide("front")} /> روی کارت</label>
-        <label className="check"><input type="radio" checked={side === "back"} onChange={() => setSide("back")} /> پشت کارت</label>
-        <label className="check"><input type="radio" checked={side === "both"} onChange={() => setSide("both")} /> هر دو طرف</label>
-      </div>
-      {member.phone && side !== "front" && (
-        <label className="check owner-phone">
-          <input type="checkbox" checked={ownerPhone} onChange={(e) => setOwnerPhone(e.target.checked)} />
-          شمارهٔ عضو ({<bdi dir="ltr">{member.phone}</bdi>}) پشت کارت چاپ شود — اول از خودش بپرسید
-        </label>
-      )}
       {!photoId && side !== "back" && <p className="notice warn">این عضو هنوز عکس ندارد. اول عکسش را در «عکس و تذکره» اضافه کنید.</p>}
       {failed && <p className="notice warn">عکس این عضو باز نشد. دوباره عکسش را اضافه کنید.</p>}
-      <div className="member-card-stage">
+      <div className={`member-card-stage ${paper} ${side}`}>
         {side !== "back" && <MemberCardFace member={member} photo={photo} />}
         {side !== "front" && <MemberCardBack member={member} ownerPhone={ownerPhone} />}
       </div>
-      <p className="muted small">
-        در پنجرهٔ چاپ، اندازهٔ کاغذ را «Card» یا «CR80 (86×54 mm)» و مقیاس را 100٪ (Actual size) بگذارید.
-        {paper === "card" && side === "both" && " اول روی کارت چاپ می‌شود؛ بعد همان کارت را برگردانید و در سینی بگذارید تا پشتش چاپ شود."}
-        {paper === "a4" && side === "both" && " روی و پشت کنار هم چاپ می‌شوند؛ از خط وسط تا کنید، دورش را ببرید و لمینیت کنید."}
-      </p>
+      <ol className="cp-steps">{steps.map((t) => <li key={t}>{t}</li>)}</ol>
+      <div className="cp-actions">
+        <button className="btn ghost" onClick={onClose}>بستن</button>
+        <button className="btn big" onClick={print} disabled={waiting}>{waiting ? "در حال آوردن عکس…" : "چاپ"}</button>
+      </div>
       {createPortal(
         <div className={`print-only card-print ${paper} ${side}`}>
           {side !== "back" && <MemberCardFace member={member} photo={photo} />}

@@ -57,7 +57,7 @@ export const NAV = [
   // متفرقه» and «طلبات» under «عواید».
   { id: "expenses", icon: "wallet", label: "مصارف و برداشت‌ها", section: "expenses", also: ["salaries", "shares", "receipts"], group: "حساب و پول" },
   { id: "reports", icon: "chart", label: "گزارش مالی", section: "reports", group: "حساب و پول" },
-  { id: "notes", icon: "note", label: "یادداشت‌ها", partner: true, group: "حساب و پول" },
+  { id: "notes", icon: "note", label: "یادداشت‌ها", section: "notes", group: "حساب و پول" },
   { id: "pec", icon: "cap", label: "خدمات تحصیلی", section: "pec", group: "خدمات تحصیلی", soon: true },
   { id: "import", icon: "upload", label: "ورود از اکسل", section: "import", group: "مدیریت" },
   { id: "device", icon: "fingerprint", label: "وضعیت و تنظیم", section: "device", group: "مدیریت", hub: "device" },
@@ -142,7 +142,7 @@ function Shell() {
   };
   const { page, member, reg } = view;
   const setPage = (id: PageId) => { if (id !== page || member || view.debt) go({ page: id, member: null }); };
-  const goFromDashboard = (id: "members" | "books" | "registrations", kind?: RegKind) =>
+  const goFromDashboard = (id: "members" | "books" | "registrations" | "expenses", kind?: RegKind) =>
     go({ page: id, member: null, reg: id === "registrations" ? { span: "today", kind } : undefined });
   const openMember = (id: string, bill: string | null = null, fresh = false) => go({ page: "members", member: { id, bill, fresh } });
   useEffect(() => {

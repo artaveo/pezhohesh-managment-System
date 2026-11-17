@@ -28,8 +28,11 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
   const [planId, setPlanId] = useState(choices[0]?.id ?? "");
   const plan = choices.find((p) => p.id === planId);
   const [months, setMonths] = useState(1);
-  const many = plan?.kind !== "daily";
-  const count = many ? months : 1;
+  // A daily seat may be paid for up to a week at once, each day at the same price.
+  const daily = plan?.kind === "daily";
+  const most = daily ? 7 : 12;
+  const count = Math.min(months, most);
+  const unit = daily ? "روز" : "ماه";
   const suggested = start(plan?.kind ?? kinds[0]);
   const [from, setFrom] = useState(suggested);
   const [fee, setFee] = useState("");
@@ -54,7 +57,9 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
     });
   }, [count, renewal, plan?.kind, choices]);
   const setLaterAt = (i: number, patch: Partial<Later>) => setLater((l) => l.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  const laterPlans = later.map((x) => choices.find((c) => c.id === x.planId));
+  // Days after the first are the same seat at the price typed for the first.
+  const after: Later[] = daily && plan ? Array.from({ length: count - 1 }, () => ({ planId: plan.id, fee })) : later;
+  const laterPlans = after.map((x) => choices.find((c) => c.id === x.planId));
 
   // Seat and internet renew on their own timelines: switching plan moves the suggested day.
   useEffect(() => setFrom(suggested), [suggested]);
@@ -63,8 +68,8 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
 
   const feeN = Number(fee || 0);
   const discountN = Number(discount || 0);
-  const laterFees = later.map((x) => Number(x.fee || 0));
-  const laterOk = later.length === count - 1 && later.every((x, i) => x.fee !== "" && laterFees[i] >= 0 && laterPlans[i]);
+  const laterFees = after.map((x) => Number(x.fee || 0));
+  const laterOk = after.length === count - 1 && after.every((x, i) => x.fee !== "" && laterFees[i] >= 0 && laterPlans[i]);
   const totalN = feeN + laterFees.reduce((t, f) => t + f, 0);
   const due = Math.max(0, totalN - discountN);
   const paidN = paid === "" ? due : Number(paid);
@@ -86,10 +91,10 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
       paid: recordOnly || paid === "" ? null : paidN, record_only: recordOnly,
       paid_on: recordOnly || paidOn === today ? null : paidOn,
       months: count,
-      each: count > 1 ? [{ plan_id: plan.id, fee: recordOnly ? 0 : feeN }, ...later.map((x, i) => ({ plan_id: x.planId, fee: recordOnly ? 0 : laterFees[i] }))] : undefined,
+      each: count > 1 ? [{ plan_id: plan.id, fee: recordOnly ? 0 : feeN }, ...after.map((x, i) => ({ plan_id: x.planId, fee: recordOnly ? 0 : laterFees[i] }))] : undefined,
     } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ok, plan, from, feeN, discountN, paid, paidN, recordOnly, paidOn, count, JSON.stringify(later)]);
+  }, [ok, plan, from, feeN, discountN, paid, paidN, recordOnly, paidOn, count, JSON.stringify(after)]);
 
   if (!choices.length) return <p className="form-error">هیچ نوع عضویتی تعریف نشده. یکی از شرکا در «تنظیمات» قیمت‌ها را اضافه کند.</p>;
 
@@ -103,19 +108,17 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
             {choices.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
-        {many && (
-          <label className="field wide">
-            <span>چند ماه</span>
-            <select value={months} onChange={(e) => setMonths(Number(e.target.value))} aria-describedby={count > 1 ? "months-hint" : undefined}>
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n === 1 ? "یک ماه" : `${fa(n)} ماه یک‌جا`}</option>)}
-            </select>
-          </label>
-        )}
+        <label className="field wide">
+          <span>چند {unit}</span>
+          <select value={count} onChange={(e) => setMonths(Number(e.target.value))} aria-describedby={count > 1 ? "months-hint" : undefined}>
+            {Array.from({ length: most }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n === 1 ? `یک ${unit}` : `${fa(n)} ${unit} یک‌جا`}</option>)}
+          </select>
+        </label>
         <SolarDate label="تاریخ شروع" value={from} onChange={setFrom} />
         {!recordOnly && (
           <>
             <label className="field wide">
-              <span>{count > 1 ? "مبلغ ماه اول (افغانی)" : "مبلغ (افغانی)"}</span>
+              <span>{count > 1 ? (daily ? "مبلغ هر روز (افغانی)" : "مبلغ ماه اول (افغانی)") : "مبلغ (افغانی)"}</span>
               <input dir="ltr" inputMode="numeric" value={fee} onChange={(e) => setFee(e.target.value.replace(/[^\d.]/g, ""))} />
             </label>
             <label className="field wide">
@@ -139,7 +142,7 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
           </>
         )}
       </div>
-      {count > 1 && plan && (
+      {count > 1 && plan && !daily && (
         <div className="later-months">
           <p className="muted small">
             ماه اول «{plan.name}» است. ماه‌های بعد قیمت تمدید دارند؛ اگر برای کسی فرق دارد، نوع یا مبلغ همان ماه را عوض کنید.
@@ -172,13 +175,18 @@ export function PeriodForm({ plans, start, kinds, recordOnly = false, onChange }
       {plan && from && (
         <p className="period-sum">
           از <strong>{formatDay(from)}</strong> تا <strong>{formatDay(end)}</strong>
-          {count > 1 ? <> ({fa(count)} ماه)</> : <> ({fa(plan.duration_days)} روز)</>}
+          {count > 1 ? <> ({fa(count)} {unit})</> : <> ({fa(plan.duration_days)} روز)</>}
           {!recordOnly && count > 1 && <> · مجموع: <strong>{fa(totalN)}</strong>{discountN > 0 && <> − تخفیف {fa(discountN)}</>}</>}
           {!recordOnly && <> · پرداخت: <strong>{fa(paidN)} افغانی</strong>{paidOn !== today && paidOn && <> در <strong>{formatDay(paidOn)}</strong></>}</>}
           {!recordOnly && paidOk && owed > 0 && <> · <span className="owed">باقی {fa(owed)}</span></>}
         </p>
       )}
-      {count > 1 && (
+      {count > 1 && daily && (
+        <p id="months-hint" className="muted small">
+          برای هر روز یک عضویت یک‌روزه پشت سر هم ثبت می‌شود و همه روی یک بل چاپ می‌شوند. پول هر روز در درآمد همان روز حساب می‌شود.
+        </p>
+      )}
+      {count > 1 && !daily && (
         <p id="months-hint" className="muted small">
           برای هر ماه یک دورهٔ جدا ثبت می‌شود، پشت سر هم. {!recordOnly && "پول هر ماه در درآمد همان ماه حساب می‌شود (مثل ستون ماه‌ها در اکسل) و همه روی یک بل چاپ می‌شوند. "}
           هر ماه را بعداً در صفحهٔ عضو جدا می‌شود عوض کرد.

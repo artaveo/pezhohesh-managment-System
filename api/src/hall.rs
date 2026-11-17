@@ -578,9 +578,7 @@ pub async fn daily_seat(State(s): State<AppState>, user: CurrentUser, Json(b): J
     if b.member_id.is_none() && guest.is_none() {
         return Err(ApiError::bad("name_required"));
     }
-    if b.period.each.is_some() {
-        return Err(ApiError::bad("bad_months"));
-    }
+    // Several days at once come as `each` (all daily plans, at most 7: checked in add_period).
     let mut tx = begin_as(&s.db, &user).await?;
     let daily: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM plans WHERE id = $1 AND kind = 'daily')")
         .bind(b.period.plan_id)
@@ -635,7 +633,8 @@ async fn add_period(
         }
     }
     let months = p.each.as_ref().map_or(p.months.unwrap_or(1), |e| e.len() as u32);
-    if !(1..=12).contains(&months) || (months > 1 && plan.kind == "daily") {
+    // A daily seat may be paid for up to a week at once.
+    if !(1..=12).contains(&months) || (months > 7 && plan.kind == "daily") {
         return Err(ApiError::bad("bad_months"));
     }
     // The months, each with its plan (name, length) and price; all of the same kind.
@@ -728,7 +727,7 @@ async fn add_period(
         .bind(if p.record_only {
             Some("تاریخ عضویتی که پولش پیش از برنامه گرفته شده".to_string())
         } else {
-            group.map(|_| format!("ماه {} از {months} یک پرداخت", k + 1))
+            group.map(|_| format!("{} {} از {months} یک پرداخت", if plan.kind == "daily" { "روز" } else { "ماه" }, k + 1))
         })
         .bind(user.id)
         .execute(&mut *tx)
@@ -740,7 +739,7 @@ async fn add_period(
             // before the day it was paid.
             let on = if k == 0 { day } else { from.max(day) };
             let what = match group {
-                Some(_) => format!("{plan_name} · {who} · ماه {} از {months}", k + 1),
+                Some(_) => format!("{plan_name} · {who} · {} {} از {months}", if plan.kind == "daily" { "روز" } else { "ماه" }, k + 1),
                 None => format!("{plan_name} · {who}"),
             };
             let r = issue_on(tx, user, on, plan.kind.as_str(), paids[k], &what, Some(membership), None).await?;

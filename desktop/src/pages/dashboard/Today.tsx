@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, type RegKind, type RegSummary, type Registration } from "../../lib/api";
+import { api, ApiError, type Expense, type RegKind, type RegSummary, type Registration } from "../../lib/api";
 import { sampleDashboard } from "../../lib/sample";
 import { useLoad } from "../../lib/useLoad";
 import { fa, formatShort, iso, windowFor } from "../../lib/solar";
@@ -9,7 +9,7 @@ import { DaysLeft } from "../../components/DaysLeft";
 import { Failed, Kpi, Loading } from "../../components/Stat";
 import { CategoryBars } from "../../components/charts/CategoryBars";
 
-export type Go = (page: "members" | "books" | "registrations", kind?: RegKind) => void;
+export type Go = (page: "members" | "books" | "registrations" | "expenses", kind?: RegKind) => void;
 
 const VS = "نسبت به دیروز";
 
@@ -81,6 +81,8 @@ export function TodayView({ go }: { go: Go }) {
           </button>
         </div>
 
+        <TodayExpenses go={go} />
+
         <div className="glass">
           <div className="panel-head">
             <h2>درآمد امروز به تفکیک بخش</h2>
@@ -89,6 +91,44 @@ export function TodayView({ go }: { go: Go }) {
         </div>
       </section>
     </>
+  );
+}
+
+/**
+ * What today's expenses figure is made of: each line with what it was for, the newest first,
+ * in a list that scrolls; «مشاهدهٔ همه» opens the expenses page. Hidden for someone who may
+ * not see expenses.
+ */
+function TodayExpenses({ go }: { go: Go }) {
+  const [lines, setLines] = useState<{ rows: Expense[]; sum: number; total: number } | null>(null);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    const ctl = new AbortController();
+    const today = iso(new Date());
+    api.expenses({ from: today, to: today }, ctl.signal)
+      .then(setLines)
+      .catch(() => { if (!ctl.signal.aborted) setHidden(true); });
+    return () => ctl.abort();
+  }, []);
+  if (hidden) return null;
+  return (
+    <div className="glass">
+      <div className="panel-head">
+        <h2>مصارف امروز</h2>
+        {lines && <span className="muted small">{fa(lines.total)} قلم · {fa(lines.sum)} ؋</span>}
+      </div>
+      <ul className="attention scroll">
+        {lines?.rows.map((e) => (
+          <li key={e.id}>
+            <span className="att-icon"><Icon name="receipt" size={18} /></span>
+            <span className="att-main"><strong>{e.category}</strong>{e.description && <span className="muted small"> · {e.description}</span>}</span>
+            <span className="exp-amount">{fa(e.amount)} ؋</span>
+          </li>
+        ))}
+        {lines && !lines.rows.length && <li className="muted">امروز هنوز مصرفی ثبت نشده.</li>}
+      </ul>
+      <button className="btn ghost see-all" onClick={() => go("expenses")}>مشاهدهٔ همهٔ مصارف</button>
+    </div>
   );
 }
 

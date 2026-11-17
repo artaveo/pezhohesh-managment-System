@@ -188,6 +188,9 @@ button, input { font: inherit; color: inherit; }
 .bar-value small { color: var(--muted); font-weight: 600; margin-inline-start: 4px; }
 
 .attention { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+/* A list that may be long (today's expenses): about five lines, then it scrolls. */
+.attention.scroll { max-height: 236px; overflow-y: auto; padding-inline-end: 4px; }
+.attention .exp-amount { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .attention li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; background: color-mix(in srgb, var(--glass-strong) 60%, transparent); }
 .att-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent); }
 .attention li.warn .att-icon { color: var(--warn); background: var(--warn-soft); }
@@ -511,6 +514,9 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .print-only { display: none; }
 @media print {
   #root { display: none !important; }
+  /* Windows over the page (a card's print window, a bill's preview) are drawn into <body>
+     beside #root: only the copy made for printing goes on paper. */
+  body > :not(.print-only) { display: none !important; }
   body { background: #fff !important; }
   .print-only { display: block; }
   .bill-sheet { box-shadow: none; border-radius: 0; width: 148mm; height: 209mm; min-height: 0; }
@@ -557,9 +563,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 
 /* The membership card: 85.6 × 54 mm (CR80), fixed colors because it is printed. */
 .paper-choice { display: flex; gap: 18px; flex-wrap: wrap; }
-.member-card-stage { display: grid; place-items: center; padding: 18px; background: #e9ece6; border-radius: 12px; }
-.member-card-stage .member-card { zoom: 1.6; box-shadow: 0 4px 12px rgba(0,0,0,.18); }
-.modal-body.card-modal { width: min(640px, 100%); }
+
 .member-card {
   width: 85.6mm; height: 54mm; box-sizing: border-box; border-radius: 3mm; overflow: hidden; background: #fff; color: #1c241d;
   display: flex; flex-direction: column; font-family: var(--font); position: relative;
@@ -567,7 +571,6 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 }
 /* Front and back share: paper white with a faint pattern, the logo faded into the corner, and
    a green edge on the right. Fixed colors: the card is printed. */
-.member-card-stage { gap: 18px; }
 .member-card { background: #fbfcf8; }
 .member-card::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 1.4mm; background: linear-gradient(180deg, #8fd13a, #4d8a1e); }
 .member-card .mc-wm { position: absolute; left: -9mm; bottom: -10mm; width: 40mm; opacity: .06; pointer-events: none; filter: grayscale(.2); }
@@ -639,13 +642,35 @@ button.link { background: none; border: 0; padding: 0; font: inherit; }
 .mc-barcode svg { width: 100%; height: 100%; display: block; }
 .mc-code span { font-family: "Segoe UI", Arial, sans-serif; font-size: 6pt; font-weight: 700; letter-spacing: .4mm; color: #1f3d12; }
 @media print {
-  .print-only.card-print .member-card { border-radius: 0; }
-  .print-only.card-print.card.both .member-card + .member-card { break-before: page; }
-  .print-only.card-print.a4.both { display: flex; gap: 0; }
-  .print-only.card-print.a4.both .member-card + .member-card { border-right-style: dotted; }
-  .print-only.card-print.a4 { position: absolute; top: 6mm; right: 6mm; }
-  .print-only.card-print.a4 .member-card { border: .2mm dashed #8a9886; border-radius: 3mm; }
+  /* Real size, always: nothing around the card may scale it. */
+  .print-only.card-print { zoom: 1 !important; }
+  .print-only.card-print .member-card { box-shadow: none; }
+  /* PVC: one card per page, edge to edge; «هر دو»: the back on the second page. */
+  .print-only.card-print.card .member-card { border-radius: 0; }
+  .print-only.card-print.card .member-card + .member-card { break-before: page; }
+  /* A4: at the top-right corner with a dashed cut line; «هر دو»: front and back side by side,
+     folded on the dotted line between them. */
+  .print-only.card-print.a4 { position: absolute; top: 10mm; right: 10mm; display: flex; gap: 0; }
+  .print-only.card-print.a4 .member-card { border: .25mm dashed #8a9886; border-radius: 3mm; }
+  .print-only.card-print.a4.both .member-card:first-child { border-left: .35mm dotted #4d5c49; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+  .print-only.card-print.a4.both .member-card + .member-card { border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 }
+
+/* The print window */
+.modal-body.card-modal { width: min(720px, 100%); align-items: stretch; gap: 14px; }
+.cp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cp-head h2 { margin: 0 0 2px; font-size: 1.15rem; }
+.cp-head .icon-btn span { font-size: 1.4rem; line-height: 1; }
+.cp-options { display: flex; flex-wrap: wrap; gap: 12px 22px; align-items: center; }
+.cp-opt { display: flex; align-items: center; gap: 10px; }
+.cp-opt > span { font-size: .85rem; color: var(--muted); }
+.cp-options .owner-phone { flex-basis: 100%; margin: 0; }
+.member-card-stage { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 18px; padding: 22px 18px; background: #e6eae1; border-radius: 14px; }
+.member-card-stage .member-card { zoom: 1.35; box-shadow: 0 6px 18px -6px rgba(0,0,0,.28); }
+.member-card-stage.both .member-card { zoom: 1.05; }
+.cp-steps { margin: 0; padding-inline-start: 1.3em; display: flex; flex-direction: column; gap: 4px; font-size: .88rem; color: var(--muted); line-height: 1.6; }
+.cp-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.cp-actions .btn.big { min-width: 140px; }
 .member-title .member-photo + div { flex: 1; }
 
 /* Sign-ups */
