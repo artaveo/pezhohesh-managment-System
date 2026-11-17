@@ -125,6 +125,7 @@ function Shell() {
   const { dark, setMode } = useTheme();
   const nav = useMemo(() => NAV.filter((n) => sees(user!, n)), [user]);
   const arrived = useInboxCount(nav.some((n) => n.id === "inbox"));
+  const lateCount = useLateCount(nav.some((n) => n.id === "members"));
   useFileSending(nav.some((n) => n.id === "members"));
   const [view, setView] = useState<View>({ page: "dashboard", member: null });
   // Earlier views, for «برگشت» (and Alt+←), like a browser's history.
@@ -213,6 +214,7 @@ function Shell() {
                     <span>{h ? HUB[h].label : n.label}</span>
                     {"soon" in n && n.soon && <span className="soon">به‌زودی</span>}
                     {waiting > 0 && <span className="badge" aria-label={`${waiting} عکس از موبایل منتظر`}>{waiting}</span>}
+                    {h === "members" && lateCount > 0 && <span className="badge late" title="اعضایی که بیش از یک هفته باقی پرداخت نکرده‌اند" aria-label={`${lateCount} عضو با باقی دیرمانده`}>{lateCount}</span>}
                   </button>
                 );
               })}
@@ -256,7 +258,7 @@ function Shell() {
           </div>
         )}
         {page === "dashboard" ? (
-          user!.role === "partner" || user!.sections?.includes("dashboard") ? <Dashboard go={goFromDashboard} /> : <Home />
+          user!.role === "partner" || user!.sections?.includes("dashboard") ? <Dashboard go={goFromDashboard} openMember={(id) => openMember(id)} /> : <Home />
         ) : (
           <>
             <h1>{member?.id === null ? "عضو جدید" : member?.debts || view.debt ? "باقی‌ها" : hub ? HUB[hub].label : current.label}</h1>
@@ -326,6 +328,21 @@ function Home() {
 }
 
 /** How many photos and scans from phones wait at the desk, checked every 30 seconds. */
+/** Members whose money has been owed a week or more (not yet on hold): a badge on «اعضا». */
+function useLateCount(on: boolean) {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    if (!on) return;
+    let live = true;
+    const check = () => api.lateDebts().then((l) => live && setN(l.rows.filter((r) => !r.paused).length), () => {});
+    void check();
+    const t = window.setInterval(check, 5 * 60_000);
+    window.addEventListener("focus", check);
+    return () => { live = false; window.clearInterval(t); window.removeEventListener("focus", check); };
+  }, [on]);
+  return n;
+}
+
 function useInboxCount(on: boolean) {
   const [n, setN] = useState(0);
   useEffect(() => {

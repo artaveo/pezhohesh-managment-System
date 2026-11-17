@@ -189,6 +189,13 @@ button, input { font: inherit; color: inherit; }
 
 .attention { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 /* A list that may be long (today's expenses): about five lines, then it scrolls. */
+.warn-text { color: var(--warn); font-weight: 600; }
+.side nav .badge.late { background: var(--bad-fill); color: #fff; }
+.side nav .badge + .badge { margin-inline-start: 4px; }
+.attention .att-row { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; cursor: pointer; border-radius: 8px; padding: 2px 4px; }
+.attention .att-row:hover { background: var(--accent-soft); }
+.attention .att-row:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.attention .att-row .att-main { flex: 1; min-width: 0; }
 .attention.scroll { max-height: 236px; overflow-y: auto; padding-inline-end: 4px; }
 .attention .exp-amount { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .attention li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; background: color-mix(in srgb, var(--glass-strong) 60%, transparent); }

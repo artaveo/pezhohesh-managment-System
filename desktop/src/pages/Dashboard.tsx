@@ -14,7 +14,7 @@ const PERIODS: { id: Period; label: string }[] = [
 ];
 
 /** Three separate reports: today (with the to-do lists), this Solar month, this Solar year. */
-export function Dashboard({ go }: { go: Go }) {
+export function Dashboard({ go, openMember }: { go: Go; openMember: (id: string) => void }) {
   const [period, setPeriod] = useState<Period>("day");
   const { user } = useAuth();
   const now = new Date();
@@ -37,7 +37,7 @@ export function Dashboard({ go }: { go: Go }) {
           </div>
         </div>
       </header>
-      {period === "day" ? <TodayView go={go} /> : period === "month" ? <MonthView /> : <YearView />}
+      {period === "day" ? <TodayView go={go} openMember={openMember} /> : period === "month" ? <MonthView /> : <YearView />}
     </div>
   );
 }

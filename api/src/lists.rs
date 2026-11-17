@@ -48,6 +48,8 @@ pub struct MemberRow {
     receipt_id: Option<uuid::Uuid>,
     /// Still owed on periods paid in parts.
     owed: f64,
+    /// On hold («تعلیق»).
+    paused: bool,
 }
 
 pub fn pattern(q: &Option<String>) -> Option<String> {
@@ -71,6 +73,7 @@ fn member_filter(has: Option<&str>) -> Result<&'static str, ApiError> {
         "finger" => "member_no IN (SELECT k50_finger_nos())",
         "no_finger" => "member_no NOT IN (SELECT k50_finger_nos())",
         "no_photo" => "NOT EXISTS (SELECT 1 FROM member_documents d WHERE d.member_id = v_member_status.member_id AND d.kind = 'photo' AND d.deleted_at IS NULL)",
+        "paused" => "member_id IN (SELECT id FROM members WHERE paused_at IS NOT NULL)",
         "owed" => "(owed > 0 OR EXISTS (SELECT 1 FROM member_debts x WHERE x.member_id = v_member_status.member_id AND x.deleted_at IS NULL AND x.amount > x.paid))",
         _ => return Err(ApiError::bad("bad_filter")),
     })
@@ -93,11 +96,12 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
     let rows_sql = format!(
         "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, \
                 last_start, last_at, NULL::uuid AS receipt_id, \
-                owed + COALESCE((SELECT sum(x.amount - x.paid) FROM member_debts x WHERE x.member_id = v_member_status.member_id AND x.deleted_at IS NULL), 0)::float8 AS owed \
+                owed + COALESCE((SELECT sum(x.amount - x.paid) FROM member_debts x WHERE x.member_id = v_member_status.member_id AND x.deleted_at IS NULL), 0)::float8 AS owed, \
+                EXISTS (SELECT 1 FROM members pm WHERE pm.id = v_member_status.member_id AND pm.paused_at IS NOT NULL) AS paused \
          FROM v_member_status WHERE {filter} \
          UNION ALL \
          SELECT NULL, NULL, ms.guest_name, NULL, NULL, p.name, ms.end_date, ms.end_date - current_date, \
-                ms.start_date, ms.created_at, r.id, 0::float8 \
+                ms.start_date, ms.created_at, r.id, 0::float8, false \
          FROM memberships ms JOIN plans p ON p.id = ms.plan_id \
          LEFT JOIN LATERAL (SELECT r.id FROM receipts r WHERE r.membership_id = ms.id AND NOT r.voided \
                             AND r.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT 1) r ON true \
@@ -120,7 +124,7 @@ pub async fn members(State(s): State<AppState>, user: CurrentUser, Query(p): Que
         .fetch_one(&mut *tx)
         .await?;
     let rows: Vec<MemberRow> = sqlx::query_as(&format!(
-        "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, last_start, receipt_id, owed \
+        "SELECT member_id, member_no, name, father_name, phone, plan_name, end_date, days_left, last_start, receipt_id, owed, paused \
          FROM ({rows_sql}) t ORDER BY {order} LIMIT $6 OFFSET $7"
     ))
     .bind(attention)

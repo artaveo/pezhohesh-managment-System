@@ -86,6 +86,10 @@ pub struct Kpis {
     expenses_prev: f64,
     attendance: i64,
     attendance_prev: i64,
+    /// The newest punch the app has read from the device: «حاضری امروز» is only as fresh as it.
+    punches_newest: Option<chrono::DateTime<chrono::Utc>>,
+    /// When this computer last read the device whole (only the computer the device is on).
+    punches_read_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -173,7 +177,9 @@ async fn load(db: &mut PgConnection, period: String, w: Window) -> sqlx::Result<
             (SELECT count(DISTINCT (device_user_no, (punched_at AT TIME ZONE 'Asia/Kabul')::date)) FROM attendance, w
               WHERE punched_at >= (w.cs::timestamp AT TIME ZONE 'Asia/Kabul') AND punched_at < (w.ce::timestamp AT TIME ZONE 'Asia/Kabul')) AS attendance,
             (SELECT count(DISTINCT (device_user_no, (punched_at AT TIME ZONE 'Asia/Kabul')::date)) FROM attendance, w
-              WHERE punched_at >= (w.ps::timestamp AT TIME ZONE 'Asia/Kabul') AND punched_at < (w.pe::timestamp AT TIME ZONE 'Asia/Kabul')) AS attendance_prev
+              WHERE punched_at >= (w.ps::timestamp AT TIME ZONE 'Asia/Kabul') AND punched_at < (w.pe::timestamp AT TIME ZONE 'Asia/Kabul')) AS attendance_prev,
+            (SELECT max(punched_at) FROM attendance WHERE punched_at <= now() + interval '5 minutes') AS punches_newest,
+            (SELECT (value #>> '{}')::timestamptz FROM settings WHERE key = 'k50_logs_read_at') AS punches_read_at
         FROM w
         "#,
     )

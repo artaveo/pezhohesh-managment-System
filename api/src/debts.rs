@@ -213,6 +213,74 @@ pub struct PaidBill {
     description: Option<String>,
 }
 
+/// A member's money left unpaid this many days after it was owed is «دیرمانده»: the dashboard,
+/// the menu and the member's page say so, and the desk may put the member on hold.
+pub const LATE_DAYS: i32 = 7;
+
+#[derive(Serialize, FromRow)]
+pub struct LateMember {
+    member_id: Uuid,
+    member_no: i32,
+    name: String,
+    phone: Option<String>,
+    /// All they owe now, and since when the oldest of it is owed.
+    owed: f64,
+    since: NaiveDate,
+    days: i32,
+    paused: bool,
+}
+
+#[derive(Serialize)]
+pub struct Late {
+    days: i32,
+    count: usize,
+    sum: f64,
+    rows: Vec<LateMember>,
+}
+
+/// GET /api/v1/debts/late: members who have owed money for a week or more, the longest first.
+/// A late book is not here (the books' own list has it); hotspot cards and other debts of a
+/// member are.
+pub async fn late(State(s): State<AppState>, user: CurrentUser) -> Result<Json<Late>, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    let rows: Vec<LateMember> = sqlx::query_as(
+        "WITH owing AS ( \
+             SELECT pp.member_id, pp.owed, COALESCE(pp.issued_on, ms.start_date) AS on_day \
+             FROM v_period_paid pp JOIN memberships ms ON ms.id = pp.membership_id \
+             WHERE pp.owed > 0 AND pp.receipt_id IS NOT NULL AND pp.member_id IS NOT NULL \
+             UNION ALL \
+             SELECT x.member_id, (x.amount - x.paid)::float8, x.owed_on FROM member_debts x \
+             WHERE x.deleted_at IS NULL AND x.amount > x.paid AND x.member_id IS NOT NULL \
+         ), per AS ( \
+             SELECT member_id, sum(owed)::float8 AS owed, min(on_day) AS since FROM owing GROUP BY member_id \
+         ) \
+         SELECT m.id AS member_id, m.member_no, trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name, m.phone, \
+                per.owed, per.since, ($1::date - per.since)::int AS days, m.paused_at IS NOT NULL AS paused \
+         FROM per JOIN members m ON m.id = per.member_id AND m.deleted_at IS NULL \
+         WHERE per.owed > 0.005 AND $1::date - per.since >= $2 \
+         ORDER BY per.since, m.member_no",
+    )
+    .bind(today())
+    .bind(LATE_DAYS)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let sum = rows.iter().map(|r| r.owed).sum();
+    Ok(Json(Late { days: LATE_DAYS, count: rows.len(), sum, rows }))
+}
+
+/// Everything a member still owes: billed periods paid in part and their other debts.
+pub async fn member_owed_all(tx: &mut PgConnection, member: Uuid) -> Result<f64, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT (COALESCE((SELECT sum(owed) FROM v_period_paid WHERE member_id = $1 AND receipt_id IS NOT NULL), 0) \
+               + COALESCE((SELECT sum(amount - paid) FROM member_debts WHERE member_id = $1 AND deleted_at IS NULL), 0))::float8",
+    )
+    .bind(member)
+    .fetch_one(&mut *tx)
+    .await?)
+}
+
 /// POST /api/v1/debts/pay: one bill for each debt paid, all or nothing.
 pub async fn pay(State(s): State<AppState>, user: CurrentUser, Json(b): Json<PayInput>) -> Result<Json<Vec<PaidBill>>, ApiError> {
     hall_only(&user)?;
@@ -266,6 +334,9 @@ async fn pay_debt(tx: &mut PgConnection, user: &CurrentUser, id: Uuid, amount: f
         .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE member_debts SET paid = paid + $2 WHERE id = $1").bind(id).bind(amount).execute(&mut *tx).await?;
+    if let Some(m) = member {
+        crate::hall::lift_paid_pause(tx, m).await?;
+    }
     Ok(receipt)
 }
 

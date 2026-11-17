@@ -115,6 +115,10 @@ pub struct Member {
     tazkira_no: Option<String>,
     joined_on: NaiveDate,
     notes: Option<String>,
+    /// On hold («تعلیق»): the device does not let them in; their dates stay as they are.
+    paused_at: Option<chrono::DateTime<chrono::Utc>>,
+    pause_reason: Option<String>,
+    pause_note: Option<String>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -414,11 +418,76 @@ pub async fn update_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct PauseInput {
+    /// debt (money left unpaid: lifted by itself once it is all paid) | other
+    reason: String,
+    note: Option<String>,
+}
+
+/// POST /api/v1/members/:id/pause: the member's fingerprint stops opening the door until the
+/// hold is lifted. Their periods, end date and money are not touched, so the days on hold are
+/// still theirs to lose (the member was told to pay).
+pub async fn pause_member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>, Json(b): Json<PauseInput>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    if b.reason != "debt" && b.reason != "other" {
+        return Err(ApiError::bad("bad_reason"));
+    }
+    let mut tx = begin_as(&s.db, &user).await?;
+    let done = sqlx::query(
+        "UPDATE members SET paused_at = COALESCE(paused_at, now()), pause_reason = $2, pause_note = $3 \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(&b.reason)
+    .bind(clean(&b.note))
+    .execute(&mut *tx)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(NOT_FOUND);
+    }
+    tx.commit().await?;
+    crate::k50::poke();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /api/v1/members/:id/pause: the hold is lifted; the device lets them in again on
+/// the days they have.
+pub async fn resume_member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    hall_only(&user)?;
+    let mut tx = begin_as(&s.db, &user).await?;
+    sqlx::query("UPDATE members SET paused_at = NULL, pause_reason = NULL, pause_note = NULL WHERE id = $1 AND paused_at IS NOT NULL")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    crate::k50::poke();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A hold put on for money owed ends by itself once the member owes nothing more.
+pub(crate) async fn lift_paid_pause(tx: &mut PgConnection, member: Uuid) -> Result<bool, ApiError> {
+    let paused: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM members WHERE id = $1 AND paused_at IS NOT NULL AND pause_reason = 'debt')")
+        .bind(member)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !paused || crate::debts::member_owed_all(tx, member).await? > 0.005 {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE members SET paused_at = NULL, pause_reason = NULL, pause_note = NULL WHERE id = $1")
+        .bind(member)
+        .execute(&mut *tx)
+        .await?;
+    crate::k50::poke();
+    Ok(true)
+}
+
 pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path<Uuid>) -> Result<Json<MemberDetail>, ApiError> {
     hall_only(&user)?;
     let mut tx = begin_as(&s.db, &user).await?;
     let member: Member = sqlx::query_as(
-        "SELECT id, member_no, first_name, last_name, father_name, phone, emergency_phone, field_of_study, tazkira_no, joined_on, notes \
+        "SELECT id, member_no, first_name, last_name, father_name, phone, emergency_phone, field_of_study, tazkira_no, joined_on, notes, \
+                paused_at, pause_reason, pause_note \
          FROM members WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -560,6 +629,9 @@ pub(crate) async fn pay_period(tx: &mut PgConnection, user: &CurrentUser, id: Uu
         .bind((counts != now).then_some(now))
         .execute(&mut *tx)
         .await?;
+    if let Some(m) = member {
+        lift_paid_pause(tx, m).await?;
+    }
     Ok((receipt, member))
 }
 

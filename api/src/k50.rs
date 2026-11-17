@@ -426,10 +426,14 @@ struct Wanted {
     /// Removed, with the number freed or asked to be (such members are not sent again).
     #[allow(dead_code)]
     giving_up: bool,
+    /// On hold («تعلیق»): closed on the device with their dates unchanged, and never kept
+    /// open on ZKAccess's days.
+    paused: bool,
 }
 
 /// Per member: let in while a monthly or daily seat covers today, from the start of that
-/// seat to the end of the last one paid for. Internet-only periods do not open the door.
+/// seat to the end of the last one paid for, unless the member is on hold. Internet-only
+/// periods do not open the door.
 const WANTED: &str = "
 WITH seat AS (
     SELECT ms.member_id, ms.start_date, ms.end_date
@@ -438,7 +442,8 @@ WITH seat AS (
 ), want AS (
     SELECT m.id AS member_id, m.member_no, m.import_batch_id IS NOT NULL AS imported,
            trim(m.first_name || ' ' || COALESCE(m.last_name, '')) AS name,
-           (m.deleted_at IS NULL AND EXISTS (SELECT 1 FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date)) AS enabled,
+           (m.deleted_at IS NULL AND m.paused_at IS NULL AND EXISTS (SELECT 1 FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date)) AS enabled,
+           m.paused_at IS NOT NULL AS paused,
            COALESCE((SELECT min(s.start_date) FROM seat s WHERE s.member_id = m.id AND $1 BETWEEN s.start_date AND s.end_date),
                     (SELECT max(s.start_date) FROM seat s WHERE s.member_id = m.id)) AS start_date,
            (SELECT max(s.end_date) FROM seat s WHERE s.member_id = m.id) AS end_date,
@@ -447,7 +452,7 @@ WITH seat AS (
 )
 SELECT w.member_id, w.member_no, w.name, w.enabled, w.start_date, w.end_date,
        CASE WHEN k.member_no <> w.member_no THEN k.member_no END AS old_no,
-       w.imported, k.claimed, k.pushed_name, k.pushed_end, w.giving_up
+       w.imported, k.claimed, k.pushed_name, k.pushed_end, w.giving_up, w.paused
 FROM want w LEFT JOIN k50_users k ON k.member_id = w.member_id
 ";
 
@@ -512,7 +517,7 @@ fn set_user_ops(cfg: &Config, w: &Wanted, same_person: bool) -> Vec<Value> {
         "op": "set_user", "no": device_no(cfg, w.member_no), "name": short_name(&w.name), "enabled": w.enabled,
         "start": w.start_date.map(|d| d.to_string()), "end": w.end_date.map(|d| d.to_string()),
         "owner": if checked { String::new() } else { short_name(&w.name) },
-        "keep_open": cfg.keep_zk, "pushed_end": w.pushed_end.map(|d| d.to_string()).unwrap_or_default(), "margin": ZK_MARGIN_DAYS,
+        "keep_open": cfg.keep_zk && !w.paused, "pushed_end": w.pushed_end.map(|d| d.to_string()).unwrap_or_default(), "margin": ZK_MARGIN_DAYS,
     }));
     ops
 }
@@ -824,6 +829,10 @@ async fn pull_punches(db: &PgPool, cfg: &Config) -> Result<u32, String> {
     // kept only for a whole read.
     if let Some(count) = a["count"].as_i64().filter(|c| *c >= 0 && a["partial"] != json!(true)) {
         save_setting(db, "k50_logs_count", json!(count)).await.map_err(|e| e.to_string())?;
+    }
+    // When the punches were last read whole: the dashboard says when it is behind.
+    if a["partial"] != json!(true) {
+        save_setting(db, "k50_logs_read_at", json!(Utc::now().to_rfc3339())).await.map_err(|e| e.to_string())?;
     }
     Ok(added as u32)
 }
@@ -1201,7 +1210,7 @@ pub fn zk_program_open() -> bool {
 /// Every two minutes (and soon after a membership changes) the device is brought up to
 /// date; every ten minutes its punches are read. Nothing runs until a partner turns it on.
 pub async fn schedule(db: PgPool) {
-    let mut since_punches = Duration::from_secs(600);
+    let mut since_punches = Duration::from_secs(1800);
     loop {
         let poked = tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(120)) => false,
@@ -1226,7 +1235,9 @@ pub async fn schedule(db: PgPool) {
             continue;
         }
         // With ZKAccess open the device has two programs to serve: punches every half hour.
-        let every = if tokio::task::spawn_blocking(zk_program_open).await.unwrap_or(false) { 1800 } else { 600 };
+        // Otherwise every four minutes, so «حاضری امروز» keeps up with the morning rush; a
+        // read with nothing new is only the device's count (see the helper's `known`).
+        let every = if tokio::task::spawn_blocking(zk_program_open).await.unwrap_or(false) { 1800 } else { 240 };
         let punches = since_punches >= Duration::from_secs(every);
         let last = round(&db, &cfg, punches, 5).await;
         if punches && last.ok {
@@ -2098,6 +2109,8 @@ pub struct MemberK50 {
     auto: bool,
     /// What the device should hold for this member now.
     enabled: bool,
+    /// Closed because the member is on hold («تعلیق»).
+    paused: bool,
     start_date: Option<NaiveDate>,
     end_date: Option<NaiveDate>,
     sent: Option<Sent>,
@@ -2124,6 +2137,7 @@ pub async fn member(State(s): State<AppState>, user: CurrentUser, Path(id): Path
         configured: !cfg.ip.is_empty(),
         auto: cfg.enabled,
         enabled: w.enabled,
+        paused: w.paused,
         start_date: w.start_date,
         end_date: w.end_date,
         sent,

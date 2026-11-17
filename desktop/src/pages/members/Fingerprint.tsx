@@ -121,7 +121,7 @@ export function Fingerprint({ memberId, name, reload, onLoaded, onEnroll }: {
         </button>
         <button className="btn ghost" disabled={!!busy} onClick={() => void check()}>{busy === "check" ? "…" : "از دستگاه بپرس"}</button>
       </div>
-      {!k.enabled && <p className="muted small">عضویت سالن این عضو الان فعال نیست؛ دستگاه انگشتش را قبول نمی‌کند.</p>}
+      {!k.enabled && <p className="muted small">{k.paused ? "این عضو تعلیق است؛ تا رفع تعلیق، دستگاه انگشتش را قبول نمی‌کند. تاریخ عضویتش همان است." : "عضویت سالن این عضو الان فعال نیست؛ دستگاه انگشتش را قبول نمی‌کند."}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       {claiming && taken != null && (
         <Modal label="همین شخص است؟" onClose={() => setClaiming(false)}>

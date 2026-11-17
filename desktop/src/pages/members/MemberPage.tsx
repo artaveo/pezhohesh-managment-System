@@ -51,6 +51,14 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
   // Right after registering: the next steps at the desk, until the person closes them.
   const [steps, setSteps] = useState(!!fresh);
   const [photoOpen, setPhotoOpen] = useState(false);
+  const [pausing, setPausing] = useState(false);
+  // Money owed a week or more: the page says so and offers the hold.
+  const [late, setLate] = useState<{ days: number; since: string } | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    api.lateDebts(ctl.signal).then((l) => { const r = l.rows.find((x) => x.member_id === id); setLate(r ? { days: r.days, since: r.since } : null); }).catch(() => {});
+    return () => ctl.abort();
+  }, [id, d?.periods.length, d?.member.paused_at, d?.other_owed]);
   const photoId = d?.documents.find((x) => x.kind === "photo")?.id ?? null;
   const { url: photo } = useDocumentUrl(photoId);
 
@@ -93,6 +101,12 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
                 {t.end_date && <span className="muted small">ختم {formatDay(t.end_date)}</span>}
               </div>
             ))}
+            {m.paused_at && (
+              <div>
+                <span className="muted small">وضعیت</span>
+                <span className="owed-badge">تعلیق</span>
+              </div>
+            )}
             {owed > 0 && (
               <div>
                 <span className="muted small">پول</span>
@@ -103,6 +117,23 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
             )}
           </div>
         </div>
+        {m.paused_at && (
+          <div className="notice warn" role="status">
+            <p>
+              <strong>عضویت تعلیق است</strong> از {formatDay(m.paused_at.slice(0, 10))}
+              {m.pause_reason === "debt" ? " به خاطر باقی پرداخت‌نشده" : ""}{m.pause_note && <> · {m.pause_note}</>}.
+              انگشتش روی دستگاه کار نمی‌کند؛ تاریخ ختم عضویت تغییر نکرده.
+              {m.pause_reason === "debt" && " وقتی همهٔ باقی پرداخت شود، تعلیق خودش برداشته می‌شود."}
+            </p>
+            <button className="btn small" onClick={async () => { try { await api.resumeMember(id); toast("تعلیق برداشته شد؛ انگشتش دوباره کار می‌کند."); void load(); } catch (e) { setError(errorText(e)); } }}>رفع تعلیق</button>
+          </div>
+        )}
+        {late && !m.paused_at && owed > 0 && (
+          <div className="notice warn" role="status">
+            <p><strong>باقی دیرمانده:</strong> {fa(late.days)} روز است ({formatDay(late.since)}) که {fa(owed)} افغانی باقی پرداخت نشده.</p>
+            <button className="btn small" onClick={() => setPausing(true)}><Icon name="pause" size={16} /> تعلیق تا پرداخت</button>
+          </div>
+        )}
         {mode === "view" && !debts && (
           <div className="actions">
             <button className="btn big" onClick={() => setMode("renew")}>تمدید عضویت</button>
@@ -112,6 +143,7 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
                 title={k50.enabled ? undefined : "اول عضویت سالن را ثبت یا تمدید کنید"}><Icon name="fingerprint" /> ثبت انگشت</button>
             )}
             {!d.periods.length && <button className="btn ghost" onClick={() => setMode("record")}>ثبت تاریخ عضویت فعلی (پولش قبلاً گرفته شده)</button>}
+            {!m.paused_at && <button className="btn ghost" onClick={() => setPausing(true)}><Icon name="pause" /> تعلیق عضویت</button>}
             <button className="btn ghost" onClick={() => setMode("edit")}>ویرایش مشخصات</button>
             <button className="btn ghost" onClick={() => setCard(true)}>چاپ کارت عضویت</button>
             {partner && <button className="btn ghost danger-text" onClick={() => setRemoving("member")}><Icon name="trash" /> حذف عضو</button>}
@@ -215,11 +247,44 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
       {paying && <PayRest first={paying} owing={owing} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
       {dates && <PeriodDates period={dates} memberId={id} partner={partner} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("دوره اصلاح شد."); } }} />}
       {cell && <ExcelCell memberId={id} cell={cell} onClose={(saved) => { setCell(null); if (saved) { void load(); toast("فیس این ماه اصلاح شد."); } }} />}
+      {pausing && <PauseMember id={id} name={name} owed={owed} onClose={(done) => { setPausing(false); if (done) { toast(`${name} تعلیق شد؛ انگشتش تا رفع تعلیق کار نمی‌کند.`); void load(); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
       </>}
     </div>
+  );
+}
+
+/** Putting a member on hold: the device closes their finger, their dates stay. */
+function PauseMember({ id, name, owed, onClose }: { id: string; name: string; owed: number; onClose: (done: boolean) => void }) {
+  const [reason, setReason] = useState<"debt" | "other">(owed > 0 ? "debt" : "other");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    try { await api.pauseMember(id, reason, note); onClose(true); } catch (e) { setError(errorText(e)); setBusy(false); }
+  }
+  return (
+    <Modal label="تعلیق عضویت" onClose={() => !busy && onClose(false)}>
+      <h2>تعلیق عضویت {name}</h2>
+      <p className="muted">انگشت این عضو روی دستگاه دم در موقتاً کار نمی‌کند. تاریخ شروع و ختم عضویت و پولش هیچ تغییری نمی‌کند؛ روزهای تعلیق از عضویتش کم نمی‌شود و اضافه هم نمی‌شود.</p>
+      <label className="field">
+        <span>دلیل</span>
+        <select value={reason} onChange={(e) => setReason(e.target.value as "debt" | "other")}>
+          <option value="debt">باقی پرداخت نشده{owed > 0 ? ` (${fa(owed)} افغانی)` : ""}</option>
+          <option value="other">دلیل دیگر</option>
+        </select>
+      </label>
+      <label className="field"><span>یادداشت (اختیاری)</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: گفت فردا می‌آورد" /></label>
+      {reason === "debt" && <p className="muted small">وقتی همهٔ باقی پرداخت شود، تعلیق خودش برداشته می‌شود.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="actions">
+        <button className="btn" disabled={busy} onClick={() => void save()}>{busy ? "در حال ثبت…" : "تعلیق کن"}</button>
+        <button className="btn ghost" disabled={busy} onClick={() => onClose(false)}>انصراف</button>
+      </div>
+    </Modal>
   );
 }
 

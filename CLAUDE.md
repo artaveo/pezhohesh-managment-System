@@ -131,6 +131,12 @@ it is kept busy. Keep these when changing device code:
   end is often a day or two off; within that the app's day counts), is not closed or cut; the app's days are joined to them (`kept_open`, shown on
   the member page). «تاریخ از دستگاه» (also offered after an Excel import) extends app periods
   to the device's later end while it still runs.
+- A member on hold («تعلیق», `members.paused_at`, 0040) is closed on the device (`WANTED`
+  `enabled` false, never `keep_open`) with their dates unchanged. `pause_reason` 'debt' is
+  lifted by `hall::lift_paid_pause` when everything they owe is paid. Money owed `LATE_DAYS`
+  (7) or more shows on the dashboard, the «اعضا» menu badge and the member page (`/debts/late`).
+- Punches are read every 4 min (30 with ZKAccess open); `k50_logs_read_at` (local setting)
+  lets the dashboard warn when the office PC is behind. The Today dashboard reloads every minute.
 - `clear_monthly` (off by default) takes the punches off the device once a Solar month, only
   after a whole read; the app keeps them in `attendance`.
 

@@ -138,7 +138,7 @@ export type K50User = K50Answer & {
   device_name?: string;
 };
 export type MemberK50 = {
-  configured: boolean; auto: boolean; enabled: boolean; start_date: string | null; end_date: string | null;
+  configured: boolean; auto: boolean; enabled: boolean; paused?: boolean; start_date: string | null; end_date: string | null;
   sent: { member_no: number; pushed_start: string | null; pushed_end: string | null; pushed_enabled: boolean | null; pushed_at: string | null;
     valid_dates: boolean | null; device_read: { expires?: number; start?: string; end?: string; kept?: { start: string; end: string } } | null;
     fingers: number | null; error: string | null; error_at: string | null } | null;
@@ -188,6 +188,10 @@ export type Dashboard = {
     income: number; income_prev: number;
     expenses: number; expenses_prev: number;
     attendance: number; attendance_prev: number;
+    /** The newest punch read from the device (ISO). */
+    punches_newest?: string | null;
+    /** When this computer last read the device's punches (null on computers without the device). */
+    punches_read_at?: string | null;
   };
   trend: { day: string; income: number; expenses: number }[];
   income_by_category: { category: string; amount: number }[];
@@ -289,6 +293,8 @@ export type MemberRow = {
   receipt_id: string | null;
   /** Still owed on periods paid in parts. */
   owed: number;
+  /** On hold («تعلیق»). */
+  paused?: boolean;
 };
 export type OwedRow = {
   membership_id: string; member_id: string | null; member_no: number | null; name: string; phone: string | null;
@@ -348,8 +354,11 @@ export type ExcelMonth = { kind: "monthly" | "internet"; year: number; month: nu
 export type Timeline = { kind: "monthly" | "internet"; end_date: string | null; days_left: number | null; next_start: string };
 export type DocKind = "photo" | "tazkira_front" | "tazkira_back" | "other";
 export type MemberDocument = { id: string; kind: DocKind; mime_type: string; size_bytes: number; created_at: string; remote_name: string };
+export type MemberPause = { paused_at: string | null; pause_reason: "debt" | "other" | null; pause_note: string | null };
+export type LateDebts = { days: number; count: number; sum: number;
+  rows: { member_id: string; member_no: number; name: string; phone: string | null; owed: number; since: string; days: number; paused: boolean }[] };
 export type MemberDetail = {
-  member: Member; periods: Period[]; excel_months: ExcelMonth[]; timelines: Timeline[]; documents: MemberDocument[];
+  member: Member & Partial<MemberPause>; periods: Period[]; excel_months: ExcelMonth[]; timelines: Timeline[]; documents: MemberDocument[];
   /** Owed outside membership periods (hotspot cards on credit, a book's fee…). */
   other_owed: number;
 };
@@ -554,7 +563,7 @@ export type Loan = {
 const query = (r: Record<string, string | number | undefined>) =>
   new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
 
-export type MemberFilter = "all" | "active" | "expired" | "no_dates" | "finger" | "no_finger" | "no_photo" | "owed";
+export type MemberFilter = "all" | "active" | "expired" | "no_dates" | "finger" | "no_finger" | "no_photo" | "owed" | "paused";
 export type ListQuery = { scope: "attention" | "all"; q: string; limit?: number; offset?: number; guests?: boolean; has?: MemberFilter };
 const listParams = (p: ListQuery) =>
   new URLSearchParams({
@@ -686,6 +695,9 @@ export const api = {
   deleteMember: (id: string, reason?: string, freeNo = false) =>
     request<void>(`/members/${id}?${query({ reason: reason || undefined, free_no: freeNo ? "true" : undefined })}`, { method: "DELETE" }),
   restoreMember: (id: string) => request<void>(`/members/${id}/restore`, { method: "POST" }),
+  pauseMember: (id: string, reason: "debt" | "other", note?: string) => request<void>(`/members/${id}/pause`, { method: "POST", body: { reason, note } }),
+  resumeMember: (id: string) => request<void>(`/members/${id}/pause`, { method: "DELETE" }),
+  lateDebts: (signal?: AbortSignal) => request<LateDebts>("/debts/late", { signal }),
   dailySeat: (b: { member_id?: string | null; guest_name?: string | null } & PeriodInput) => request<Saved>("/daily-seats", { method: "POST", body: b }),
   otherBill: (b: { income_category: string; amount: number; description?: string; paid_on?: string | null }) => request<Saved>("/bills", { method: "POST", body: b }),
   bills: (p: Range & { q?: string; limit?: number; offset?: number; categories?: string }, signal?: AbortSignal) =>

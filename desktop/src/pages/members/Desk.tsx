@@ -75,7 +75,7 @@ function FindMember({ openMember }: { openMember: (id: string) => void }) {
             <li key={m.member_id}>
               <button onClick={() => openMember(m.member_id!)}>
                 <span className="num">{m.member_no}</span>
-                <strong>{m.name}</strong>
+                <strong>{m.name}{m.paused && <> <span className="chip">تعلیق</span></>}</strong>
                 <span className="muted">{m.father_name ?? ""}</span>
                 <span className="muted">{m.end_date ? `ختم ${formatDay(m.end_date)}` : ""}</span>
                 <DaysLeft days={m.days_left} />

@@ -93,6 +93,7 @@ const MEMBER_FILTERS: { id: MemberFilter; label: string }[] = [
   { id: "finger", label: "با اثر انگشت" },
   { id: "no_photo", label: "بدون عکس" },
   { id: "owed", label: "باقی‌دار" },
+  { id: "paused", label: "تعلیق" },
   { id: "no_dates", label: "بدون تاریخ عضویت" },
 ];
 
@@ -138,7 +139,7 @@ export function MembersList({ open, add, openDebts }: { open: (id: string) => vo
               className={`${go ? "clickable" : ""}${m.days_left !== null && m.days_left < 0 && m.member_id ? " late" : ""}`} onClick={go}
               tabIndex={go ? 0 : undefined} onKeyDown={go ? (e) => { if (e.key === "Enter") go(); } : undefined}>
               <td className="num">{m.member_no ?? <span className="chip kind-daily">مهمان</span>}</td>
-              <td><strong>{m.name}</strong>{m.owed > 0 && <> <span className="owed-badge small-badge">باقی {fa(m.owed)}</span></>}</td>
+              <td><strong>{m.name}</strong>{m.owed > 0 && <> <span className="owed-badge small-badge">باقی {fa(m.owed)}</span></>}{m.paused && <> <span className="chip">تعلیق</span></>}</td>
               <td>{m.father_name ?? "—"}</td>
               <td><bdi dir="ltr">{m.phone ?? "—"}</bdi></td>
               <td className="muted">{m.plan_name ?? "—"}</td>
