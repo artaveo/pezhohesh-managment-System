@@ -247,11 +247,12 @@ export function MemberPage({ id, openBill, fresh, onRemoved, debts, openDebts }:
       {paying && <PayRest first={paying} owing={owing} onClose={(billId) => { setPaying(null); if (billId) { void load(); setBill(billId); toast("باقی پرداخت شد."); } }} />}
       {dates && <PeriodDates period={dates} memberId={id} partner={partner} onClose={(saved) => { setDates(null); if (saved) { void load(); toast("دوره اصلاح شد."); } }} />}
       {cell && <ExcelCell memberId={id} cell={cell} onClose={(saved) => { setCell(null); if (saved) { void load(); toast("فیس این ماه اصلاح شد."); } }} />}
-      {pausing && <PauseMember id={id} name={name} owed={owed} onClose={(done) => { setPausing(false); if (done) { toast(`${name} تعلیق شد؛ انگشتش تا رفع تعلیق کار نمی‌کند.`); void load(); } }} />}
       {bill && <BillPreview id={bill} onClose={() => setBill(null)} />}
       {enrolling && <Enroll memberId={id} name={name} onClose={(added) => { setEnrolling(false); if (added) setFingerDone((n) => n + 1); }} />}
       {card && !bill && <MemberCardPreview member={m} photoId={photoId} onClose={() => setCard(false)} />}
       </>}
+      {/* Outside the page body: the hold is offered on the «باقی‌ها» view of the member too. */}
+      {pausing && <PauseMember id={id} name={name} owed={owed} onClose={(done) => { setPausing(false); if (done) { toast(`${name} تعلیق شد؛ انگشتش تا رفع تعلیق کار نمی‌کند.`); void load(); } }} />}
     </div>
   );
 }
